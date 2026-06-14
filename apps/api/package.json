@@ -12,7 +12,6 @@
     "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma --name init"
   },
   "dependencies": {
-    "@creative-canvas/billing": "workspace:*",
     "@creative-canvas/canvas": "workspace:*",
     "@creative-canvas/providers": "workspace:*",
     "@creative-canvas/shared": "workspace:*",

@@ -76,8 +76,10 @@ export function EmptyCanvasGuide({
               data-testid={action.testId}
               className="flex items-start gap-3 rounded-xl px-4 py-3 text-left transition-all hover:bg-white/10"
               style={{
-                backgroundColor: DESIGN_TOKENS.card,
+                backgroundColor: "rgba(18, 20, 28, 0.88)",
                 border: `1px solid ${DESIGN_TOKENS.border}`,
+                backdropFilter: "blur(16px)",
+                boxShadow: "0 4px 24px rgba(0,0,0,0.25)",
               }}
             >
               <div
@@ -101,7 +103,7 @@ export function EmptyCanvasGuide({
         {/* Tip bar */}
         <div
           className="pointer-events-auto rounded-lg px-3.5 py-2.5"
-          style={{ backgroundColor: DESIGN_TOKENS.card, border: `1px solid ${DESIGN_TOKENS.border}` }}
+          style={{ backgroundColor: "rgba(18, 20, 28, 0.85)", border: `1px solid ${DESIGN_TOKENS.border}`, backdropFilter: "blur(12px)" }}
         >
           <span className="text-[11px]" style={{ color: DESIGN_TOKENS.textMuted }}>
             按 <kbd className="mx-0.5 rounded border px-1 py-0.5 text-[10px]" style={{ borderColor: DESIGN_TOKENS.border, backgroundColor: DESIGN_TOKENS.surfaceAlt }}>/</kbd> 打开命令菜单 · 右键打开节点菜单

@@ -1,20 +1,29 @@
 import { NextRequest } from "next/server"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
+import { getProvider } from "@/lib/ai/provider-registry"
 
-const API_BASE_URL = process.env.AI_BASE_URL || ""
-const API_KEY = process.env.AI_API_KEY || ""
 const MODEL = "gpt-5.5"
 
+function getConfig() {
+  const provider = getProvider()
+  return {
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+  }
+}
+
 export async function POST(req: NextRequest) {
+  const config = getConfig()
+
   try {
     const { imageUrl } = await req.json()
     if (!imageUrl) {
       return Response.json({ error: "imageUrl required" }, { status: 400 })
     }
 
-    const res = await fetchWithTimeout(`${API_BASE_URL}/chat/completions`, {
+    const res = await fetchWithTimeout(`${config.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
       body: JSON.stringify({
         model: MODEL,
         messages: [

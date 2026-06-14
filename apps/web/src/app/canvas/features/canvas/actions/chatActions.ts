@@ -213,3 +213,55 @@ export function extractActionSourceId(action: ChatCanvasAction): string | undefi
 export function extractActionTargetId(action: ChatCanvasAction): string | undefined {
   return (action as any).targetId
 }
+
+// ============================================================================
+// FORMATTER — human-readable action summary for confirmation UI
+// (从 WorkBuddy 副本迁移，支持 Ask 模式的三态确认面板)
+// ============================================================================
+
+/** Generate a human-readable one-line summary for a single action */
+export function formatActionSummary(action: ChatCanvasAction): string {
+  switch (action.action) {
+    case "create_node": {
+      const kind = action.nodeKind ?? action.nodeType ?? "content"
+      const title = action.title ? `「${action.title}」` : ""
+      return `创建${kind}节点${title}`
+    }
+    case "update_node": {
+      return `更新节点 ${action.nodeId}`
+    }
+    case "connect_nodes": {
+      return `连接节点 ${action.sourceId} → ${action.targetId}`
+    }
+    case "delete_node": {
+      const did = action.nodeId ?? action.id
+      return `删除节点 ${did ?? "未知"}`
+    }
+    case "select_node": {
+      const sid = action.nodeId ?? action.id
+      return sid ? `选中节点 ${sid}` : "取消选中"
+    }
+    case "focus_node": {
+      const fid = action.nodeId ?? action.id
+      return `聚焦到节点 ${fid ?? "未知"}`
+    }
+    case "run_node": {
+      const rid = action.nodeId ?? action.id
+      return `运行节点 ${rid ?? "未知"}`
+    }
+    default:
+      return `未知操作: ${(action as any).action ?? "?"}`
+  }
+}
+
+/**
+ * Annotate a list of pending actions with human-readable summaries.
+ * Returns a copy with a `_summary` field on each entry for use in UI.
+ */
+export function getPendingActionSummaries(actions: ChatCanvasAction[]): Array<ChatCanvasAction & { _summary: string; _index: number }> {
+  return actions.map((act, i) => ({
+    ...act,
+    _summary: formatActionSummary(act),
+    _index: i,
+  }))
+}

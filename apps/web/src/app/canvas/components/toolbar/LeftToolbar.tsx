@@ -21,7 +21,7 @@ interface LeftToolbarProps {
   onOpenCharacterView?: () => void
   onOpenCinematicParams?: () => void
   onOpenColorGrade?: () => void
-  onOpenTimeline?: () => void
+  onToggleTimeline?: () => void
   onOpenPanorama?: () => void
   onOpenCrewAgent?: () => void
 }
@@ -38,7 +38,7 @@ export function LeftToolbar({
   onOpenCharacterView,
   onOpenCinematicParams,
   onOpenColorGrade,
-  onOpenTimeline,
+  onToggleTimeline,
   onOpenPanorama,
   onOpenCrewAgent,
   onOpenFileUpload,
@@ -191,7 +191,7 @@ export function LeftToolbar({
 
       {/* 时间轴 */}
       <button
-        onClick={onOpenTimeline}
+        onClick={onToggleTimeline}
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{ color: DESIGN_TOKENS.textMuted }}
         title="时间轴编辑"

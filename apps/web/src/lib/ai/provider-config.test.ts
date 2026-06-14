@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   getAiProviderConfigSafe,
   mergeProviderConfig,
+  resetProviderRegistry,
 } from "./provider-config.ts"
 
 const AI_ENV_KEYS = [
@@ -42,6 +43,10 @@ function clearAiEnv() {
   for (const key of AI_ENV_KEYS) {
     delete process.env[key]
   }
+  // Also clear special provider keys that scanProviderEnvVars reads
+  for (const key of ["IDEOGRAM_API_KEY", "DASHSCOPE_API_KEY", "KLING_API_KEY", "SEEDANCE_API_KEY"]) {
+    delete process.env[key]
+  }
 }
 
 function withAiEnv<T>(env: Record<string, string | undefined>, fn: () => T): T {
@@ -50,11 +55,13 @@ function withAiEnv<T>(env: Record<string, string | undefined>, fn: () => T): T {
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) process.env[key] = value
   }
+  resetProviderRegistry() // 清除环境变量变更后的缓存
 
   try {
     return fn()
   } finally {
     restoreEnv(snapshot)
+    resetProviderRegistry() // 恢复原始环境变量后清除缓存
   }
 }
 

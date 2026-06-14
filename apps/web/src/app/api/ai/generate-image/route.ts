@@ -6,18 +6,25 @@ import { NextRequest, NextResponse } from "next/server"
 import { normalizeGenerationError } from "@/lib/ai/normalizeGenerationError"
 import { getImageProviderCapability } from "@/lib/ai/imageProviderCapabilities"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
+import { getProvider } from "@/lib/ai/provider-registry"
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const API_BASE_URL = process.env.AI_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "https://api.openai.com/v1"
-const API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || ""
-const REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || 120000)
-const ENHANCE_TIMEOUT_MS = Math.min(REQUEST_TIMEOUT_MS, 30000)
-const IMAGE_RETRY_ATTEMPTS = Math.max(1, Number(process.env.AI_IMAGE_RETRY_ATTEMPTS || 2))
+// 通过 Provider Registry 统一读取，不再直接读 process.env
+function getImageConfig() {
+  const provider = getProvider()
+  return {
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    timeoutMs: provider.timeoutMs,
+    enhanceTimeoutMs: Math.min(provider.timeoutMs, 30000),
+    retryAttempts: Math.max(1, Number(process.env.AI_IMAGE_RETRY_ATTEMPTS || 2)),
+  }
+}
 const IS_DEV = process.env.NODE_ENV !== "production"
 
-/** 仅在开发环境输出日志，生产环境静默，避免泄露内部状态 */
-function devLog(...args: unknown[]) { if (IS_DEV) devLog(...args) }
-function devDebug(...args: unknown[]) { if (IS_DEV) devDebug(...args) }
+/** 仅在开发环境输出日志 */
+function devLog(...args: unknown[]) { if (IS_DEV) console.log(...args) }
+function devDebug(...args: unknown[]) { if (IS_DEV) console.debug(...args) }
 const RETRYABLE_UPSTREAM_STATUSES = new Set([429, 500, 502, 503, 504])
 
 function sleep(ms: number) {
@@ -217,6 +224,8 @@ function buildEnhanceSystemPrompt(hasSourceImage: boolean): string {
 
 // ── Main handler ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
+  const config = getImageConfig()
+
   try {
     const body = await request.json()
     const {
@@ -234,9 +243,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!API_KEY) {
+    if (!config.apiKey) {
       return NextResponse.json(
-        { ok: false, error: "OPENAI_API_KEY is not configured", requestId, attempts: 0, model },
+        { ok: false, error: "AI Provider API Key is not configured", requestId, attempts: 0, model },
         { status: 500 },
       )
     }
@@ -303,11 +312,11 @@ export async function POST(request: NextRequest) {
           ? `The user uploaded a source image and said: "${prompt}"\n\nRewrite this as a strict image-editing instruction. The output must preserve the same source image subject, building identity, composition, camera angle, framing, and layout. Only the requested change may be applied.`
           : prompt
 
-        const enhanceRes = await fetchWithTimeout(`${API_BASE_URL}/chat/completions`, {
+        const enhanceRes = await fetchWithTimeout(`${config.baseUrl}/chat/completions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${API_KEY}`,
+            Authorization: `Bearer ${config.apiKey}`,
           },
           body: JSON.stringify({
             model: "gpt-5.5",
@@ -317,7 +326,7 @@ export async function POST(request: NextRequest) {
             ],
             stream: false,
           }),
-        }, ENHANCE_TIMEOUT_MS)
+        }, config.enhanceTimeoutMs)
 
         if (enhanceRes.ok) {
           const enhanceData = await enhanceRes.json()
@@ -378,42 +387,42 @@ export async function POST(request: NextRequest) {
     let imageRes: Response | null = null
     let lastFailure: { status?: number; body?: string; error?: unknown } | null = null
     let attemptsUsed = 0
-    const upstreamUrl = `${API_BASE_URL}${endpoint}`
+    const upstreamUrl = `${config.baseUrl}${endpoint}`
     const upstreamHeaders: Record<string, string> = upstreamBody instanceof FormData
-      ? { Authorization: `Bearer ${API_KEY}` }
+      ? { Authorization: `Bearer ${config.apiKey}` }
       : {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${API_KEY}`,
+          Authorization: `Bearer ${config.apiKey}`,
         }
     const upstreamBodyPayload = upstreamBody instanceof FormData ? upstreamBody : JSON.stringify(upstreamBody)
 
-    for (let attempt = 1; attempt <= IMAGE_RETRY_ATTEMPTS; attempt += 1) {
+    for (let attempt = 1; attempt <= config.retryAttempts; attempt += 1) {
       attemptsUsed = attempt
       try {
-        devLog("[generate-image]", requestId || "no-request-id", "upstream attempt", attempt, "/", IMAGE_RETRY_ATTEMPTS)
+        devLog("[generate-image]", requestId || "no-request-id", "upstream attempt", attempt, "/", config.retryAttempts)
         imageRes = await fetchWithTimeout(upstreamUrl, {
           method: "POST",
           headers: upstreamHeaders,
           body: upstreamBodyPayload,
-        }, REQUEST_TIMEOUT_MS)
+        }, config.timeoutMs)
 
         devLog("[generate-image]", requestId || "no-request-id", "upstream status", imageRes.status)
         if (imageRes.ok) break
 
         const errorText = await imageRes.text()
         lastFailure = { status: imageRes.status, body: errorText }
-        if (!shouldRetryUpstreamStatus(imageRes.status) || attempt >= IMAGE_RETRY_ATTEMPTS) {
+        if (!shouldRetryUpstreamStatus(imageRes.status) || attempt >= config.retryAttempts) {
           imageRes = null
           break
         }
       } catch (error) {
         lastFailure = { error }
         console.warn("[generate-image]", requestId || "no-request-id", "upstream request failed on attempt", attempt, error)
-        if (attempt >= IMAGE_RETRY_ATTEMPTS) break
+        if (attempt >= config.retryAttempts) break
       }
 
       const delayMs = getRetryDelayMs(attempt)
-      devLog("[generate-image]", requestId || "no-request-id", "retrying upstream request:", attempt + 1, "/", IMAGE_RETRY_ATTEMPTS, "after", delayMs, "ms")
+      devLog("[generate-image]", requestId || "no-request-id", "retrying upstream request:", attempt + 1, "/", config.retryAttempts, "after", delayMs, "ms")
       await sleep(delayMs)
     }
 

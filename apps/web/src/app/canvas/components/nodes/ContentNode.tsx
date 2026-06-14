@@ -23,6 +23,7 @@ import {
   Info,
 } from "lucide-react"
 import { Handle, Position, NodeResizer, type NodeProps, useReactFlow } from "@xyflow/react"
+import { pushUndo } from "../../StarCanvas"
 import { DESIGN_TOKENS } from "../../styles/designSystem"
 import type { CanvasNodeData, CanvasNodeKind, NodeRunStatus } from "../canvas/types"
 import { NodeRunStatusIndicator } from "./NodeRunStatusIndicator"
@@ -977,6 +978,9 @@ export const ContentNode = memo(function ContentNode({ id, data, selected, width
                 e.currentTarget.selectionStart,
               )
             }
+            onFocus={() => {
+              pushUndo({ nodes: getNodes(), edges: getEdges() }, "edit-text")
+            }}
             onPointerDownCapture={(e) => e.stopPropagation()}
             onMouseDownCapture={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}

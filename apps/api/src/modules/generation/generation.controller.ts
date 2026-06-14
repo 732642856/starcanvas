@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Post } from "@nestjs/common"
-import { BillingMode, ProviderType } from "@prisma/client"
+import { ProviderType } from "@prisma/client"
 import { IsArray, IsEnum, IsIn, IsObject, IsOptional, IsString, ValidateNested } from "class-validator"
 import { Type } from "class-transformer"
 import { GenerationService } from "./generation.service"
@@ -20,10 +20,6 @@ class CreateStoryboardGenerationDto {
   @IsOptional()
   @IsString()
   model?: string
-
-  @IsOptional()
-  @IsEnum(BillingMode)
-  billingMode?: BillingMode
 
   @IsObject()
   input!: Record<string, unknown>
@@ -55,10 +51,6 @@ class CreateImageGenerationDto {
   @IsOptional()
   @IsIn(["standard", "hd", "low", "medium", "high", "auto"])
   quality?: string
-
-  @IsOptional()
-  @IsEnum(BillingMode)
-  billingMode?: BillingMode
 
   @IsOptional()
   @IsObject()

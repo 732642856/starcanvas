@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
-import { BillingMode, GenerationStatus, Prisma, ProviderType } from "@prisma/client"
+import { GenerationStatus, Prisma, ProviderType } from "@prisma/client"
 import { createDecipheriv, createHash } from "node:crypto"
 import { PrismaService } from "../../prisma/prisma.service"
 import { ProjectsService } from "../projects/projects.service"
@@ -10,7 +10,6 @@ interface CreateGenerationJobInput {
   providerCredentialId?: string
   providerType?: ProviderType
   model?: string
-  billingMode?: BillingMode
   input: Record<string, unknown>
 }
 
@@ -22,7 +21,6 @@ interface CreateImageGenerationInput {
   model?: string
   size?: string
   quality?: string
-  billingMode?: BillingMode
   input?: Record<string, unknown>
 }
 
@@ -148,7 +146,6 @@ export class GenerationService {
     const { user, organization } = await this.projectsService.ensureDevContext()
     const providerType = input.providerType ?? DEFAULT_PROVIDER_TYPE
     const model = input.model ?? DEFAULT_MODEL
-    const billingMode = input.billingMode ?? BillingMode.BYOK_PERSONAL
 
     if (input.projectId) {
       const project = await this.prisma.project.findFirst({
@@ -188,8 +185,6 @@ export class GenerationService {
     const inputTokens = this.estimateTokens(JSON.stringify(normalizedInput))
     const outputText = this.composeDevOutput(normalizedInput, prompt)
     const outputTokens = this.estimateTokens(outputText)
-    const creditsUsed = this.calculateCredits(billingMode, inputTokens, outputTokens)
-    const estimatedCostCny = this.estimateCostCny(inputTokens, outputTokens)
 
     const job = await this.prisma.generationJob.create({
       data: {
@@ -199,12 +194,10 @@ export class GenerationService {
         providerCredentialId: credential?.id,
         providerType: credential?.type ?? providerType,
         model: credential?.defaultModel ?? model,
-        billingMode,
         status: GenerationStatus.PENDING,
         input: normalizedInput as Prisma.InputJsonValue,
         inputTokens,
         outputTokens,
-        estimatedCostCny,
       },
     })
 
@@ -233,13 +226,10 @@ export class GenerationService {
         projectId: input.projectId,
         userId: user.id,
         generationJobId: completedJob.id,
-        billingMode,
         providerType: completedJob.providerType,
         model: completedJob.model,
         inputTokens,
         outputTokens,
-        creditsUsed,
-        estimatedCostCny,
       },
     })
 
@@ -250,15 +240,12 @@ export class GenerationService {
       projectId: completedJob.projectId,
       providerType: completedJob.providerType,
       model: completedJob.model,
-      billingMode: completedJob.billingMode,
       input: completedJob.input,
       output,
       usage: {
         id: usageRecord.id,
         inputTokens: usageRecord.inputTokens,
         outputTokens: usageRecord.outputTokens,
-        creditsUsed: usageRecord.creditsUsed,
-        estimatedCostCny: usageRecord.estimatedCostCny ? Number(usageRecord.estimatedCostCny) : 0,
       },
       createdAt: completedJob.createdAt,
       updatedAt: completedJob.updatedAt,
@@ -267,7 +254,6 @@ export class GenerationService {
 
   async createImageGenerationJob(input: CreateImageGenerationInput) {
     const { user, organization } = await this.projectsService.ensureDevContext()
-    const billingMode = input.billingMode ?? BillingMode.BYOK_PERSONAL
 
     if (!input.prompt?.trim()) {
       throw new BadRequestException("prompt is required")
@@ -320,7 +306,6 @@ export class GenerationService {
         providerCredentialId: credential.id,
         providerType: credential.type,
         model,
-        billingMode,
         status: GenerationStatus.RUNNING,
         input: normalizedInput as Prisma.InputJsonValue,
         inputTokens,
@@ -338,10 +323,8 @@ export class GenerationService {
         quality,
       })
       const outputText = imageResult.revisedPrompt ?? input.prompt
-      const outputTokens = imageResult.outputTokens ?? this.estimateTokens(outputText)
-      const creditsUsed = this.calculateMediaCredits(billingMode, "image")
-      const estimatedCostCny = this.estimateMediaCostCny("image")
-      const output = {
+          const outputTokens = imageResult.outputTokens ?? this.estimateTokens(outputText)
+          const output = {
         type: "IMAGE_GENERATION_RESULT",
         imageUrl: imageResult.imageUrl,
         b64Json: imageResult.b64Json,
@@ -361,7 +344,6 @@ export class GenerationService {
           status: GenerationStatus.SUCCEEDED,
           output: output as Prisma.InputJsonValue,
           outputTokens,
-          estimatedCostCny,
         },
       })
 
@@ -371,13 +353,10 @@ export class GenerationService {
           projectId: input.projectId,
           userId: user.id,
           generationJobId: completedJob.id,
-          billingMode,
           providerType: completedJob.providerType,
           model: completedJob.model,
           inputTokens,
           outputTokens,
-          creditsUsed,
-          estimatedCostCny,
         },
       })
 
@@ -522,7 +501,6 @@ export class GenerationService {
 
   async createChatCompletion(input: CreateChatCompletionInput) {
     const { user, organization } = await this.projectsService.ensureDevContext()
-    const billingMode = BillingMode.BYOK_PERSONAL
     const messages = this.sanitizeChatMessages(input.messages)
 
     if (!messages.length || !messages.some((message) => message.role === "user" && message.content.trim())) {
@@ -590,7 +568,6 @@ export class GenerationService {
         providerCredentialId: credential.id,
         providerType: credential.type,
         model,
-        billingMode,
         status: GenerationStatus.RUNNING,
         input: normalizedInput as Prisma.InputJsonValue,
         inputTokens,
@@ -606,8 +583,6 @@ export class GenerationService {
         temperature: 0.7,
       })
       const outputTokens = result.usage.outputTokens ?? this.estimateTokens(result.content)
-      const creditsUsed = this.calculateCredits(billingMode, result.usage.inputTokens ?? inputTokens, outputTokens)
-      const estimatedCostCny = this.estimateCostCny(result.usage.inputTokens ?? inputTokens, outputTokens)
       const output = {
         type: "CHAT_COMPLETION_RESULT",
         message: result.content,
@@ -622,7 +597,6 @@ export class GenerationService {
           output: output as Prisma.InputJsonValue,
           inputTokens: result.usage.inputTokens ?? inputTokens,
           outputTokens,
-          estimatedCostCny,
         },
       })
 
@@ -632,13 +606,10 @@ export class GenerationService {
           projectId: input.projectId,
           userId: user.id,
           generationJobId: completedJob.id,
-          billingMode,
           providerType: completedJob.providerType,
           model: completedJob.model,
           inputTokens: result.usage.inputTokens ?? inputTokens,
           outputTokens,
-          creditsUsed,
-          estimatedCostCny,
         },
       })
 
@@ -697,7 +668,6 @@ export class GenerationService {
       projectId: job.projectId,
       providerType: job.providerType,
       model: job.model,
-      billingMode: job.billingMode,
       input: job.input,
       output: job.output,
       errorMessage: job.errorMessage,
@@ -706,8 +676,6 @@ export class GenerationService {
             id: usageRecord.id,
             inputTokens: usageRecord.inputTokens,
             outputTokens: usageRecord.outputTokens,
-            creditsUsed: usageRecord.creditsUsed,
-            estimatedCostCny: usageRecord.estimatedCostCny ? Number(usageRecord.estimatedCostCny) : 0,
           }
         : null,
       createdAt: job.createdAt,
@@ -1172,7 +1140,6 @@ export class GenerationService {
       projectId: string | null
       providerType: ProviderType
       model: string
-      billingMode: BillingMode
       input: Prisma.JsonValue
       output: Prisma.JsonValue | null
       errorMessage: string | null
@@ -1180,7 +1147,7 @@ export class GenerationService {
       updatedAt: Date
     },
     output: unknown,
-    usageRecord: { id: string; inputTokens: number; outputTokens: number; creditsUsed: number; estimatedCostCny: Prisma.Decimal | null } | null,
+    usageRecord: { id: string; inputTokens: number; outputTokens: number } | null,
   ) {
     return {
       id: job.id,
@@ -1189,7 +1156,6 @@ export class GenerationService {
       projectId: job.projectId,
       providerType: job.providerType,
       model: job.model,
-      billingMode: job.billingMode,
       input: job.input,
       output,
       errorMessage: job.errorMessage,
@@ -1198,8 +1164,6 @@ export class GenerationService {
             id: usageRecord.id,
             inputTokens: usageRecord.inputTokens,
             outputTokens: usageRecord.outputTokens,
-            creditsUsed: usageRecord.creditsUsed,
-            estimatedCostCny: usageRecord.estimatedCostCny ? Number(usageRecord.estimatedCostCny) : 0,
           }
         : null,
       createdAt: job.createdAt,
@@ -1313,45 +1277,5 @@ export class GenerationService {
 
   private estimateTokens(text: string) {
     return Math.max(1, Math.ceil(text.length / 4))
-  }
-
-  private calculateCredits(billingMode: BillingMode, inputTokens: number, outputTokens: number) {
-    if (billingMode === BillingMode.PLATFORM_CREDITS) {
-      return Math.max(1, Math.ceil((inputTokens + outputTokens) / 750))
-    }
-
-    return 0
-  }
-
-  private calculateMediaCredits(billingMode: BillingMode, modality: "image" | "video" | "audio") {
-    if (billingMode !== BillingMode.PLATFORM_CREDITS) {
-      return 0
-    }
-
-    if (modality === "video") {
-      return 20
-    }
-
-    if (modality === "audio") {
-      return 3
-    }
-
-    return 5
-  }
-
-  private estimateCostCny(inputTokens: number, outputTokens: number) {
-    return Number(((inputTokens * 0.0000015 + outputTokens * 0.000006) * 7.2).toFixed(4))
-  }
-
-  private estimateMediaCostCny(modality: "image" | "video" | "audio") {
-    if (modality === "video") {
-      return 1.5
-    }
-
-    if (modality === "audio") {
-      return 0.08
-    }
-
-    return 0.35
   }
 }

@@ -4,7 +4,7 @@
 // Supports: text models (OpenAI-compatible), image models, video models
 // ============================================================================
 import { NextRequest, NextResponse } from "next/server"
-import { mergeProviderConfig } from "@/lib/ai/provider-config"
+import { mergeProviderConfig, isImageModel, isChatModel, isVideoModel } from "@/lib/ai/provider-config"
 import type { AiProviderOverrides } from "@/lib/ai/provider-config"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
 
@@ -19,17 +19,8 @@ function getConfig(overrides?: AiProviderOverrides) {
 }
 
 // ============================================================================
-// MODEL ENDPOINT MAPPING
-// Different model types use different API endpoints
+// MODEL ENDPOINT RESOLUTION — now driven by provider registry (dynamic, no hardcoded lists)
 // ============================================================================
-// 判断是否为图像生成模型
-const isImageModel = (model: string): boolean => {
-  return ["banana-pro", "bananapro", "mj-v7", "gpt-image-2"].includes(model)
-}
-
-const isChatModel = (model: string): boolean => {
-  return ["gpt-4o", "claude-3.5-sonnet", "gemini-pro", "glm-4", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-4o-audio-preview"].includes(model)
-}
 
 function resolveModelForMode(params: {
   requestedModel?: unknown
@@ -49,7 +40,7 @@ function resolveModelForMode(params: {
 
 const getEndpointForModel = (model: string, baseUrl: string): { endpoint: string; bodyTransformer: (body: any) => any } => {
   // 文本对话模型 → /v1/chat/completions
-  if (["gpt-4o", "claude-3.5-sonnet", "gemini-pro", "glm-4", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-4o-audio-preview"].includes(model)) {
+  if (isChatModel(model)) {
     return {
       endpoint: `${baseUrl}/chat/completions`,
       bodyTransformer: (body) => ({
@@ -73,10 +64,10 @@ const getEndpointForModel = (model: string, baseUrl: string): { endpoint: string
     }
   }
 
-  // 视频生成模型 → 各自独立 API（需用户自行配置）
-  if (["seedance-2.0", "kling-o3", "wan-2.6", "vidu"].includes(model)) {
+  // 视频生成模型 → chat/completions fallback（Provider Registry 已声明模型能力）
+  if (isVideoModel(model)) {
     return {
-      endpoint: `${baseUrl}/chat/completions`, // fallback to chat
+      endpoint: `${baseUrl}/chat/completions`,
       bodyTransformer: (body) => ({
         model: model,
         messages: body.messages,
@@ -294,7 +285,7 @@ const CANVAS_ACTION_SCHEMA = `
 - create_node 不需要 nodeId，系统会自动生成；需要导演 Agent 时用 nodeType:"agent", nodeKind:"agent"
 - position 是画布坐标（不是屏幕坐标），可省略让系统自动居中
 - 用户要“一键做视频/从小说到视频/搭建完整流程/像 ArcReel 一样”时优先用 create_workflow_template，减少手写多个 create_node
-- 用户要“拆分镜/生成镜头表”时优先用 generate_storyboard，shots 必须能直接形成可运行的镜头节点
+- 用户要"拆分镜/生成镜头表"时优先用 generate_storyboard，shots 必须能直接形成可运行的镜头节点。**单次 generate_storyboard 的 shots 不要超过 6 个（系统上限 12 个，但用户界面不适合放太多）。如果用户没指定数量，默认拆分 4-6 个关键镜头即可，不用把每个细节都变成节点。对于长剧本，先拆关键镜头，问用户是否需要更多。**
 - 用户要“打开素材库/Bible/队列/添加节点”时用 open_panel，不要只文字建议
 - run_node 建议运行节点（默认不会自动执行，需用户确认）
 - delete_node 仅当用户明确要求删除节点时使用
@@ -305,7 +296,7 @@ function buildSystemPrompt(context?: {
   selectedNode?: CanvasNodeContext
   selectedNodeId?: string
   mentionedNodes?: CanvasNodeContext[]
-  attachments?: Array<{ id?: string; type?: string; name?: string; size?: number; mimeType?: string; width?: number; height?: number }>
+  attachments?: Array<{ id?: string; type?: string; name?: string; size?: number; mimeType?: string; width?: number; height?: number; textContent?: string }>
   canvasStats?: { total?: number; byKind?: Record<string, number> }
   mode?: string
 }): string {
@@ -363,6 +354,13 @@ ${CANVAS_ACTION_SCHEMA}`
       const sizeKb = attachment.size ? `${Math.round(attachment.size / 1024)}KB` : "未知大小"
       const dimensions = attachment.width && attachment.height ? `，尺寸 ${attachment.width}x${attachment.height}` : ""
       prompt += `\n${i + 1}. [${attachment.type || "file"}] ${attachment.name || attachment.id || "未命名附件"}，${attachment.mimeType || "未知类型"}，${sizeKb}${dimensions}`
+      // 文档类附件：附加文件正文内容
+      if (attachment.textContent) {
+        const preview = attachment.textContent.length > 3000
+          ? attachment.textContent.slice(0, 3000) + "\n...(全文过长，已截断至前3000字)"
+          : attachment.textContent
+        prompt += `\n---文件正文开始---\n${preview}\n---文件正文结束---`
+      }
     })
   }
 
@@ -392,6 +390,14 @@ async function* generateMockResponse(message: string): AsyncGenerator<string> {
 }
 
 // ============================================================================
+// STREAM CHUNK TYPES — separates content from metadata
+// ============================================================================
+
+type StreamContentChunk = { type: "content"; char: string }
+type StreamUsageChunk = { type: "usage"; data: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }
+type StreamChunk = StreamContentChunk | StreamUsageChunk
+
+// ============================================================================
 // REAL API CALLER
 // ============================================================================
 async function* streamFromRealAPI(
@@ -400,7 +406,7 @@ async function* streamFromRealAPI(
   apiBaseUrl: string,
   apiKey: string,
   timeoutMs = 120_000,
-): AsyncGenerator<string> {
+): AsyncGenerator<StreamChunk> {
   const { endpoint, bodyTransformer } = getEndpointForModel(model, apiBaseUrl)
   
   const body = bodyTransformer({
@@ -470,13 +476,20 @@ async function* streamFromRealAPI(
           if (content) {
             // Yield character by character for streaming effect
             for (let i = 0; i < content.length; i++) {
-              yield content[i]
+              yield { type: "content" as const, char: content[i] }
             }
           }
 
-          // Forward usage info (OpenAI sends this in the final chunk)
+          // Forward usage info as separate metadata event (OpenAI sends this in the final chunk)
           if (parsed.usage) {
-            yield `\n[USAGE]${JSON.stringify(parsed.usage)}[/USAGE]\n`
+            yield {
+              type: "usage" as const,
+              data: {
+                prompt_tokens: parsed.usage.prompt_tokens || 0,
+                completion_tokens: parsed.usage.completion_tokens || 0,
+                total_tokens: parsed.usage.total_tokens || 0,
+              },
+            }
           }
         } catch (e) {
           // Ignore parse errors for incomplete JSON
@@ -687,10 +700,17 @@ export async function POST(request: NextRequest) {
             }
           } else {
             // Call the actual AI API (text models, streaming) — uses config from outer scope
-            for await (const char of streamFromRealAPI(messages, model, config.baseUrl, config.apiKey, config.timeoutMs)) {
-              controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify({ content: char })}\n\n`)
-              )
+            for await (const chunk of streamFromRealAPI(messages, model, config.baseUrl, config.apiKey, config.timeoutMs)) {
+              if (chunk.type === "usage") {
+                // Send usage metadata as a separate SSE event — not as content text
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify({ usage: chunk.data })}\n\n`)
+                )
+              } else {
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify({ content: chunk.char })}\n\n`)
+                )
+              }
             }
           }
 

@@ -482,6 +482,8 @@ export type CanvasNodeData = {
   colorGradePrompt?: string
   panoramaPrompt?: string
   timelineStartTimeSeconds?: number
+  timelineDurationSeconds?: number
+  timelineTrackId?: number
   generatedShotNodeIds?: string[]
   generatedStoryboardGridNodeId?: string
   storyboardOutputImageNodeId?: string

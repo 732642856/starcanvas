@@ -63,6 +63,7 @@ interface UseChatSSEOptions {
   onError?: (error: Error) => void
   onImageGenerated?: (data: { imageUrl: string; prompt: string; model: string; revisedPrompt?: string }) => void
   onActions?: (actions: ChatCanvasAction[]) => void
+  onUsage?: (usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => void
 }
 
 interface UseChatSSEReturn {
@@ -141,6 +142,9 @@ export function useChatSSE(options: UseChatSSEOptions = {}): UseChatSSEReturn {
                       setStreamingContent(fullContent)
                       options.onMessage?.(parsed.content)
                     }
+                    if (parsed.usage) {
+                      options.onUsage?.(parsed.usage)
+                    }
                     if (parsed.type === "image_generated" && parsed.imageUrl) {
                       options.onImageGenerated?.({
                         imageUrl: parsed.imageUrl,
@@ -180,6 +184,11 @@ export function useChatSSE(options: UseChatSSEOptions = {}): UseChatSSEReturn {
                   fullContent += parsed.content
                   setStreamingContent(fullContent)
                   options.onMessage?.(parsed.content)
+                }
+
+                // Handle usage metadata (token consumption from API)
+                if (parsed.usage) {
+                  options.onUsage?.(parsed.usage)
                 }
 
                 // Handle image generation events

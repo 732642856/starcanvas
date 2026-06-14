@@ -187,6 +187,46 @@ export default function PropertyPanel({ node, onClose, onUpdateData }: PropertyP
           </div>
         )}
 
+        {/* 时间轴属性 */}
+        <div>
+          <label className="text-[10px] font-medium uppercase tracking-wider block mb-1"
+                 style={{ color: "#94a3b8" }}>时间轴</label>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-[9px] text-white/40 block mb-0.5">开始 (s)</label>
+              <input
+                type="number"
+                min={0}
+                step={0.1}
+                value={nodeData.timelineStartTimeSeconds ?? 0}
+                onChange={(e) =>
+                  onUpdateData(node.id, {
+                    timelineStartTimeSeconds: parseFloat(e.target.value) || 0,
+                  })
+                }
+                className="w-full rounded-lg px-2 py-1 text-xs border-none outline-none"
+                style={{ backgroundColor: "rgba(255,255,255,0.06)", color: "#e2e8f0" }}
+              />
+            </div>
+            <div className="flex-1">
+              <label className="text-[9px] text-white/40 block mb-0.5">持续 (s)</label>
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={nodeData.timelineDurationSeconds ?? 5}
+                onChange={(e) =>
+                  onUpdateData(node.id, {
+                    timelineDurationSeconds: Math.max(0.1, parseFloat(e.target.value) || 0.1),
+                  })
+                }
+                className="w-full rounded-lg px-2 py-1 text-xs border-none outline-none"
+                style={{ backgroundColor: "rgba(255,255,255,0.06)", color: "#e2e8f0" }}
+              />
+            </div>
+          </div>
+        </div>
+
         {/* Node ID (read-only, for debugging) */}
         <div>
           <label className="text-[10px] font-medium uppercase tracking-wider block mb-1"

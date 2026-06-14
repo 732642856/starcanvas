@@ -42,6 +42,12 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     type: "text",
   })
 
+  // ── P0: Session-only API Key (内存存储, 不持久化) ──
+  const [sessionApiKey, setSessionApiKey] = useState("")
+  const [showSessionKey, setShowSessionKey] = useState(false)
+  /** Key 存储模式: "session"=标签页关闭丢 | "local"=刷新不丢 */
+  const [keyStorageMode, setKeyStorageMode] = useState<"session" | "local">("session")
+
   // ── P2-5B: Provider override state ──────────────────
   const [defaultModel, setDefaultModel] = useState("")
   const [imageModel, setImageModel] = useState("")
@@ -68,7 +74,28 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       setUseMock(localStorage.getItem("startrails_use_mock") !== "false")
       setAllowAIAutoRun(localStorage.getItem("startrails_ai_auto_run") === "true")
       const stored = localStorage.getItem("startrails_models")
-      if (stored) setModels(JSON.parse(stored))
+      if (stored) {
+        setModels(JSON.parse(stored))
+      } else {
+        // First-time: seed with default model presets
+        setModels([
+          { value: "gpt-5.5", label: "GPT-5.5（文本）", provider: "default", desc: "默认对话模型", type: "text" as const },
+          { value: "gpt-image-2", label: "GPT-Image-2（图片）", provider: "default", desc: "默认生图模型", type: "image" as const },
+          { value: "vidu", label: "Vidu（视频）", provider: "dashscope", desc: "阿里云百炼视频生成", type: "video" as const },
+          { value: "kling-v1", label: "Kling V1（视频）", provider: "kling", desc: "Kling AI 视频生成", type: "video" as const },
+        ])
+      }
+
+      // Restore saved API Key
+      const sessionKey = window.sessionStorage.getItem("startrails_session_api_key")
+      const localKey = window.localStorage.getItem("startrails_ui_api_key")
+      if (localKey) {
+        setSessionApiKey(localKey)
+        setKeyStorageMode("local")
+      } else if (sessionKey) {
+        setSessionApiKey(sessionKey)
+        setKeyStorageMode("session")
+      }
 
       // P2-5B: Provider overrides
       const overrides = getLocalProviderOverrides()
@@ -117,6 +144,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
             imageModel: imageModel || undefined,
             videoModel: videoModel || undefined,
             timeoutMs: timeoutMs ? Number(timeoutMs) : undefined,
+            sessionApiKey: sessionApiKey || undefined,
           }
         : undefined
       const result = await checkAiHealth(overrides)
@@ -150,6 +178,17 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       })
     } else {
       clearLocalProviderOverrides()
+    }
+
+    // API Key 存储
+    window.sessionStorage.removeItem("startrails_session_api_key")
+    window.localStorage.removeItem("startrails_ui_api_key")
+    if (sessionApiKey) {
+      if (keyStorageMode === "local") {
+        window.localStorage.setItem("startrails_ui_api_key", sessionApiKey)
+      } else {
+        window.sessionStorage.setItem("startrails_session_api_key", sessionApiKey)
+      }
     }
 
     // Notify other components
@@ -214,15 +253,15 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       >
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-medium" style={{ color: T.text }}>设置</h3>
+            <h3 className="text-sm font-medium" style={{ color: T.text }}>设置</h3>
           <button onClick={onClose} className="rounded-lg p-1 transition-colors hover:bg-white/10">
             <X size={16} strokeWidth={ICON_CONFIG.strokeWidth} style={{ color: T.textMuted }} />
           </button>
         </div>
 
-        {/* ── P2-5B: Provider 模式 ────────────────────── */}
+        {/* ── Provider 模式（BYOK 三层模式） ──────────── */}
         <div className="mb-5">
-          <h4 className="mb-2 text-xs font-medium" style={{ color: T.textSecondary }}>Provider 模式</h4>
+          <h4 className="mb-2 text-xs font-medium" style={{ color: T.textSecondary }}>模型平台模式（BYOK）</h4>
           <div className="flex gap-2 mb-3">
             <button
               onClick={() => handleToggleLocalOverride(false)}
@@ -236,7 +275,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               <Server size={14} strokeWidth={1.5} />
               <div className="text-left">
                 <div className="font-medium">服务端 .env</div>
-                <div className="text-[10px] opacity-60">推荐，API Key 安全</div>
+                <div className="text-[10px] opacity-60">自部署/团队部署</div>
               </div>
             </button>
             <button
@@ -250,8 +289,8 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
             >
               <Monitor size={14} strokeWidth={1.5} />
               <div className="text-left">
-                <div className="font-medium">本地覆盖</div>
-                <div className="text-[10px] opacity-60">仅适合自用</div>
+                <div className="font-medium">自建中转站</div>
+                <div className="text-[10px] opacity-60">Key 放自己的 proxy</div>
               </div>
             </button>
           </div>
@@ -262,20 +301,20 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               <div className="flex items-start gap-1.5">
                 <AlertCircle size={13} strokeWidth={1.5} style={{ color: "#f59e0b", marginTop: 1, flexShrink: 0 }} />
                 <p className="text-[10px] leading-relaxed" style={{ color: "#fbbf24" }}>
-                  本地覆盖只允许调整 Base URL、模型和超时。API Key 始终由服务端 .env 管理，不会写入浏览器。
+                  在此模式下可自定义 Base URL 和模型。API Key 优先使用上方会话 Key，未填写时使用服务端 .env 配置。
                 </p>
               </div>
             </div>
           )}
         </div>
 
-        {/* ── API 配置区 ──────────────────────────────── */}
+        {/* ── 中转站配置 ────────────────────────────────── */}
         <div className="mb-5">
-          <h4 className="mb-2 text-xs font-medium" style={{ color: T.textSecondary }}>API 配置</h4>
+          <h4 className="mb-2 text-xs font-medium" style={{ color: T.textSecondary }}>中转站地址 & 模型</h4>
           <div className="space-y-2">
             {/* Base URL */}
             <div>
-              <label style={labelStyle}>API Base URL</label>
+              <label style={labelStyle}>API Base URL（你的中转站地址）</label>
               <input
                 type="text"
                 value={apiBaseUrl}
@@ -288,9 +327,56 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               />
             </div>
 
-            {/* API Key status */}
+            {/* API Key input — session-only (memory, no localStorage) */}
             <div>
-              <label style={labelStyle}>API Key（服务端 .env 管理）</label>
+              <label style={labelStyle}>
+                API Key（会话模式 · 仅内存保存）
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type={showSessionKey ? "text" : "password"}
+                  value={sessionApiKey}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setSessionApiKey(e.target.value)}
+                  placeholder={serverConfig?.hasApiKey ? "留空使用服务端 Key · 填了覆盖" : "粘贴你的中转站 Key"}
+                  className={inputClass}
+                  style={{ borderColor: T.border }}
+                  onFocus={(e) => (e.target.style.borderColor = T.accent)}
+                  onBlur={(e) => (e.target.style.borderColor = T.border)}
+                />
+                <button
+                  onClick={() => setShowSessionKey(!showSessionKey)}
+                  className="rounded-lg p-1.5 transition-colors hover:bg-white/10"
+                  style={{ color: T.textMuted }}
+                  title={showSessionKey ? "隐藏 Key" : "显示 Key"}
+                >
+                  {showSessionKey ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                  )}
+                </button>
+              </div>
+              {sessionApiKey && (
+                <div className="mt-2 space-y-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                  <p className="text-[10px] font-medium" style={{ color: "#fbbf24" }}>Key 保存方式</p>
+                  <label className="flex items-start gap-2 text-[10px] cursor-pointer" style={{ color: "#fcd34d" }}>
+                    <input type="radio" name="keyStorage" checked={keyStorageMode === "session"}
+                      onChange={() => setKeyStorageMode("session")} className="mt-0.5" />
+                    <div>标签页内记住（刷新不丢，关标签页清除）<span className="ml-1 opacity-60">— 推荐</span></div>
+                  </label>
+                  <label className="flex items-start gap-2 text-[10px] cursor-pointer" style={{ color: "#f59e0b" }}>
+                    <input type="radio" name="keyStorage" checked={keyStorageMode === "local"}
+                      onChange={() => setKeyStorageMode("local")} className="mt-0.5" />
+                    <div>跨标签页记住（关浏览器也不丢）<br />
+                      <span style={{ opacity: 0.7 }}>⚠ 存储在浏览器本地，他人使用此设备可能查看到</span></div>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            {/* API Key server status */}
+            <div>
+              <label style={labelStyle}>服务端 Key 状态</label>
               <div
                 className="rounded-lg border px-3 py-2 text-xs"
                 style={{
@@ -300,19 +386,19 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 }}
               >
                 {serverConfig?.hasApiKey
-                  ? "服务端已配置 AI_API_KEY，不会暴露到浏览器。"
-                  : "未检测到服务端 AI_API_KEY，请在 .env.local 中配置。"}
+                  ? "服务端 .env 已配置 API Key。"
+                  : "服务端未配置 Key。需在上方填写会话 Key 或配置 .env。"}
               </div>
             </div>
 
             {/* Default Text Model */}
             <div>
-              <label style={labelStyle}>默认文本模型</label>
+              <label style={labelStyle}>文本模型（聊天 / 写脚本 / 分镜文案）</label>
               <input
                 type="text"
                 value={defaultModel}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setDefaultModel(e.target.value)}
-                placeholder={serverConfig?.defaultModel || "gpt-5.5"}
+                placeholder={serverConfig?.defaultModel || "如 gpt-4o"}
                 className={inputClass}
                 style={{ borderColor: T.border }}
                 onFocus={(e) => (e.target.style.borderColor = T.accent)}
@@ -320,14 +406,14 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               />
             </div>
 
-            {/* Image Model (optional) */}
+            {/* Image Model */}
             <div>
-              <label style={labelStyle}>图片生成模型（可选）</label>
+              <label style={labelStyle}>图片模型（文生图 / 图生图）</label>
               <input
                 type="text"
                 value={imageModel}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setImageModel(e.target.value)}
-                placeholder={serverConfig?.defaultImageModel || "gpt-image-2"}
+                placeholder={serverConfig?.defaultImageModel || "如 gpt-image-2"}
                 className={inputClass}
                 style={{ borderColor: T.border }}
                 onFocus={(e) => (e.target.style.borderColor = T.accent)}
@@ -335,14 +421,14 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               />
             </div>
 
-            {/* Video Model (optional) */}
+            {/* Video Model */}
             <div>
-              <label style={labelStyle}>视频分析模型（可选）</label>
+              <label style={labelStyle}>视频模型（图生视频 / 文生视频）</label>
               <input
                 type="text"
                 value={videoModel}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setVideoModel(e.target.value)}
-                placeholder={serverConfig?.videoModel || "（同默认文本模型）"}
+                placeholder={serverConfig?.videoModel || "如 kling-v1 / vidu / cogvideox-v1"}
                 className={inputClass}
                 style={{ borderColor: T.border }}
                 onFocus={(e) => (e.target.style.borderColor = T.accent)}
@@ -393,10 +479,10 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               />
               <div className="flex flex-col gap-0.5">
                 <label htmlFor="allow-ai-auto-run" className="text-[11px]" style={{ color: T.textMuted }}>
-                  允许 AI 自动运行节点
+                  允许 AI 自动执行（批量生图/生视频等）
                 </label>
                 <p className="text-[10px]" style={{ color: T.textMuted, opacity: 0.6 }}>
-                  开启后，AI 可以直接触发模型调用，可能产生实际 API 成本
+                  关闭则需要每次手动确认，更安全；开启后 AI 可直接调用模型产生费用
                 </p>
               </div>
             </div>

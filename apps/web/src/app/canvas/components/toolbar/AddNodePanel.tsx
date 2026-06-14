@@ -456,6 +456,7 @@ export function AddNodePanel({
                 <button
                   key={item.title}
                   onClick={() => handleItemClick(item)}
+                  data-testid={`add-node-item-${item.title}`}
                   className="group flex items-center gap-3 rounded-xl border p-3 text-left transition-all hover:bg-white/[0.06]"
                   style={{ borderColor: DESIGN_TOKENS.border }}
                 >

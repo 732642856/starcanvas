@@ -6,14 +6,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeGenerationError } from "@/lib/ai/normalizeGenerationError";
 import { getImageProviderCapability } from "@/lib/ai/imageProviderCapabilities";
+import { getProvider } from "@/lib/ai/provider-registry";
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const API_BASE_URL =
-  process.env.AI_BASE_URL ||
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  "https://api.openai.com/v1";
-const API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || "";
-const REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || 120000);
+function getConfig() {
+  const provider = getProvider()
+  return {
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    timeoutMs: provider.timeoutMs,
+  }
+}
 const TEXT_TO_IMAGE_ENDPOINT = "/images/generations";
 
 const SUPPORTED_IMAGE_SIZES = new Set(["1024x1024", "1792x1024", "1024x1792"]);
@@ -88,6 +91,8 @@ function buildImageEditFormData(params: {
 }
 
 export async function POST(request: NextRequest) {
+  const config = getConfig()
+
   try {
     const body = await request.json();
     const {
@@ -112,7 +117,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!API_KEY) {
+    if (!config.apiKey) {
       return NextResponse.json(
         {
           ok: false,
@@ -146,20 +151,20 @@ export async function POST(request: NextRequest) {
         skeletonImageDataUrl: skeletonPng,
       });
 
-      const upstreamUrl = `${API_BASE_URL}/images/edits`;
+      const upstreamUrl = `${config.baseUrl}/images/edits`;
       console.info(
         "[generate-with-pose] calling image-to-image:",
         upstreamUrl,
       );
 
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
 
       try {
         const upstreamRes = await fetch(upstreamUrl, {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${API_KEY}`,
+            Authorization: `Bearer ${config.apiKey}`,
           },
           body: formData,
           signal: controller.signal,
@@ -242,14 +247,14 @@ export async function POST(request: NextRequest) {
     console.info("[generate-with-pose] calling text-to-image");
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
 
     try {
-      const upstreamRes = await fetch(`${API_BASE_URL}${TEXT_TO_IMAGE_ENDPOINT}`, {
+      const upstreamRes = await fetch(`${config.baseUrl}${TEXT_TO_IMAGE_ENDPOINT}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${API_KEY}`,
+          Authorization: `Bearer ${config.apiKey}`,
         },
         body: JSON.stringify(generationPayload),
         signal: controller.signal,

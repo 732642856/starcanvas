@@ -17,6 +17,7 @@ import {
   Maximize2,
 } from "lucide-react";
 import { Handle, Position, type NodeProps, useReactFlow } from "@xyflow/react";
+import { pushUndo } from "../../StarCanvas";
 import { DESIGN_TOKENS } from "../../styles/designSystem";
 import type { CanvasNodeData, CanvasNodeKind } from "../canvas/types";
 import { NodeRunStatusIndicator } from "./NodeRunStatusIndicator";
@@ -165,6 +166,7 @@ export const ImageNode = memo(function ImageNode({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
+      pushUndo({ nodes: getNodes(), edges: [] }, "image-upload");
       (async () => {
         try {
           const { assetId, objectUrl } = await persistImageFile(file);

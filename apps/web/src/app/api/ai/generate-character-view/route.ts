@@ -4,10 +4,16 @@
 // ============================================================================
 import { NextRequest } from "next/server"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
+import { getProvider } from "@/lib/ai/provider-registry"
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const API_BASE_URL = process.env.AI_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "https://api.openai.com/v1"
-const API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || ""
+function getConfig() {
+  const provider = getProvider()
+  return {
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+  }
+}
 const IMAGE_MODEL = "gpt-image-2"
 const TIMEOUT_MS = 120_000
 
@@ -48,6 +54,7 @@ const VIEW_PROMPTS: Record<string, (desc: string) => string> = {
 // ── Single view image generation ────────────────────────────────────────────
 async function generateViewImage(
   prompt: string,
+  config: { baseUrl: string; apiKey: string },
   referenceImageUrl?: string,
 ): Promise<string> {
   const payload: Record<string, unknown> = {
@@ -63,12 +70,12 @@ async function generateViewImage(
   }
 
   const res = await fetchWithTimeout(
-    `${API_BASE_URL}/images/generations`,
+    `${config.baseUrl}/images/generations`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${API_KEY}`,
+        Authorization: `Bearer ${config.apiKey}`,
       },
       body: JSON.stringify(payload),
     },
@@ -99,6 +106,8 @@ const ALL_VIEWS: Array<{ key: "front" | "side" | "back"; stage: string; percent:
 
 // ── Main handler ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
+  const config = getConfig()
+
   try {
     // ── Parse request ────────────────────────────────────────────────────
     const body: GenerateCharacterViewRequest = await request.json()
@@ -122,7 +131,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!API_KEY) {
+    if (!config.apiKey) {
       return sseStream(
         new ReadableStream({
           start(controller) {
@@ -177,7 +186,7 @@ export async function POST(request: NextRequest) {
             })
 
             const prompt = VIEW_PROMPTS[view.key](characterDescription)
-            const imageUrl = await generateViewImage(prompt, referenceImageUrl)
+            const imageUrl = await generateViewImage(prompt, config, referenceImageUrl)
             result[`${view.key}ViewUrl`] = imageUrl
           }
 

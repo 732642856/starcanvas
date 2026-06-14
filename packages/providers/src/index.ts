@@ -1,5 +1,3 @@
-import { BillingMode } from "@creative-canvas/shared"
-
 export interface TextGenerationInput {
   organizationId: string
   userId: string
@@ -10,7 +8,6 @@ export interface TextGenerationInput {
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
   temperature?: number
   maxTokens?: number
-  billingMode: BillingMode
 }
 
 export interface TextGenerationResult {

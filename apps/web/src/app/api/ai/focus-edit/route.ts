@@ -3,12 +3,18 @@
 // Sends image + mask + instruction to upstream /images/edits endpoint
 // ============================================================================
 import { NextRequest, NextResponse } from "next/server"
+import { getProvider } from "@/lib/ai/provider-registry"
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const API_BASE_URL = process.env.AI_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "https://api.openai.com/v1"
-const API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || ""
-const REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || 120000)
-const IMAGE_RETRY_ATTEMPTS = Math.max(1, Number(process.env.AI_IMAGE_RETRY_ATTEMPTS || 2))
+function getConfig() {
+  const provider = getProvider()
+  return {
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    timeoutMs: provider.timeoutMs,
+    retryAttempts: Math.max(1, Number(process.env.AI_IMAGE_RETRY_ATTEMPTS || 2)),
+  }
+}
 const RETRYABLE_UPSTREAM_STATUSES = new Set([429, 500, 502, 503, 504])
 
 async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
@@ -99,6 +105,8 @@ function normalizeImageSize(value: unknown): string {
 
 // ── Main handler ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
+  const config = getConfig()
+
   try {
     const body = await request.json()
     const {
@@ -124,7 +132,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!API_KEY) {
+    if (!config.apiKey) {
       return NextResponse.json(
         { ok: false, error: "API key is not configured", requestId, model },
         { status: 500 },
@@ -145,7 +153,7 @@ export async function POST(request: NextRequest) {
       instruction.trim(),
     ].join("\n")
 
-    const upstreamUrl = `${API_BASE_URL}/images/edits`
+    const upstreamUrl = `${config.baseUrl}/images/edits`
     const formData = buildFocusEditFormData({
       model,
       prompt: editPrompt,
@@ -158,36 +166,36 @@ export async function POST(request: NextRequest) {
     let lastFailure: { status?: number; body?: string; error?: unknown } | null = null
     let attemptsUsed = 0
     const upstreamHeaders: Record<string, string> = {
-      Authorization: `Bearer ${API_KEY}`,
+      Authorization: `Bearer ${config.apiKey}`,
     }
 
-    for (let attempt = 1; attempt <= IMAGE_RETRY_ATTEMPTS; attempt += 1) {
+    for (let attempt = 1; attempt <= config.retryAttempts; attempt += 1) {
       attemptsUsed = attempt
       try {
-        console.info("[focus-edit]", requestId || "no-request-id", "upstream attempt", attempt, "/", IMAGE_RETRY_ATTEMPTS)
+        console.info("[focus-edit]", requestId || "no-request-id", "upstream attempt", attempt, "/", config.retryAttempts)
         imageRes = await fetchWithTimeout(upstreamUrl, {
           method: "POST",
           headers: upstreamHeaders,
           body: formData,
-        }, REQUEST_TIMEOUT_MS)
+        }, config.timeoutMs)
 
         console.info("[focus-edit]", requestId || "no-request-id", "upstream status", imageRes.status)
         if (imageRes.ok) break
 
         const errorText = await imageRes.text()
         lastFailure = { status: imageRes.status, body: errorText }
-        if (!shouldRetryUpstreamStatus(imageRes.status) || attempt >= IMAGE_RETRY_ATTEMPTS) {
+        if (!shouldRetryUpstreamStatus(imageRes.status) || attempt >= config.retryAttempts) {
           imageRes = null
           break
         }
       } catch (error) {
         lastFailure = { error }
         console.warn("[focus-edit]", requestId || "no-request-id", "upstream request failed on attempt", attempt, error)
-        if (attempt >= IMAGE_RETRY_ATTEMPTS) break
+        if (attempt >= config.retryAttempts) break
       }
 
       const delayMs = getRetryDelayMs(attempt)
-      console.info("[focus-edit]", requestId || "no-request-id", "retrying:", attempt + 1, "/", IMAGE_RETRY_ATTEMPTS, "after", delayMs, "ms")
+      console.info("[focus-edit]", requestId || "no-request-id", "retrying:", attempt + 1, "/", config.retryAttempts, "after", delayMs, "ms")
       await sleep(delayMs)
     }
 

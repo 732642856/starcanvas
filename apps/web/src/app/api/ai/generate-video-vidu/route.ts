@@ -8,12 +8,12 @@
 
 import { NextRequest } from "next/server"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
+import { findProviderByCapability } from "@/lib/ai/provider-registry"
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 const POLL_INTERVAL_MS = 8_000  // 轮询间隔 8 秒（Vidu 生成约 1-5 分钟）
 const MAX_POLL_MINUTES = 10     // 最大轮询 10 分钟
 const VIDU_REQUEST_TIMEOUT_MS = 60_000
@@ -68,7 +68,7 @@ function sseEvent(event: string, data: unknown) {
 // Vidu API client
 // ---------------------------------------------------------------------------
 
-async function createViduTask(params: ViduGenerateRequest, apiKey: string) {
+async function createViduTask(params: ViduGenerateRequest, apiKey: string, baseUrl: string) {
   const { mode, model, prompt, imageUrl, firstFrameUrl, lastFrameUrl, duration, resolution, audio, watermark, seed, size } = params
 
   // Resolve model name
@@ -107,7 +107,7 @@ async function createViduTask(params: ViduGenerateRequest, apiKey: string) {
     parameters,
   }
 
-  const res = await fetchWithTimeout(`${DASHSCOPE_BASE_URL}/services/aigc/video-generation/video-synthesis`, {
+  const res = await fetchWithTimeout(`${baseUrl}/services/aigc/video-generation/video-synthesis`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -143,8 +143,8 @@ async function createViduTask(params: ViduGenerateRequest, apiKey: string) {
   return taskId
 }
 
-async function queryViduTask(taskId: string, apiKey: string) {
-  const res = await fetchWithTimeout(`${DASHSCOPE_BASE_URL}/tasks/${taskId}`, {
+async function queryViduTask(taskId: string, apiKey: string, baseUrl: string) {
+  const res = await fetchWithTimeout(`${baseUrl}/tasks/${taskId}`, {
     method: "GET",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
@@ -181,8 +181,13 @@ async function queryViduTask(taskId: string, apiKey: string) {
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.DASHSCOPE_API_KEY || process.env.HUIYAN_API_KEY
-  if (!apiKey) {
+  let apiKey: string
+  let baseUrl: string
+  try {
+    const provider = findProviderByCapability("video", "dashscope")
+    apiKey = provider.apiKey
+    baseUrl = provider.baseUrl
+  } catch {
     return new Response(
       sseEvent("error", { message: "DASHSCOPE_API_KEY not configured" }),
       { status: 500, headers: { "Content-Type": "text/event-stream" } }
@@ -222,7 +227,7 @@ export async function POST(req: NextRequest) {
           message: "正在提交视频生成任务到 Vidu...",
         })
 
-        const taskId = await createViduTask(body, apiKey)
+        const taskId = await createViduTask(body, apiKey, baseUrl)
 
         send("progress", {
           stage: "queued",
@@ -236,12 +241,15 @@ export async function POST(req: NextRequest) {
         const maxPollTime = MAX_POLL_MINUTES * 60 * 1000
         let lastStatus = "PENDING"
         let percent = 10
+        let pollCount = 0
 
         while (Date.now() - startTime < maxPollTime) {
+          pollCount++
           await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
 
-          const result = await queryViduTask(taskId, apiKey)
+          const result = await queryViduTask(taskId, apiKey, baseUrl)
           const status = result.output?.task_status || "UNKNOWN"
+          const elapsed = (Date.now() - startTime) / 1000
 
           if (status === "SUCCEEDED") {
             send("progress", {
@@ -275,26 +283,28 @@ export async function POST(req: NextRequest) {
             return
           }
 
-          // Update progress
+          // Progress based on observed status transitions
+          // (Vidu API does not expose real-time progress percentage)
           if (status === "RUNNING" && lastStatus !== "RUNNING") {
-            send("progress", {
-              stage: "processing",
-              percent: 30,
-              message: "任务处理中，正在生成视频...",
-            })
-          }
-
-          // Simulate progress increase
-          if (status === "RUNNING") {
-            percent = Math.min(90, percent + 5)
+            percent = 30
             send("progress", {
               stage: "processing",
               percent,
-              message: "视频渲染中，请耐心等待...",
-              estimatedSecondsRemaining: Math.max(0, Math.round((maxPollTime - (Date.now() - startTime)) / 1000)),
+              message: "任务处理中，正在生成视频...",
+            })
+          } else if (status === "RUNNING") {
+            // Smooth progress curve: 30→70 over first 2 min, 70→90 after
+            const elapsedMin = elapsed / 60
+            percent = elapsedMin < 2
+              ? Math.min(70, 30 + Math.round(elapsedMin * 20))
+              : Math.min(90, 70 + Math.round((elapsedMin - 2) * 4))
+            send("progress", {
+              stage: "processing",
+              percent,
+              message: "视频渲染中...（通常 1-5 分钟）",
             })
           } else if (status === "PENDING") {
-            percent = Math.min(25, percent + 1)
+            percent = Math.min(25, 10 + pollCount * 1)
             send("progress", {
               stage: "queued",
               percent,

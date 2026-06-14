@@ -4,6 +4,8 @@
 
 import { useCallback, useState, type ChangeEvent } from "react"
 import { generateId } from "../utils/generateId"
+import { parseDocument } from "../utils/fileParser"
+
 export interface ChatAttachment {
   id: string
   type: "image" | "video" | "audio" | "file"
@@ -14,6 +16,8 @@ export interface ChatAttachment {
   mimeType: string
   width?: number
   height?: number
+  /** 文档文件解析后的文本内容 */
+  textContent?: string
 }
 
 const MAX_FILE_SIZE = 80 * 1024 * 1024 // 80MB
@@ -28,61 +32,116 @@ function getAttachmentType(file: File): ChatAttachment["type"] {
 export function useChatAttachments() {
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [isParsing, setIsParsing] = useState(false)
 
   // 添加附件
   const addAttachments = useCallback((files: File[]) => {
     setError(null)
+
+    // 文档类文件先异步解析文本，解析完成后才加入列表
+    const documentFiles: File[] = []
+    const immediateFiles: File[] = []
 
     for (const file of files) {
       if (file.size > MAX_FILE_SIZE) {
         setError("文件过大，请控制在 80MB 以内")
         continue
       }
+      const type = getAttachmentType(file)
+      if (type === "file") {
+        documentFiles.push(file)
+      } else {
+        immediateFiles.push(file)
+      }
+    }
 
+    // 立即添加媒体类附件（图片、视频、音频）
+    for (const file of immediateFiles) {
       const src = URL.createObjectURL(file)
       const type = getAttachmentType(file)
 
       if (type !== "image") {
-        const attachment: ChatAttachment = {
-          id: generateId(),
-          type,
-          file,
-          src,
-          name: file.name,
-          size: file.size,
-          mimeType: file.type || "application/octet-stream",
-        }
-
-        setAttachments((prev) => [...prev, attachment])
-
+        // 视频、音频直接加入
+        setAttachments((prev) => [
+          ...prev,
+          {
+            id: generateId(),
+            type,
+            file,
+            src,
+            name: file.name,
+            size: file.size,
+            mimeType: file.type || "application/octet-stream",
+          },
+        ])
         continue
       }
 
+      // 图片需等待 Image 加载后获取尺寸
       const img = new Image()
-
       img.onload = () => {
-        const attachment: ChatAttachment = {
-          id: generateId(),
-          type: "image",
-          file,
-          src,
-          name: file.name,
-          size: file.size,
-          mimeType: file.type,
-          width: img.naturalWidth,
-          height: img.naturalHeight,
-        }
-
-        setAttachments((prev) => [...prev, attachment])
-
+        setAttachments((prev) => [
+          ...prev,
+          {
+            id: generateId(),
+            type: "image",
+            file,
+            src,
+            name: file.name,
+            size: file.size,
+            mimeType: file.type,
+            width: img.naturalWidth,
+            height: img.naturalHeight,
+          },
+        ])
       }
-
       img.onerror = () => {
         URL.revokeObjectURL(src)
         setError("图片读取失败，请换一张再试")
       }
-
       img.src = src
+    }
+
+    // 异步解析文档类文件，解析完成后再加入列表
+    if (documentFiles.length > 0) {
+      setIsParsing(true)
+      Promise.allSettled(
+        documentFiles.map(async (file) => {
+          try {
+            const src = URL.createObjectURL(file)
+            const result = await parseDocument(file)
+            return {
+              id: generateId(),
+              type: "file" as const,
+              file,
+              src,
+              name: file.name,
+              size: file.size,
+              mimeType: file.type || "application/octet-stream",
+              textContent: result.text.slice(0, 12000),
+            } satisfies ChatAttachment
+          } catch {
+            // 解析失败则以无文本内容的形式加入
+            const src = URL.createObjectURL(file)
+            return {
+              id: generateId(),
+              type: "file" as const,
+              file,
+              src,
+              name: file.name,
+              size: file.size,
+              mimeType: file.type || "application/octet-stream",
+            } satisfies ChatAttachment
+          }
+        }),
+      ).then((results) => {
+        const parsed: ChatAttachment[] = []
+        for (const r of results) {
+          if (r.status === "fulfilled") parsed.push(r.value)
+        }
+        setAttachments((prev) => [...prev, ...parsed])
+        setIsParsing(false)
+      })
     }
   }, [])
 
@@ -143,6 +202,7 @@ export function useChatAttachments() {
   return {
     attachments,
     error,
+    isParsing,
     addAttachments,
     removeAttachment,
     clearAttachments,

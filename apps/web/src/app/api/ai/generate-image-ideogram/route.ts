@@ -4,6 +4,7 @@
 // ============================================================================
 import { NextRequest, NextResponse } from "next/server"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
+import { findProviderByCapability } from "@/lib/ai/provider-registry"
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,11 +21,13 @@ export async function POST(request: NextRequest) {
       useIdeogramApi = true,
     } = body
 
-    const apiKey = process.env.IDEOGRAM_API_KEY
+    // 通过 Provider Registry 获取 Ideogram 凭据（统一读取，不再直接读 process.env）
+    const provider = findProviderByCapability("image", "ideogram")
+    const apiKey = provider.apiKey
 
     if (!apiKey) {
       return NextResponse.json(
-        { error: "IDEOGRAM_API_KEY not configured in environment" },
+        { error: "Ideogram Provider API Key not configured. Set AI_PROVIDER_IDEOGRAM_API_KEY or IDEOGRAM_API_KEY in .env.local" },
         { status: 500 }
       )
     }
@@ -54,15 +57,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 调用 Ideogram API
-    const imageRes = await fetchWithTimeout("https://api.ideogram.ai/v1/ideogram-v4/generate", {
+    // 调用 Ideogram API（通过 Provider baseUrl）
+    const ideogramEndpoint = `${provider.baseUrl}/ideogram-v4/generate`
+    const imageRes = await fetchWithTimeout(ideogramEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Api-Key": apiKey,
       },
       body: JSON.stringify(requestBody),
-    }, 120000)
+    }, provider.timeoutMs)
 
     if (!imageRes.ok) {
       const errorText = await imageRes.text()

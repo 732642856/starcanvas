@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useMemo, useState } from "react"
 import { Handle, Position, NodeResizer, type NodeProps, useReactFlow } from "@xyflow/react"
+import { pushUndo } from "../../StarCanvas"
 import { Camera, Loader2, Wand2 } from "lucide-react"
 import type { CanvasNodeData } from "../canvas/types"
 import { DESIGN_TOKENS } from "../../styles/designSystem"
@@ -27,7 +28,7 @@ interface ShotNodeProps extends NodeProps {
 }
 
 export const ShotNode = memo(function ShotNode({ id, data, selected, width, height }: ShotNodeProps) {
-  const { setNodes } = useReactFlow()
+  const { setNodes, getNodes, getEdges } = useReactFlow()
   const [slashQuery, setSlashQuery] = useState<SlashQuery | null>(null)
   const [slashActiveIndex, setSlashActiveIndex] = useState(0)
   const [slashError, setSlashError] = useState<string | null>(null)
@@ -198,8 +199,8 @@ export const ShotNode = memo(function ShotNode({ id, data, selected, width, heig
 
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
           <div className="flex flex-wrap gap-1.5 text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
-            {shot?.shotType && <span className="rounded-md bg-white/5 px-1.5 py-0.5">{shot.shotType}</span>}
-            {shot?.cameraMovement && <span className="rounded-md bg-white/5 px-1.5 py-0.5">{shot.cameraMovement}</span>}
+            {shot?.shotType && <span className="max-w-[120px] truncate rounded-md bg-white/5 px-1.5 py-0.5" title={shot.shotType}>{shot.shotType}</span>}
+            {shot?.cameraMovement && <span className="max-w-[120px] truncate rounded-md bg-white/5 px-1.5 py-0.5" title={shot.cameraMovement}>{shot.cameraMovement}</span>}
             {shot?.duration && <span className="rounded-md bg-white/5 px-1.5 py-0.5">{shot.duration}</span>}
           </div>
 
@@ -355,6 +356,9 @@ export const ShotNode = memo(function ShotNode({ id, data, selected, width, heig
                   e.currentTarget.selectionStart,
                 )
               }
+              onFocus={() => {
+                pushUndo({ nodes: getNodes(), edges: getEdges() }, "edit-shot")
+              }}
               className="nodrag nopan nowheel w-full resize-none rounded-xl border bg-transparent px-3 py-2 text-xs leading-relaxed text-white/80 placeholder:text-white/25 focus:outline-none"
               style={{ borderColor: DESIGN_TOKENS.border, minHeight: 112 }}
               placeholder="镜头画面描述，可输入 / 调用改写、扩写、生成图片"
@@ -382,6 +386,9 @@ export const ShotNode = memo(function ShotNode({ id, data, selected, width, heig
               <textarea
                 value={shot?.visualPrompt || ""}
                 onChange={(e) => updateShot({ visualPrompt: e.target.value })}
+                onFocus={() => {
+                  pushUndo({ nodes: getNodes(), edges: getEdges() }, "edit-shot")
+                }}
                 className="nodrag nopan nowheel w-full resize-none rounded-xl border bg-transparent px-3 py-2 text-xs leading-relaxed text-white/70 placeholder:text-white/25 focus:outline-none"
                 style={{ borderColor: DESIGN_TOKENS.border, minHeight: selected ? 112 : 72 }}
                 placeholder="生图提示词，留空时使用剧本文本"
@@ -432,7 +439,7 @@ export const ShotNode = memo(function ShotNode({ id, data, selected, width, heig
             {hasGeneratedImage && !isGenerating && (
               <div className="space-y-1">
                 <div className="text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
-                  已生成右侧图片节点{shot?.generatedImageNodeId ? `：${shot.generatedImageNodeId}` : ""}
+                  已生成右侧图片节点{shot?.generatedImageNodeId ? "" : ""}
                 </div>
                 {shot?.generatedImageUrl && (
                   <div className="overflow-hidden rounded-xl border" style={{ borderColor: DESIGN_TOKENS.border }}>

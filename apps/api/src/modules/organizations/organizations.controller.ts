@@ -8,7 +8,6 @@ export class OrganizationsController {
       data: {
         id: "dev-org",
         name: "个人工作区",
-        plan: "FREE",
         role: "OWNER",
       },
     }

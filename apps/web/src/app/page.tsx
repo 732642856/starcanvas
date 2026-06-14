@@ -12,10 +12,10 @@ export default function Home() {
           <span className="text-[15px] font-medium tracking-tight">Startrail Ai</span>
         </div>
         <a
-          href="/canvas"
+          href="/dashboard"
           className="text-[13px] font-medium text-[#0066cc] hover:underline"
         >
-          进入画布
+          开始创作
         </a>
       </nav>
 
@@ -33,7 +33,7 @@ export default function Home() {
         </p>
         <div className="mt-10 flex items-center gap-4">
           <a
-            href="/canvas"
+            href="/dashboard"
             className="rounded-full bg-[#0071e3] px-7 py-3 text-[14px] font-medium text-white transition hover:bg-[#0077ed]"
           >
             开始创作
@@ -130,7 +130,7 @@ export default function Home() {
             打开画布，从第一句话开始构建你的视觉故事。
           </p>
           <a
-            href="/canvas"
+            href="/dashboard"
             className="mt-8 inline-block rounded-full bg-[#0071e3] px-8 py-3.5 text-[14px] font-medium text-white transition hover:bg-[#0077ed]"
           >
             进入 Startrail Ai

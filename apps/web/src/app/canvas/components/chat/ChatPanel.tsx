@@ -24,7 +24,7 @@ import type { AiModel } from "./ChatInput"
 import { AgentModeSwitcher } from "./AgentModeSwitcher"
 import { useChatSSE, parseCanvasActions, stripCanvasActions } from "../../hooks/useChatSSE"
 import type { ChatCanvasAction, ApplyActionsReport, ApplyActionResult } from "../../features/canvas/actions/chatActions"
-import { getActionLabel, getStatusIcon, formatActionsSummary } from "../../features/canvas/actions/chatActions"
+import { getActionLabel, getStatusIcon, formatActionsSummary, formatActionSummary, getPendingActionSummaries } from "../../features/canvas/actions/chatActions"
 import { generateImageFromPrompt } from "../../utils/imageGeneration"
 import { generateId } from "../../utils/generateId"
 import type { Node } from "@xyflow/react"
@@ -219,7 +219,9 @@ interface Message {
   generatedImage?: GeneratedImage // AI 生成的图片
   actions?: ChatCanvasAction[] // AI 返回的画布操作
   actionsApplied?: boolean // 是否已应用到画布
+  actionsCancelled?: boolean // 用户是否取消了操作
   actionsReport?: ApplyActionsReport // 执行报告
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } // Token 消耗
 }
 
 interface ChatPanelProps {
@@ -325,6 +327,25 @@ export function ChatPanel({
               prompt: data.prompt,
               model: data.model,
               revisedPrompt: data.revisedPrompt,
+            },
+          }
+          return updated
+        }
+        return prev
+      })
+    },
+    onUsage: (usage) => {
+      // Store token usage on the latest assistant message
+      setMessages((prev) => {
+        const lastIdx = prev.length - 1
+        if (lastIdx >= 0 && prev[lastIdx].role === "assistant") {
+          const updated = [...prev]
+          updated[lastIdx] = {
+            ...updated[lastIdx],
+            usage: {
+              prompt_tokens: usage.prompt_tokens,
+              completion_tokens: usage.completion_tokens,
+              total_tokens: usage.total_tokens,
             },
           }
           return updated
@@ -481,6 +502,7 @@ export function ChatPanel({
           mimeType: a.mimeType,
           width: a.width,
           height: a.height,
+          textContent: a.textContent,
         })),
         model,
         mode,
@@ -532,6 +554,16 @@ export function ChatPanel({
       )
     },
     [onApplyChatActions]
+  )
+
+  // 取消 AI actions
+  const handleCancelActions = useCallback(
+    (msgId: string) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, actionsCancelled: true } : m))
+      )
+    },
+    []
   )
 
   // 将附件添加到画布
@@ -770,6 +802,17 @@ export function ChatPanel({
                     </div>
                   )}
 
+                  {/* Token 消耗指示器 */}
+                  {msg.role === "assistant" && msg.usage && (
+                    <div className="flex items-center gap-1 px-1">
+                      <span className="text-[10px]" style={{ color: DESIGN_TOKENS.textMuted, opacity: 0.5 }}>
+                        {msg.usage.total_tokens.toLocaleString()} tokens
+                        {" · "}
+                        ¥{(msg.usage.total_tokens * 0.000015).toFixed(4)}
+                      </span>
+                    </div>
+                  )}
+
                   {/* 消息气泡 */}
                   <div
                     className="rounded-2xl px-4 py-3"
@@ -843,61 +886,115 @@ export function ChatPanel({
                   {/* 消息操作按钮 */}
                   {msg.role === "assistant" && msg.content && (
                     <div className="flex flex-col gap-1.5 px-1">
-                      {/* 应用到画布按钮 - 仅当 AI 返回了 actions 时显示 */}
+                      {/* 画布操作确认/执行/结果面板 */}
                       {msg.actions && msg.actions.length > 0 && onApplyChatActions && (
                         <div className="flex flex-col gap-1">
-                          <button
-                            onClick={() => handleApplyActions(msg.id, msg.actions!)}
-                            disabled={msg.actionsApplied}
-                            className="flex items-center gap-2 self-start rounded-lg px-3 py-1.5 text-xs font-medium transition-all"
-                            style={{
-                              backgroundColor: msg.actionsApplied
-                                ? "rgba(100,116,139,0.1)"
-                                : DESIGN_TOKENS.accentSoft,
-                              color: msg.actionsApplied
-                                ? DESIGN_TOKENS.textMuted
-                                : DESIGN_TOKENS.accent,
-                              border: `1px solid ${msg.actionsApplied ? DESIGN_TOKENS.border : DESIGN_TOKENS.borderAccent}`,
-                              cursor: msg.actionsApplied ? "default" : "pointer",
-                            }}
-                            title={
-                              msg.actionsApplied
-                                ? "已应用到画布"
-                                : `应用 ${msg.actions.length} 个操作到画布`
-                            }
-                          >
-                            <Wand2 size={13} strokeWidth={1.7} />
-                            {msg.actionsApplied
-                              ? `✓ 已应用（${msg.actions.length} 个操作）`
-                              : `应用到画布（${msg.actions.length} 个操作）`}
-                          </button>
-
-                          {/* 执行报告摘要 */}
-                          {msg.actionsApplied && msg.actionsReport && (
+                          {/* 状态A：已取消 */}
+                          {msg.actionsCancelled ? (
                             <div
-                              className="rounded-lg border px-3 py-2 text-[11px]"
+                              className="flex items-center gap-2 self-start rounded-lg px-3 py-1.5 text-xs font-medium"
                               style={{
-                                borderColor: DESIGN_TOKENS.border,
-                                backgroundColor: "rgba(255,255,255,0.03)",
+                                color: DESIGN_TOKENS.textMuted,
+                                backgroundColor: "rgba(100,116,139,0.08)",
+                                border: `1px solid ${DESIGN_TOKENS.border}`,
                               }}
                             >
-                              <p className="font-medium" style={{ color: DESIGN_TOKENS.textSecondary }}>
-                                {formatActionsSummary(msg.actionsReport)}
-                              </p>
-                              {msg.actionsReport.results.filter(r => r.status !== "applied").length > 0 && (
-                                <div className="mt-1.5 flex flex-col gap-0.5">
-                                  {msg.actionsReport.results
-                                    .filter(r => r.status !== "applied")
-                                    .map((r) => (
-                                      <div key={r.index} className="flex items-center gap-1.5" style={{ color: DESIGN_TOKENS.textMuted }}>
-                                        <span>{getStatusIcon(r.status)}</span>
-                                        <span>{getActionLabel(r.action)}</span>
-                                        {r.reason && <span>— {r.reason}</span>}
-                                      </div>
-                                    ))}
+                              <span>⊘ 已取消（{msg.actions.length} 个操作）</span>
+                            </div>
+                          ) : msg.actionsApplied ? (
+                            <>
+                              {/* 状态B：已执行 — 显示结果报告 */}
+                              {msg.actionsReport && (
+                                <div
+                                  className="rounded-lg border px-3 py-2 text-[11px]"
+                                  style={{
+                                    borderColor: DESIGN_TOKENS.border,
+                                    backgroundColor: "rgba(255,255,255,0.03)",
+                                  }}
+                                >
+                                  <p className="font-medium" style={{ color: DESIGN_TOKENS.textSecondary }}>
+                                    {formatActionsSummary(msg.actionsReport)}
+                                  </p>
+                                  {msg.actionsReport.results.filter(r => r.status !== "applied").length > 0 && (
+                                    <div className="mt-1.5 flex flex-col gap-0.5">
+                                      {msg.actionsReport.results
+                                        .filter(r => r.status !== "applied")
+                                        .map((r) => (
+                                          <div key={r.index} className="flex items-center gap-1.5" style={{ color: DESIGN_TOKENS.textMuted }}>
+                                            <span>{getStatusIcon(r.status)}</span>
+                                            <span>{getActionLabel(r.action)}</span>
+                                            {r.reason && <span>— {r.reason}</span>}
+                                          </div>
+                                        ))}
+                                    </div>
+                                  )}
                                 </div>
                               )}
-                            </div>
+                            </>
+                          ) : (
+                            <>
+                              {/* 状态C：待确认 — 操作预览 + "执行"/"取消"按钮 */}
+                              <div
+                                className="rounded-lg border text-[11px]"
+                                style={{
+                                  borderColor: DESIGN_TOKENS.borderAccent,
+                                  backgroundColor: DESIGN_TOKENS.accentSoft,
+                                }}
+                              >
+                                {/* 标题 */}
+                                <div
+                                  className="flex items-center gap-1.5 border-b px-3 py-2 font-medium"
+                                  style={{ borderColor: DESIGN_TOKENS.border, color: DESIGN_TOKENS.accent }}
+                                >
+                                  <Wand2 size={13} strokeWidth={1.7} />
+                                  <span>即将执行以下画布操作</span>
+                                </div>
+
+                                {/* 操作列表 */}
+                                <div className="flex flex-col px-3 py-2">
+                                  {getPendingActionSummaries(msg.actions).map((item) => (
+                                    <div
+                                      key={item._index}
+                                      className="flex items-center gap-2 py-1"
+                                      style={{ color: DESIGN_TOKENS.text }}
+                                    >
+                                      <span
+                                        className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-medium"
+                                        style={{
+                                          backgroundColor: "rgba(100,116,139,0.2)",
+                                          color: DESIGN_TOKENS.textMuted,
+                                        }}
+                                      >
+                                        {item._index + 1}
+                                      </span>
+                                      <span>{item._summary}</span>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                {/* 操作按钮 */}
+                                <div className="flex items-center gap-2 border-t px-3 py-2"
+                                  style={{ borderColor: DESIGN_TOKENS.border }}>
+                                  <button
+                                    onClick={() => handleApplyActions(msg.id, msg.actions!)}
+                                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all hover:opacity-90"
+                                    style={{
+                                      backgroundColor: DESIGN_TOKENS.accent,
+                                      color: "#fff",
+                                    }}
+                                  >
+                                    执行 {msg.actions.length} 个操作
+                                  </button>
+                                  <button
+                                    onClick={() => handleCancelActions(msg.id)}
+                                    className="rounded-lg px-3 py-1.5 text-xs font-medium transition-all hover:bg-white/5"
+                                    style={{ color: DESIGN_TOKENS.textMuted }}
+                                  >
+                                    取消
+                                  </button>
+                                </div>
+                              </div>
+                            </>
                           )}
                         </div>
                       )}
@@ -949,6 +1046,7 @@ export function ChatPanel({
           onModelChange={setSelectedModel}
           attachments={attachmentsState.attachments}
           onAttachmentsChange={attachmentsState}
+          isParsing={attachmentsState.isParsing}
           onAddAttachmentToCanvas={handleAddToCanvas}
           placeholder={selectedNodeId ? "根据选中节点提问…" : "输入你的具体需求，例如：把这个故事拆成 12 个分镜…"}
           canvasNodes={canvasNodes}

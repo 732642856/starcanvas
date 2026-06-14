@@ -151,6 +151,15 @@ export function sanitizeProviderOverrides(
   let hasKeys = false
 
   for (const [key, val] of Object.entries(raw)) {
+    // 放行 sessionApiKey（会话级Key，不持久化到localStorage）
+    // 但屏蔽 apiKey / api_key（防止前端提交的持久化覆盖）
+    if (key === "sessionApiKey") {
+      if (typeof val === "string" && val.trim().length > 0) {
+        cleaned[key] = val.trim()
+        hasKeys = true
+      }
+      continue
+    }
     if (key.toLowerCase().includes("apikey") || key.toLowerCase().includes("api_key")) {
       continue
     }

@@ -183,14 +183,14 @@ async function seedanceGenerateVideo(
   input: VideoGenInput,
   onProgress?: VideoGenProgressCallback,
 ): Promise<VideoGenResult> {
-  const apiKey = process.env.NEXT_PUBLIC_SEEDANCE_API_KEY || process.env.SEEDANCE_API_KEY
+  const apiKey = process.env.SEEDANCE_API_KEY
 
   if (!apiKey) {
     throw new VideoGenerationError({
       message: "Seedance API key not configured",
       code: "BACKEND_UNAVAILABLE",
       retryable: false,
-      detail: "Set NEXT_PUBLIC_SEEDANCE_API_KEY environment variable.",
+      detail: "Set SEEDANCE_API_KEY environment variable.",
     })
   }
 
@@ -208,14 +208,14 @@ async function klingGenerateVideo(
   input: VideoGenInput,
   onProgress?: VideoGenProgressCallback,
 ): Promise<VideoGenResult> {
-  const apiKey = process.env.NEXT_PUBLIC_KLING_API_KEY || process.env.KLING_API_KEY
+  const apiKey = process.env.KLING_API_KEY
 
   if (!apiKey) {
     throw new VideoGenerationError({
       message: "Kling API key not configured",
       code: "BACKEND_UNAVAILABLE",
       retryable: false,
-      detail: "Set NEXT_PUBLIC_KLING_API_KEY environment variable.",
+      detail: "Set KLING_API_KEY environment variable.",
     })
   }
 
@@ -361,13 +361,13 @@ function resolveBackend(input: VideoGenInput): VideoGenBackend {
   if (input.backend) return input.backend
 
   // Auto-detect: prefer vidu if key exists, then seedance, then kling, fallback to mock
-  if (process.env.NEXT_PUBLIC_DASHSCOPE_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.HUIYAN_API_KEY) {
+  if (process.env.DASHSCOPE_API_KEY || process.env.HUIYAN_API_KEY) {
     return "vidu"
   }
-  if (process.env.NEXT_PUBLIC_SEEDANCE_API_KEY || process.env.SEEDANCE_API_KEY) {
+  if (process.env.SEEDANCE_API_KEY) {
     return "seedance"
   }
-  if (process.env.NEXT_PUBLIC_KLING_API_KEY || process.env.KLING_API_KEY) {
+  if (process.env.KLING_API_KEY) {
     return "kling"
   }
   return "mock"

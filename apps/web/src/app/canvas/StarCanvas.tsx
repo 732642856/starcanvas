@@ -93,7 +93,7 @@ import type {
 // ============================================================================
 // HOOKS & STORES
 // ============================================================================
-import { useCanvasStore } from "./stores/canvasStore";
+import { useCanvasStore, loadBibleFromIDB } from "./stores/canvasStore";
 import { useCanvasDropUpload } from "./hooks/useCanvasDropUpload";
 import { useHistoryDrop } from "./hooks/useHistoryDrop";
 import type { ChatAttachment } from "./hooks/useChatAttachments";
@@ -498,22 +498,33 @@ const _undoStack: UndoEntry[] = []
 const _redoStack: UndoEntry[] = []
 const MAX_UNDO = 50
 let _undoTimer: ReturnType<typeof setTimeout> | undefined
+let _lastUndoActionType: string | undefined
 
-function pushUndo(entry: UndoEntry) {
-  // Debounce: coalesce rapid mutations (e.g., double-delete) within 300ms
-  if (_undoTimer) return
+/**
+ * Push a history entry for undo/redo.
+ * @param entry - snapshot of nodes + edges
+ * @param actionType - optional action type for smarter debounce. Different action types are never debounced against each other.
+ */
+export function pushUndo(entry: UndoEntry, actionType?: string) {
+  // Never debounce 'move' actions — each drag stop should be independently undoable.
+  // For other actions, coalesce rapid mutations of the SAME type within 300ms.
+  if (actionType !== "move" && _undoTimer && _lastUndoActionType === actionType && actionType) {
+    return
+  }
+  if (_undoTimer) clearTimeout(_undoTimer)
   _undoTimer = setTimeout(() => { _undoTimer = undefined }, 300)
+  _lastUndoActionType = actionType
 
   _undoStack.push(entry)
   if (_undoStack.length > MAX_UNDO) _undoStack.shift()
   _redoStack.length = 0 // clear redo on new action
 }
 
-function tryUndo() {
+export function tryUndo() {
   _doUndo?.()
 }
 
-function tryRedo() {
+export function tryRedo() {
   _doRedo?.()
 }
 
@@ -577,48 +588,28 @@ function buildTimelineClipsFromNodes(nodes: Node<CanvasNodeData>[]): TimelineCli
     const shot = data.shot;
     const title = data.title || data.fileName || shot?.title || "未命名片段";
     const duration = parseTimelineDurationSeconds(
-      data.duration ?? shot?.duration ?? data.totalDurationSeconds,
+      data.timelineDurationSeconds ?? data.duration ?? shot?.duration ?? data.totalDurationSeconds,
       5,
     );
+
+    // 优先使用节点已设置的真实时间，否则按 cursor 顺序累加（兼容旧数据）
+    const hasRealTime = data.timelineStartTimeSeconds !== undefined;
+    const startTime = hasRealTime ? data.timelineStartTimeSeconds! : cursor;
+    if (!hasRealTime) cursor += duration;
+
     const videoUrl = data.resultUrl || data.assetUrl || (data.nodeKind === "uploaded-video" ? data.imageUrl : undefined);
     const imageUrl = shot?.generatedImageUrl || data.imageUrl || data.thumbnailUrl;
 
-    if (data.nodeKind === "video-result" || data.nodeKind === "video-generation" || data.nodeKind === "uploaded-video" || videoUrl || imageUrl) {
-      clips.push({
-        id: `tl-video-${node.id}`,
-        nodeId: node.id,
-        type: "video",
-        label: String(title),
-        startTime: cursor,
-        duration,
-        thumbnailUrl: imageUrl,
-      });
-      cursor += duration;
-    }
-
-    const audioUrl = shot?.voiceAudioUrl || (data.nodeKind === "uploaded-audio" ? data.assetUrl || data.resultUrl : undefined);
-    if (data.nodeKind === "audio" || data.nodeKind === "tts" || data.nodeKind === "uploaded-audio" || audioUrl) {
-      clips.push({
-        id: `tl-audio-${node.id}`,
-        nodeId: node.id,
-        type: "audio",
-        label: String(title),
-        startTime: Math.max(0, cursor - duration),
-        duration,
-      });
-    }
-
-    const subtitleDuration = parseTimelineDurationSeconds(data.totalDurationSeconds ?? shot?.subtitleTimeline?.durationSeconds ?? duration, duration);
-    if (data.nodeKind === "subtitle" || data.nodeKind === "subtitle-srt" || data.srtContent || shot?.subtitleTimeline) {
-      clips.push({
-        id: `tl-subtitle-${node.id}`,
-        nodeId: node.id,
-        type: "subtitle",
-        label: String(title),
-        startTime: shot?.subtitleTimeline?.startTimeSeconds ?? Math.max(0, cursor - duration),
-        duration: subtitleDuration,
-      });
-    }
+    // 所有节点都在时间轴上显示（MVP：统一放到 video 轨道）
+    clips.push({
+      id: `tl-clip-${node.id}`,
+      nodeId: node.id,
+      type: "video",
+      label: String(title),
+      startTime,
+      duration,
+      thumbnailUrl: imageUrl,
+    });
   }
 
   return clips;
@@ -691,6 +682,8 @@ function StarCanvasInner() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   // Cache nodes/edges in refs so callbacks don't need state deps (avoids re-registering)
   const nodesRef = useRef(nodes);
+  // Snapshot before drag start for undo/redo
+  const dragStartSnapshotRef = useRef<UndoEntry | null>(null);
   const edgesRef = useRef(edges);
   const latestShotGenerationRequestIdsRef = useRef<Record<string, string>>({});
   nodesRef.current = nodes;
@@ -730,6 +723,15 @@ function StarCanvasInner() {
       _runVideoRetryFn = undefined;
       _videoUpscaleFn = undefined;
     };
+  }, []);
+
+  // Auto-load bible characters from IndexedDB on mount
+  useEffect(() => {
+    loadBibleFromIDB().then((chars) => {
+      if (chars.length > 0) {
+        useCanvasStore.setState({ bibleCharacters: chars })
+      }
+    })
   }, []);
 
   useEffect(() => {
@@ -983,6 +985,80 @@ function StarCanvasInner() {
 
   const timelineClips = useMemo(() => buildTimelineClipsFromNodes(nodes), [nodes]);
   const [timelineCurrentTime, setTimelineCurrentTime] = useState(0);
+  const [isTimelinePlaying, setIsTimelinePlaying] = useState(false);
+  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 播放控制
+  const toggleTimelinePlay = useCallback(() => {
+    setIsTimelinePlaying((prev) => {
+      if (prev) {
+        if (playIntervalRef.current) {
+          clearInterval(playIntervalRef.current);
+          playIntervalRef.current = null;
+        }
+        return false;
+      }
+      const maxTime = Math.max(0, ...nodesRef.current.map((n) =>
+        (n.data?.timelineStartTimeSeconds ?? 0) + (n.data?.timelineDurationSeconds ?? 5),
+      ));
+      playIntervalRef.current = setInterval(() => {
+        setTimelineCurrentTime((t) => {
+          if (t >= maxTime) {
+            if (playIntervalRef.current) {
+              clearInterval(playIntervalRef.current);
+              playIntervalRef.current = null;
+            }
+            setIsTimelinePlaying(false);
+            return 0;
+          }
+          return t + 0.1;
+        });
+      }, 100);
+      return true;
+    });
+  }, []);
+
+  // 清理播放定时器
+  useEffect(() => {
+    return () => {
+      if (playIntervalRef.current) {
+        clearInterval(playIntervalRef.current);
+      }
+    };
+  }, []);
+
+  // 根据时间轴当前时间过滤可见节点
+  const visibleNodes = useMemo(() => {
+    // 时间轴收起时始终显示全部
+    if (!showTimeline) return nodes;
+    return nodes.map((node) => {
+      const start = node.data?.timelineStartTimeSeconds ?? 0;
+      const duration = node.data?.timelineDurationSeconds ?? 5;
+      const isVisible = timelineCurrentTime >= start && timelineCurrentTime < start + duration;
+      return {
+        ...node,
+        style: {
+          ...node.style,
+          opacity: isVisible ? 1 : 0.08,
+        },
+      };
+    });
+  }, [nodes, timelineCurrentTime, showTimeline]);
+
+  // 同步过滤 edges：只保留两端节点都可见的连接
+  const visibleEdges = useMemo(() => {
+    if (!showTimeline) return edges;
+    const visibleNodeIds = new Set(
+      nodes
+        .filter((node) => {
+          const start = node.data?.timelineStartTimeSeconds ?? 0;
+          const duration = node.data?.timelineDurationSeconds ?? 5;
+          return timelineCurrentTime >= start && timelineCurrentTime < start + duration;
+        })
+        .map((n) => n.id),
+    );
+    return edges.filter((e) => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target));
+  }, [edges, nodes, timelineCurrentTime, showTimeline]);
 
   const productionRunQueue = useMemo(() => {
     const briefs = buildShotProductionBriefs(nodes);
@@ -1394,7 +1470,7 @@ function StarCanvasInner() {
   });
 
   const handleApplyCharacterAssetPatch = useCallback((assetKey: string, patch: CharacterAssetLibraryPatch) => {
-    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current });
+    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "bible-patch");
     setNodes((nds) => {
       const shotNodeIndexes: number[] = [];
       const shots = nds.flatMap((node, index) => {
@@ -1423,7 +1499,7 @@ function StarCanvasInner() {
   }, [setNodes]);
 
   const handleApplySceneBiblePatch = useCallback((sceneId: string, patch: ProjectSceneBiblePatch) => {
-    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current });
+    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "bible-patch");
     setNodes((nds) => {
       const updated = nds.map((node) => {
         const shot = node.data.shot;
@@ -1470,7 +1546,7 @@ function StarCanvasInner() {
   }, [setNodes]);
 
   const handleApplyProjectVisualPatch = useCallback((patch: ProjectVisualBiblePatch) => {
-    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current });
+    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "bible-patch");
     const nextVisual = {
       name: patch.name || "项目视觉风格",
       description: patch.description,
@@ -3922,6 +3998,9 @@ function StarCanvasInner() {
       setEdges(entry.edges);
       nodesRef.current = entry.nodes;
       edgesRef.current = entry.edges;
+      // Clear selection to avoid referencing a node that may no longer exist
+      setSelectedNodeId(null);
+      closeFloatingToolbar();
     }
   };
   _doRedo = () => {
@@ -3932,6 +4011,9 @@ function StarCanvasInner() {
       setEdges(entry.edges);
       nodesRef.current = entry.nodes;
       edgesRef.current = entry.edges;
+      // Clear selection to avoid referencing a node that may no longer exist
+      setSelectedNodeId(null);
+      closeFloatingToolbar();
     }
   };
 
@@ -5485,7 +5567,7 @@ function StarCanvasInner() {
       positionOverride?: { x: number; y: number },
       nodeKind?: CanvasNodeKind,
     ) => {
-      pushUndo({ nodes: nodesRef.current, edges: edgesRef.current });
+      pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "add");
       const defaultSize =
         type === "agent"
           ? NODE_DEFAULT_SIZE.agent
@@ -5558,6 +5640,17 @@ function StarCanvasInner() {
                   displayHeight: defaultSize.height,
                   createdAt: Date.now(),
                 },
+      };
+
+      // 分配时间轴默认值
+      const lastEndTime = Math.max(0, ...nodesRef.current.map((n) =>
+        (n.data?.timelineStartTimeSeconds ?? 0) + (n.data?.timelineDurationSeconds ?? 5),
+      ));
+      newNode.data = {
+        ...newNode.data,
+        timelineStartTimeSeconds: lastEndTime,
+        timelineDurationSeconds: 5,
+        timelineTrackId: 0,
       };
 
       if (DEBUG_NODE) {
@@ -5680,7 +5773,7 @@ function StarCanvasInner() {
       });
     }
 
-    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current });
+    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "import");
     setNodes((nds) => [...nds, ...shotNodes, gridNode]);
     setEdges((eds) => [...eds, ...edges]);
     dismissCanvasHint();
@@ -5825,7 +5918,7 @@ function StarCanvasInner() {
   // ========================================================================
   const deleteNode = useCallback(
     (nodeId: string) => {
-      pushUndo({ nodes: nodesRef.current, edges: edgesRef.current });
+      pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "delete");
       setNodes((nds) => {
         const nextNodes = nds.filter((n) => n.id !== nodeId);
         nodesRef.current = nextNodes;
@@ -5844,7 +5937,7 @@ function StarCanvasInner() {
   );
 
   const deleteSelectedElements = useCallback(() => {
-    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current });
+    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "delete");
     const selectedNodeIds = new Set(
       nodesRef.current.filter((node) => node.selected).map((node) => node.id),
     );
@@ -5882,7 +5975,7 @@ function StarCanvasInner() {
 
   const deleteEdge = useCallback(
     (edgeId: string) => {
-      pushUndo({ nodes: nodesRef.current, edges: edgesRef.current });
+      pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "delete");
       setEdges((eds) => eds.filter((e) => e.id !== edgeId));
     },
     [setEdges],
@@ -5890,7 +5983,7 @@ function StarCanvasInner() {
 
   const duplicateNode = useCallback(
     (nodeId: string) => {
-      pushUndo({ nodes: nodesRef.current, edges: edgesRef.current });
+      pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "duplicate");
       const node = nodesRef.current.find((n) => n.id === nodeId);
       if (!node) return;
 
@@ -5930,6 +6023,8 @@ function StarCanvasInner() {
 
   const pasteNode = useCallback(() => {
     if (!clipboardNode || !reactFlowInstance) return;
+
+    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "paste");
 
     const position = reactFlowInstance.screenToFlowPosition({
       x: window.innerWidth / 2,
@@ -7027,7 +7122,12 @@ function StarCanvasInner() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      )
+        return;
 
       if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
@@ -7584,8 +7684,8 @@ function StarCanvasInner() {
         onDrop={combinedHandleDrop}
       >
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={visibleNodes}
+          edges={visibleEdges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={(connection) => {
@@ -7603,8 +7703,30 @@ function StarCanvasInner() {
           }}
           onInit={setReactFlowInstance}
           onMoveEnd={onMoveEnd}
-          onNodeDragStart={() => setIsDragging(true)}
-          onNodeDragStop={() => setIsDragging(false)}
+          onNodeDragStart={() => {
+            setIsDragging(true);
+            dragStartSnapshotRef.current = {
+              nodes: nodesRef.current.map((n) => ({ ...n, position: { ...n.position } })),
+              edges: edgesRef.current.map((e) => ({ ...e })),
+            };
+          }}
+          onNodeDragStop={() => {
+            setIsDragging(false);
+            if (dragStartSnapshotRef.current) {
+              const hasPositionChanged = dragStartSnapshotRef.current.nodes.some((startNode) => {
+                const endNode = nodesRef.current.find((n) => n.id === startNode.id);
+                if (!endNode) return false;
+                return (
+                  startNode.position.x !== endNode.position.x ||
+                  startNode.position.y !== endNode.position.y
+                );
+              });
+              if (hasPositionChanged) {
+                pushUndo(dragStartSnapshotRef.current, "move");
+              }
+              dragStartSnapshotRef.current = null;
+            }
+          }}
           onSelectionChange={onSelectionChange}
           onPaneContextMenu={handlePaneContextMenu}
           onNodeContextMenu={handleNodeContextMenu}
@@ -7638,13 +7760,13 @@ function StarCanvasInner() {
           elevateEdgesOnSelect
           nodeDragThreshold={5}
         >
-          {/* Background */}
+          {/* Background — TapNow-style dot grid */}
           {showGrid && (
             <Background
               variant={BackgroundVariant.Dots}
               gap={24}
-              size={1}
-              color="rgba(255,255,255,0.06)"
+              size={1.2}
+              color="rgba(255,255,255,0.12)"
             />
           )}
           <MiniMap
@@ -7720,7 +7842,7 @@ function StarCanvasInner() {
         onOpenCharacterView={() => setShowCharacterView(true)}
         onOpenCinematicParams={() => setShowCinematicParams(true)}
         onOpenColorGrade={() => setShowColorGrade(true)}
-        onOpenTimeline={() => setShowTimeline(true)}
+        onToggleTimeline={() => setShowTimeline((prev) => !prev)}
         onOpenPanorama={() => setShowPanorama(true)}
         onOpenCrewAgent={() => setShowCrewAgentPanel(true)}
         onOpenFileUpload={() => setShowFileUpload(true)}
@@ -8424,24 +8546,47 @@ function StarCanvasInner() {
       )}
 
       {/* 时间轴面板 (TimelinePanel — react-timeline-editor) */}
-      {showTimeline && (
-        <TimelinePanel
-          isOpen={showTimeline}
-          onClose={() => setShowTimeline(false)}
-          clips={timelineClips}
-          currentNodeTime={timelineCurrentTime}
-          onSeek={setTimelineCurrentTime}
-          onClipMove={(clipId, newStartTime) => {
-            setNodes((nds) =>
-              nds.map((n) =>
-                `tl-video-${n.id}` === clipId || `tl-audio-${n.id}` === clipId || `tl-subtitle-${n.id}` === clipId
-                  ? { ...n, data: { ...n.data, timelineStartTimeSeconds: newStartTime } }
-                  : n,
-              ),
-            );
-          }}
-        />
+      {/* 底部时间轴展开按钮 */}
+      {!showTimeline && (
+        <div
+          className="fixed bottom-0 left-1/2 z-30 -translate-x-1/2"
+          style={{ marginBottom: "8px" }}
+        >
+          <button
+            onClick={() => setShowTimeline(true)}
+            className="flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs transition-all hover:scale-105"
+            style={{
+              backgroundColor: "rgba(20,20,24,0.85)",
+              borderColor: "rgba(255,255,255,0.1)",
+              color: "rgba(255,255,255,0.5)",
+              backdropFilter: "blur(20px)",
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+            时间轴
+          </button>
+        </div>
       )}
+      <TimelinePanel
+        isOpen={showTimeline}
+        onClose={() => setShowTimeline(false)}
+        clips={timelineClips}
+        currentNodeTime={timelineCurrentTime}
+        onSeek={setTimelineCurrentTime}
+        isPlaying={isTimelinePlaying}
+        onTogglePlay={toggleTimelinePlay}
+        onClipMove={(clipId, newStartTime) => {
+          setNodes((nds) =>
+            nds.map((n) =>
+              `tl-clip-${n.id}` === clipId
+                ? { ...n, data: { ...n.data, timelineStartTimeSeconds: newStartTime } }
+                : n,
+            ),
+          );
+        }}
+      />
 
       {/* 全景预𪾢面板 (PanoramaPanel — react-pannellum) */}
       {showPanorama && (

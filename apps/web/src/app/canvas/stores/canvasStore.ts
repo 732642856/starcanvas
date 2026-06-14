@@ -3,6 +3,7 @@
 // ============================================================================
 import { create } from 'zustand'
 import { devtools } from 'zustand/middleware'
+import { getItem, setItem } from '../utils/canvasIndexedDB'
 import type { Node, Viewport } from '@xyflow/react'
 import type {
   CanvasNodeKind,
@@ -293,3 +294,42 @@ export const useCanvasStore = create<CanvasStore>()(
     { name: 'canvas' },
   ),
 )
+
+// ============================================================================
+// Bible Persistence — IndexedDB 自动持久化角色圣经数据
+// ============================================================================
+
+const BIBLE_IDB_KEY = "bibleCharacters"
+
+/** 静默保存到 IndexedDB（后台执行，不影响UI） */
+async function _persistBible() {
+  try {
+    const chars = useCanvasStore.getState().bibleCharacters
+    await setItem(BIBLE_IDB_KEY, chars)
+  } catch { /* best effort */ }
+}
+
+/** 从 IndexedDB 加载角色圣经 */
+export async function loadBibleFromIDB(): Promise<CharacterBibleData[]> {
+  try {
+    const stored = await getItem<CharacterBibleData[]>(BIBLE_IDB_KEY)
+    return stored ?? []
+  } catch {
+    return []
+  }
+}
+
+// 在 bible 操作后调用此函数持久化
+function _persistBibleFromState(state: { bibleCharacters: CharacterBibleData[] }) {
+  try { setItem(BIBLE_IDB_KEY, state.bibleCharacters) } catch { /* best effort */ }
+}
+
+// 订阅整个 store，bibleCharacters 变化时自动持久化
+let _prevBibleJson = ""
+useCanvasStore.subscribe((state) => {
+  const currentJson = JSON.stringify(state.bibleCharacters)
+  if (currentJson !== _prevBibleJson) {
+    _prevBibleJson = currentJson
+    _persistBibleFromState(state)
+  }
+})

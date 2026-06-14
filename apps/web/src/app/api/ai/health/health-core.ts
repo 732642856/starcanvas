@@ -40,7 +40,7 @@ async function runHealthCheck(baseUrl: string, apiKey: string, model: string) {
   return { ok: upstream.ok, status: upstream.status, text }
 }
 
-function toSafeConfig(config: ReturnType<typeof mergeProviderConfig>) {
+function toSafeConfig(config: { baseUrl: string; apiKey: string; defaultModel: string; defaultImageModel: string; videoModel?: string; timeoutMs: number; type?: string }) {
   return {
     type: config.type,
     baseUrl: config.baseUrl,

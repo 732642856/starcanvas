@@ -2,13 +2,14 @@
 // Video Generation API Route — Image-to-Video (图生视频)
 // ============================================================================
 // 支持 SSE 流式进度返回。调用 OpenAI 兼容的中转站视频生成 API。
-// 环境变量: HUIYAN_API_KEY / OPENAI_API_KEY / AI_API_KEY, AI_BASE_URL
+// 凭据通过 Provider Registry 统一管理（不再直接读取 process.env）。
 // 预留配置字段方便后续对接不同中转站文档。
 // ============================================================================
 
 import { NextRequest, NextResponse } from "next/server"
 import { normalizeUpstreamError, normalizeClientError } from "@/lib/ai/errors"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
+import { getProvider } from "@/lib/ai/provider-registry"
 
 // ---------------------------------------------------------------------------
 // Config & Types
@@ -55,30 +56,19 @@ const MAX_POLL_COUNT = 100
 // ---------------------------------------------------------------------------
 
 function getConfig(overrides?: VideoGenRequestBody["overrides"]) {
-  const baseUrl =
-    overrides?.baseUrl ??
-    process.env.AI_BASE_URL ??
-    process.env.NEXT_PUBLIC_API_BASE_URL ??
-    "https://api.huiyan-ai.cn/v1"
+  const provider = getProvider()
 
-  const apiKey =
-    process.env.HUIYAN_API_KEY ??
-    process.env.AI_API_KEY ??
-    process.env.OPENAI_API_KEY ??
-    ""
+  const baseUrl = overrides?.baseUrl ?? provider.baseUrl
 
-  const timeoutMs = overrides?.timeoutMs ?? DEFAULT_VIDEO_TIMEOUT_MS
+  const apiKey = provider.apiKey
 
-  if (!apiKey) {
-    throw new Error(
-      "缺少视频生成 API Key。请在 .env.local 中设置 HUIYAN_API_KEY、AI_API_KEY 或 OPENAI_API_KEY。",
-    )
-  }
+  const timeoutMs = overrides?.timeoutMs ?? provider.timeoutMs
 
   return {
     baseUrl: baseUrl.replace(/\/+$/, ""),
     apiKey,
     timeoutMs,
+    videoModel: provider.videoModel,
   }
 }
 
@@ -118,7 +108,7 @@ function createVideoGenStream(
       // ---- 2. 参数校验 ------------------------------------------------------
       const prompt = body.prompt
       const imageUrl = body.imageUrl
-      const model = body.model ?? process.env.AI_VIDEO_MODEL ?? "kling"
+      const model = body.model ?? config.videoModel ?? "kling"
       const duration =
         typeof body.duration === "number" ? body.duration : 5
       const motionStrength =

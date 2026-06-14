@@ -72,6 +72,7 @@ interface ChatInputProps {
     handleDragOver: (e: React.DragEvent) => void
     handleDrop: (e: React.DragEvent) => void
   }
+  isParsing?: boolean
   onAddAttachmentToCanvas?: (attachment: ChatAttachment) => void
   placeholder?: string
   disabled?: boolean
@@ -114,6 +115,7 @@ export function ChatInput({
   onAddAttachmentToCanvas,
   placeholder = "输入你的具体需求，例如：把这个故事拆成 12 个分镜…",
   disabled = false,
+  isParsing = false,
   canvasNodes = [],
   assets = [],
   selectedCount = 0,
@@ -497,8 +499,9 @@ export function ChatInput({
           ) : (
             <button
               onClick={() => onSend(selectedModelForMode, taskMode)}
-              disabled={disabled || (!value.trim() && attachments.length === 0)}
+              disabled={disabled || isParsing || (!value.trim() && attachments.length === 0)}
               className="flex h-8 w-8 items-center justify-center rounded-full transition-all"
+              title={isParsing ? "正在解析文档..." : "发送"}
               style={{
                 backgroundColor:
                   value.trim() || attachments.length > 0
@@ -506,7 +509,6 @@ export function ChatInput({
                     : DESIGN_TOKENS.accentSoft,
                 color: value.trim() || attachments.length > 0 ? "#fff" : DESIGN_TOKENS.textMuted,
               }}
-              title="发送"
             >
               <ArrowUp size={16} strokeWidth={2.5} />
             </button>

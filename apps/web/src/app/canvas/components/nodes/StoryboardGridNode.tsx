@@ -19,7 +19,7 @@ export const StoryboardGridNode = memo(function StoryboardGridNode({ id, data, s
   const readyCount = shotStates.filter((shot) => shot.status === "ready").length
   const failedCount = shotStates.filter((shot) => shot.status === "failed").length
   const generatingCount = shotStates.filter((shot) => shot.status === "generating").length
-  const totalCount = grid?.shotNodeIds?.length || grid?.maxShots || shotStates.length || 9
+  const totalCount = grid?.shotNodeIds?.length || shotStates.length || (grid?.maxShots || 0) || 0
   const gridColumns = grid?.columns || (totalCount <= 1 ? 1 : totalCount <= 2 ? 2 : 3)
   const isWaitingForFirstImage = !isGenerating && !grid?.outputImageUrl && readyCount === 0 && failedCount === 0
   const statusLabel = isGenerating

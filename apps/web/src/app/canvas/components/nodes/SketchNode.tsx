@@ -8,6 +8,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Download, Eraser, PenLine } from "lucide-react"
 import { Handle, Position, NodeResizer, type NodeProps, useReactFlow } from "@xyflow/react"
+import { pushUndo } from "../../StarCanvas"
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
 import type { CanvasNodeData, SketchPoint, SketchStroke } from "../canvas/types"
 
@@ -71,7 +72,7 @@ export const SketchNode = memo(function SketchNode({ id, data, selected }: Sketc
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const activeStrokeRef = useRef<SketchStroke | null>(null)
   const [isDrawing, setIsDrawing] = useState(false)
-  const { setNodes } = useReactFlow()
+  const { setNodes, getNodes, getEdges } = useReactFlow()
 
   const strokes = useMemo(
     () => (Array.isArray(data.sketchStrokes) ? data.sketchStrokes : []),
@@ -110,6 +111,8 @@ export const SketchNode = memo(function SketchNode({ id, data, selected }: Sketc
     event.preventDefault()
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
+
+    pushUndo({ nodes: getNodes(), edges: getEdges() }, "sketch")
 
     const point = getCanvasPoint(event)
     const stroke: SketchStroke = {

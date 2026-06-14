@@ -36,6 +36,8 @@ export interface TimelinePanelProps {
   onSeek?: (time: number) => void
   onClipMove?: (clipId: string, newStartTime: number) => void
   onClipTrim?: (clipId: string, newStart: number, newEnd: number) => void
+  isPlaying?: boolean
+  onTogglePlay?: () => void
 }
 
 // ── 常量 ──────────────────────────────────────────────
@@ -75,9 +77,10 @@ export function TimelinePanel({
   currentNodeTime = 0,
   onSeek,
   onClipMove,
+  isPlaying = false,
+  onTogglePlay,
 }: TimelinePanelProps) {
   const [zoom, setZoom] = useState(1) // pixels per second
-  const [isPlaying, setIsPlaying] = useState(false)
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null)
   const [dragStartX, setDragStartX] = useState(0)
   const [dragOriginalStart, setDragOriginalStart] = useState(0)
@@ -148,13 +151,34 @@ export function TimelinePanel({
   const zoomIn = () => setZoom((z) => Math.min(z * 1.5, 10))
   const zoomOut = () => setZoom((z) => Math.max(z / 1.5, 0.2))
 
-  if (!isOpen) return null
+  if (!isOpen) {
+    // 收起状态：只显示一个可展开的控制条（inline 渲染，不需要 portal）
+    return (
+      <div className="fixed bottom-0 left-0 right-0 z-[85] ml-0 mr-0">
+        <div
+          className="flex items-center justify-between px-3 py-1 border-t border-[var(--color-border)] bg-[var(--color-bg-panel)] backdrop-blur-xl cursor-pointer"
+          onClick={onClose}
+        >
+          <div className="flex items-center gap-2">
+            <Film size={12} className="text-[var(--color-text-tertiary)]" />
+            <span className="text-[10px] text-[var(--color-text-tertiary)]">
+              时间轴已收起 — 点击展开
+            </span>
+          </div>
+          <span className="text-[10px] text-[var(--color-text-tertiary)]">
+            {formatTime(currentNodeTime)}
+          </span>
+        </div>
+      </div>
+    )
+  }
 
-  return createPortal(
-    <div className="fixed bottom-0 left-0 right-0 z-[85] ml-0 mr-0">
-      <div className="bg-[var(--color-bg-panel)] backdrop-blur-xl border-t border-[var(--color-border)] shadow-2xl">
+  // 展开状态：使用 createPortal 渲染到 document.body，避免被父容器 overflow:hidden 裁切
+  const panelContent = (
+    <div className="fixed bottom-0 left-0 right-0 z-[85] ml-0 mr-0" style={{ maxHeight: '45vh' }}>
+      <div className="bg-[var(--color-bg-panel)] backdrop-blur-xl border-t border-[var(--color-border)] shadow-2xl flex flex-col" style={{ height: 'auto', maxHeight: '100%', overflow: 'hidden' }}>
         {/* Toolbar */}
-        <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)]">
+        <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)] flex-shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-[var(--color-text)] flex items-center gap-1.5">
               <Film size={14} />
@@ -166,7 +190,7 @@ export function TimelinePanel({
           </div>
           <div className="flex items-center gap-1">
             <button
-              onClick={() => setIsPlaying(!isPlaying)}
+              onClick={onTogglePlay}
               className="p-1.5 rounded-md hover:bg-[var(--color-hover)] transition-colors text-[var(--color-text-secondary)]"
             >
               {isPlaying ? <Pause size={14} /> : <Play size={14} />}
@@ -189,6 +213,7 @@ export function TimelinePanel({
             </button>
             <button
               onClick={onClose}
+              title="收起时间轴"
               className="p-1.5 rounded-md hover:bg-[var(--color-hover)] transition-colors text-[var(--color-text-secondary)]"
             >
               <X size={14} />
@@ -196,113 +221,119 @@ export function TimelinePanel({
           </div>
         </div>
 
-        {/* Timeline Body */}
-        <div className="flex" style={{ height: TRACK_HEIGHT * 3 + TRACK_GAP * 2 + 16 }}>
-          {/* Track Labels */}
-          <div
-            className="flex-shrink-0 flex flex-col gap-1 py-2 pl-3 pr-1 border-r border-[var(--color-border)]"
-            style={{ width: LABEL_WIDTH }}
-          >
-            {(["video", "audio", "subtitle"] as const).map((type) => {
-              const Icon = TrackIcon[type]
-              return (
-                <div
-                  key={type}
-                  className="flex items-center gap-1.5 justify-center rounded-md px-1"
-                  style={{
-                    height: TRACK_HEIGHT,
-                    color: TRACK_COLORS[type].label,
-                    backgroundColor: TRACK_COLORS[type].bg,
-                  }}
-                >
-                  <Icon size={14} />
-                  <span className="text-[10px] font-medium">
-                    {type === "video" ? "视频" : type === "audio" ? "音频" : "字幕"}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-
-          {/* Tracks Scroll Area */}
-          <div className="flex-1 overflow-x-auto" style={{ scrollbarWidth: "thin" }}>
-            <div className="relative py-2 pr-4" style={{ minWidth: timelineWidth + 40 }}>
-              {/* Time ruler */}
-              <div
-                className="flex mb-1 h-5 relative"
-                style={{ width: timelineWidth }}
-              >
-                {Array.from({ length: Math.ceil(maxDuration) + 1 }, (_, i) => (
+        {/* Timeline Body — 可滚动区域 */}
+        <div className="flex flex-1 overflow-auto" style={{ scrollbarWidth: "thin", minHeight: 0 }}>
+          <div className="flex" style={{ height: TRACK_HEIGHT * 3 + TRACK_GAP * 2 + 16 }}>
+            {/* Track Labels */}
+            <div
+              className="flex-shrink-0 flex flex-col gap-1 py-2 pl-3 pr-1 border-r border-[var(--color-border)]"
+              style={{ width: LABEL_WIDTH }}
+            >
+              {(["video", "audio", "subtitle"] as const).map((type) => {
+                const Icon = TrackIcon[type]
+                return (
                   <div
-                    key={i}
-                    className="absolute text-[9px] text-[var(--color-text-tertiary)]"
-                    style={{ left: i * zoom, top: 0 }}
+                    key={type}
+                    className="flex items-center gap-1.5 justify-center rounded-md px-1"
+                    style={{
+                      height: TRACK_HEIGHT,
+                      color: TRACK_COLORS[type].label,
+                      backgroundColor: TRACK_COLORS[type].bg,
+                    }}
                   >
-                    {formatTime(i).split(".")[0]}
+                    <Icon size={14} />
+                    <span className="text-[10px] font-medium">
+                      {type === "video" ? "视频" : type === "audio" ? "音频" : "字幕"}
+                    </span>
                   </div>
-                ))}
-              </div>
+                )
+              })}
+            </div>
 
-              {/* Tracks */}
-              {(["video", "audio", "subtitle"] as const).map((type) => (
+            {/* Tracks Scroll Area */}
+            <div className="flex-1 overflow-x-auto" style={{ scrollbarWidth: "thin" }}>
+              <div className="relative py-2 pr-4" style={{ minWidth: timelineWidth + 40 }}>
+                {/* Time ruler */}
                 <div
-                  key={type}
-                  onClick={handleTimelineClick}
-                  className="relative rounded-md cursor-pointer"
-                  style={{
-                    height: TRACK_HEIGHT,
-                    marginBottom: type !== "subtitle" ? TRACK_GAP : 0,
-                    backgroundColor: `${TRACK_COLORS[type].bg}40`,
-                    border: `1px solid ${TRACK_COLORS[type].border}30`,
-                    width: timelineWidth,
-                  }}
+                  className="flex mb-1 h-5 relative"
+                  style={{ width: timelineWidth }}
                 >
-                  {/* Playhead */}
-                  <div
-                    className="absolute top-0 h-full w-0.5 bg-red-500 z-20 pointer-events-none"
-                    style={{ left: currentNodeTime * zoom }}
-                  />
-
-                  {/* Clips */}
-                  {tracks[type].map((clip) => (
+                  {Array.from({ length: Math.ceil(maxDuration) + 1 }, (_, i) => (
                     <div
-                      key={clip.id}
-                      onMouseDown={(e) => handleClipMouseDown(clip, e)}
-                      className={`absolute top-1 rounded-md cursor-grab active:cursor-grabbing transition-shadow z-10 ${
-                        draggingClipId === clip.id ? "ring-2 ring-[var(--color-accent)] shadow-lg z-30" : "hover:ring-1 hover:ring-white/20"
-                      }`}
-                      style={{
-                        left: clip.startTime * zoom,
-                        width: Math.max(clip.duration * zoom, 4),
-                        height: TRACK_HEIGHT - 8,
-                        backgroundColor: TRACK_COLORS[type].bg,
-                        border: `1px solid ${TRACK_COLORS[type].border}`,
-                      }}
-                      title={`${clip.label} (${formatTime(clip.startTime)} - ${formatTime(clip.startTime + clip.duration)})`}
+                      key={i}
+                      className="absolute text-[9px] text-[var(--color-text-tertiary)]"
+                      style={{ left: i * zoom, top: 0 }}
                     >
-                      <div
-                        className="px-1.5 py-0.5 text-[10px] font-medium truncate"
-                        style={{ color: TRACK_COLORS[type].label }}
-                      >
-                        {clip.label}
-                      </div>
-                      <div
-                        className="px-1.5 text-[8px] opacity-60"
-                        style={{ color: TRACK_COLORS[type].label }}
-                      >
-                        {formatTime(clip.startTime)} → {formatTime(clip.startTime + clip.duration)}
-                      </div>
+                      {formatTime(i).split(".")[0]}
                     </div>
                   ))}
                 </div>
-              ))}
+
+                {/* Tracks */}
+                {(["video", "audio", "subtitle"] as const).map((type) => (
+                  <div
+                    key={type}
+                    onClick={handleTimelineClick}
+                    className="relative rounded-md cursor-pointer"
+                    style={{
+                      height: TRACK_HEIGHT,
+                      marginBottom: type !== "subtitle" ? TRACK_GAP : 0,
+                      backgroundColor: `${TRACK_COLORS[type].bg}40`,
+                      border: `1px solid ${TRACK_COLORS[type].border}30`,
+                      width: timelineWidth,
+                    }}
+                  >
+                    {/* Playhead */}
+                    <div
+                      className="absolute top-0 h-full w-0.5 bg-red-500 z-20 pointer-events-none"
+                      style={{ left: currentNodeTime * zoom }}
+                    />
+
+                    {/* Clips */}
+                    {tracks[type].map((clip) => (
+                      <div
+                        key={clip.id}
+                        onMouseDown={(e) => handleClipMouseDown(clip, e)}
+                        className={`absolute top-1 rounded-md cursor-grab active:cursor-grabbing transition-shadow z-10 ${
+                          draggingClipId === clip.id ? "ring-2 ring-[var(--color-accent)] shadow-lg z-30" : "hover:ring-1 hover:bg-white/20"
+                        }`}
+                        style={{
+                          left: clip.startTime * zoom,
+                          width: Math.max(clip.duration * zoom, 4),
+                          height: TRACK_HEIGHT - 8,
+                          backgroundColor: TRACK_COLORS[type].bg,
+                          border: `1px solid ${TRACK_COLORS[type].border}`,
+                        }}
+                        title={`${clip.label} (${formatTime(clip.startTime)} - ${formatTime(clip.startTime + clip.duration)})`}
+                      >
+                        <div
+                          className="px-1.5 py-0.5 text-[10px] font-medium truncate"
+                          style={{ color: TRACK_COLORS[type].label }}
+                        >
+                          {clip.label}
+                        </div>
+                        <div
+                          className="px-1.5 text-[8px] opacity-60"
+                          style={{ color: TRACK_COLORS[type].label }}
+                        >
+                          {formatTime(clip.startTime)} → {formatTime(clip.startTime + clip.duration)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </div>,
-    document.body,
+    </div>
   )
+
+  if (typeof document !== "undefined") {
+    return createPortal(panelContent, document.body)
+  }
+  return null
 }
 
 export default TimelinePanel
