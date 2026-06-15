@@ -512,6 +512,7 @@ async function handleImageGeneration(
   encoder: TextEncoder,
   controller: ReadableStreamDefaultController,
   config: ReturnType<typeof getConfig>,
+  useMock: boolean, // P0-1: request-level mock flag
 ) {
   // P2-5B: config passed from caller (supports overrides)
 
@@ -526,7 +527,7 @@ async function handleImageGeneration(
   // If the message is in Chinese or too short, use a text model to enhance it first
   const needsEnhancement = message.length < 20 || /[\u4e00-\u9fa5]/.test(message)
 
-  if (needsEnhancement && !USE_MOCK) {
+  if (needsEnhancement && !useMock) {
     try {
       const enhanceMessages = [
         {
@@ -573,7 +574,7 @@ async function handleImageGeneration(
     model,
   })
 
-  if (USE_MOCK) {
+  if (useMock) {
     // Mock: simulate a delay and return a placeholder
     await new Promise(resolve => setTimeout(resolve, 2000))
     controller.enqueue(
@@ -641,7 +642,6 @@ export async function POST(request: NextRequest) {
     // Debug: log proxy state for diagnosing "fetch failed"
     const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY
     const noProxy = process.env.NO_PROXY || process.env.no_proxy
-    console.log(`[Chat SSE] Proxy: ${proxyUrl || "none"}, NO_PROXY: ${noProxy || "none"}, USE_MOCK: ${USE_MOCK}`)
 
     const body = await request.json()
     const { message, model: reqModel, context, _providerOverrides } = body
@@ -651,6 +651,14 @@ export async function POST(request: NextRequest) {
       _providerOverrides && typeof _providerOverrides === "object"
         ? (_providerOverrides as AiProviderOverrides)
         : undefined
+
+    // P0-1 fix: 请求级 Mock 标志（覆盖环境变量 NEXT_PUBLIC_USE_MOCK）
+    const requestUseMock =
+      overrides?.useMock !== undefined
+        ? overrides.useMock
+        : USE_MOCK
+
+    console.log(`[Chat SSE] Proxy: ${proxyUrl || "none"}, NO_PROXY: ${noProxy || "none"}, USE_MOCK (env): ${USE_MOCK}, requestUseMock: ${requestUseMock}`)
 
     const config = getConfig(overrides)
     const requestedMode = context?.mode === "image" ? "image" : "chat"
@@ -690,8 +698,8 @@ export async function POST(request: NextRequest) {
         try {
           if (imageMode) {
             // Handle image generation separately (non-streaming API)
-            await handleImageGeneration(message, model, context, encoder, controller, config)
-          } else if (USE_MOCK) {
+            await handleImageGeneration(message, model, context, encoder, controller, config, requestUseMock)
+          } else if (requestUseMock) {
             // Use mock response for testing
             for await (const char of generateMockResponse(message)) {
               controller.enqueue(

@@ -31,7 +31,7 @@ interface SettingsPanelProps {
 export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   // ── Existing state ──────────────────────────────────
   const [apiBaseUrl, setApiBaseUrl] = useState("https://copse.top/v1")
-  const [useMock, setUseMock] = useState(true)
+  const [useMock, setUseMock] = useState(false) // P0: default off, useEffect corrects per env
   const [models, setModels] = useState<ModelOption[]>([])
   const [allowAIAutoRun, setAllowAIAutoRun] = useState(false)
   const [newModel, setNewModel] = useState<{ value: string; label: string; provider: string; desc: string; type: "text" | "image" | "video" }>({
@@ -71,7 +71,10 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
       // Existing settings
       setApiBaseUrl(localStorage.getItem("startrails_api_base_url") || "https://copse.top/v1")
       localStorage.removeItem("startrails_api_key")
-      setUseMock(localStorage.getItem("startrails_use_mock") !== "false")
+      // P0 fix: default mock to false in production, respect stored preference
+      const storedMock = localStorage.getItem("startrails_use_mock")
+      const defaultMock = process.env.NODE_ENV !== "production"
+      setUseMock(storedMock !== null ? storedMock !== "false" : defaultMock)
       setAllowAIAutoRun(localStorage.getItem("startrails_ai_auto_run") === "true")
       const stored = localStorage.getItem("startrails_models")
       if (stored) {
@@ -193,7 +196,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
     // Notify other components
     window.dispatchEvent(new CustomEvent("startrails-models-updated"))
-    window.dispatchEvent(new CustomEvent("startrails-settings-updated", { detail: { allowAIAutoRun } }))
+    window.dispatchEvent(new CustomEvent("startrails-settings-updated", { detail: { allowAIAutoRun, useMock } }))
     window.dispatchEvent(new CustomEvent("startrails-provider-updated"))
 
     onClose()

@@ -75,6 +75,8 @@ export interface AiProviderOverrides {
   timeoutMs?: number
   /** 会话级 API Key（仅内存，不持久化；优先级高于服务端 .env） */
   sessionApiKey?: string
+  /** 请求级 Mock 开关（覆盖环境变量 NEXT_PUBLIC_USE_MOCK） */
+  useMock?: boolean
 }
 
 // ============================================================================

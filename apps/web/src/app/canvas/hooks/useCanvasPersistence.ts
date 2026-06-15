@@ -7,7 +7,7 @@
 "use client";
 
 import supermemory from "@/lib/memory/supermemory";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { Node, Edge, Viewport } from "@xyflow/react";
 import type { CanvasNodeData } from "../components/canvas/types";
 import {
@@ -19,7 +19,24 @@ import {
   sanitizeNodesForPersistence,
 } from "@/lib/storage/sanitizePersistedCanvas";
 
-const STORAGE_KEY = "startrails_canvas";
+const DEFAULT_STORAGE_KEY = "startrails_canvas";
+
+/**
+ * Get the storage key for a given projectId.
+ * rc.2b: project-level canvas isolation.
+ *
+ * Behavioral contract:
+ * - undefined / "" / whitespace-only → DEFAULT_STORAGE_KEY (backward-compatible)
+ * - "proj_abc"                    → "startrails_canvas_p:proj_abc"
+ * - "proj a/b"                    → encoded to "startrails_canvas_p:proj%20a%2Fb"
+ *
+ * Never generates a random key — every call with the same projectId returns the same key.
+ */
+export function getCanvasStorageKey(projectId?: string): string {
+  const normalized = projectId?.trim();
+  if (!normalized) return DEFAULT_STORAGE_KEY;
+  return `startrails_canvas_p:${encodeURIComponent(normalized)}`;
+}
 const MAX_SIZE_BYTES = 50 * 1024 * 1024; // 50MB — IndexedDB 原生大容量
 const DEBOUNCE_MS = 400;
 const EMPTY_CANVAS_SAVE_GRACE_MS = 1_500;
@@ -143,6 +160,8 @@ interface PersistedCanvas {
 }
 
 interface UseCanvasPersistenceOptions {
+  /** rc.2b: isolate canvas data per project. undefined / "" = default canvas */
+  projectId?: string;
   /** Whether canvas restore has been attempted (prevents overwrite by initial mount) */
   isRestored: boolean;
   onRestored: () => void;
@@ -235,6 +254,7 @@ function recoverCanvasVisibilityAndLayout(nodes: Node<CanvasNodeData>[]) {
  * and restores them (including image hydration from IndexedDB) on mount.
  */
 export function useCanvasPersistence({
+  projectId,
   isRestored,
   onRestored,
   nodes,
@@ -245,6 +265,9 @@ export function useCanvasPersistence({
   setViewport,
   setFitViewOnce,
 }: UseCanvasPersistenceOptions) {
+  // rc.2b: dynamic storage key for per-project canvas isolation
+  const storageKey = useMemo(() => getCanvasStorageKey(projectId), [projectId]);
+
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredAtRef = useRef<number | null>(null);
   const hasRestoredRef = useRef(false);
@@ -260,8 +283,8 @@ export function useCanvasPersistence({
 
     (async () => {
       try {
-        const saved = await supermemory.get<PersistedCanvas>(STORAGE_KEY);
-        const legacyRaw = window.localStorage.getItem(STORAGE_KEY);
+        const saved = await supermemory.get<PersistedCanvas>(storageKey);
+        const legacyRaw = window.localStorage.getItem(storageKey);
         const data: PersistedCanvas | null = saved ?? (legacyRaw ? JSON.parse(legacyRaw) : null);
         if (!data) {
           if (!cancelled) onRestored();
@@ -278,7 +301,7 @@ export function useCanvasPersistence({
           !Array.isArray(data.edges)
         ) {
           console.warn("[CanvasPersistence] Invalid stored data, clearing");
-          await supermemory.delete(STORAGE_KEY);
+          await supermemory.delete(storageKey);
           if (!cancelled) onRestored();
           restoredAtRef.current = Date.now();
           hasRestoredRef.current = true;
@@ -313,11 +336,11 @@ export function useCanvasPersistence({
         }
 
         if (legacyRaw && !saved) {
-          await supermemory.set(STORAGE_KEY, migratedData, {
+          await supermemory.set(storageKey, migratedData, {
             type: "canvas_state",
             title: "Canvas autosave",
           });
-          window.localStorage.removeItem(STORAGE_KEY);
+          window.localStorage.removeItem(storageKey);
         }
 
         console.log(
@@ -326,7 +349,7 @@ export function useCanvasPersistence({
       } catch (err) {
         console.error("[CanvasPersistence] Restore failed:", err);
         // If JSON is corrupted, clear it to prevent repeated failures
-        await supermemory.delete(STORAGE_KEY);
+        await supermemory.delete(storageKey);
       }
 
       if (!cancelled) {
@@ -395,7 +418,7 @@ export function useCanvasPersistence({
           return;
         }
 
-        await supermemory.set(STORAGE_KEY, payload, {
+        await supermemory.set(storageKey, payload, {
           type: "canvas_state",
           title: "Canvas autosave",
         });
@@ -409,18 +432,18 @@ export function useCanvasPersistence({
         clearTimeout(debounceRef.current);
       }
     };
-  }, [nodes, edges]);
+  }, [nodes, edges, storageKey]);
 
   // ==========================================================================
   // CLEAR persisted canvas
   // ==========================================================================
   const clearPersistedCanvas = useCallback(async () => {
     try {
-      await supermemory.delete(STORAGE_KEY);
+      await supermemory.delete(storageKey);
     } catch {
       // ignore
     }
-  }, []);
+  }, [storageKey]);
 
   return { clearPersistedCanvas };
 }

@@ -6,6 +6,56 @@
 import { useCallback, useRef, useState } from "react"
 
 // ============================================================================
+// BYOK Settings Helpers — read runtime settings for SSE requests
+// ============================================================================
+
+import type { AiProviderOverrides } from "@/lib/ai/provider-config"
+
+/**
+ * 从 browser storage 读取当前 BYOK 配置（不持久化的 API Key + localStorage 的 baseUrl/model/mock）。
+ * service-env 模式下返回空对象，服务端用 .env 兜底。
+ */
+function getRuntimeProviderOverrides(): AiProviderOverrides {
+  if (typeof window === "undefined") return {}
+
+  const overrides: AiProviderOverrides = {}
+
+  try {
+    // API Key — sessionStorage 优先，fallback 到 localStorage（用户显式选择"跨标签记住"）
+    const sessionKey = window.sessionStorage.getItem("startrails_session_api_key")
+    const localKey = window.localStorage.getItem("startrails_ui_api_key")
+    if (sessionKey) {
+      overrides.sessionApiKey = sessionKey
+    } else if (localKey) {
+      overrides.sessionApiKey = localKey
+    }
+
+    // Base URL — localStorage
+    const baseUrl = localStorage.getItem("startrails_api_base_url")
+    if (baseUrl) overrides.baseUrl = baseUrl
+
+    // Model overrides from P2-5B
+    const providerBaseUrl = localStorage.getItem("startrails_provider_baseUrl")
+    const defaultModel = localStorage.getItem("startrails_provider_defaultModel")
+    const imageModel = localStorage.getItem("startrails_provider_imageModel")
+    const videoModel = localStorage.getItem("startrails_provider_videoModel")
+    const timeoutRaw = localStorage.getItem("startrails_provider_timeoutMs")
+
+    if (providerBaseUrl) overrides.baseUrl = providerBaseUrl
+    if (defaultModel) overrides.defaultModel = defaultModel
+    if (imageModel) overrides.imageModel = imageModel
+    if (videoModel) overrides.videoModel = videoModel
+    if (timeoutRaw) overrides.timeoutMs = Number(timeoutRaw)
+
+    // Mock toggle
+    const useMock = localStorage.getItem("startrails_use_mock") !== "false"
+    if (useMock) overrides.useMock = true
+  } catch { /* storage 不可用时忽略 */ }
+
+  return overrides
+}
+
+// ============================================================================
 // CANVAS ACTION TYPES — import from canonical source
 // ============================================================================
 export {
@@ -99,6 +149,9 @@ export function useChatSSE(options: UseChatSSEOptions = {}): UseChatSSEReturn {
       abortControllerRef.current = abortController
 
       try {
+        // P0-1: read runtime BYOK settings and pass to backend
+        const providerOverrides = getRuntimeProviderOverrides()
+
         const response = await fetch("/api/ai/chat/stream", {
           method: "POST",
           headers: {
@@ -108,6 +161,7 @@ export function useChatSSE(options: UseChatSSEOptions = {}): UseChatSSEReturn {
             message,
             model: context?.model ?? "gpt-5.5",
             context: { ...context },
+            _providerOverrides: providerOverrides,
           }),
           signal: abortController.signal,
         })

@@ -5,6 +5,7 @@
 
 import { create } from "zustand"
 import { getItem, setItem, removeItem } from "../utils/canvasIndexedDB"
+import supermemory from "@/lib/memory/supermemory"
 
 // ============================================================================
 // Types
@@ -97,7 +98,9 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
     const { projects } = get()
     const updated = projects.filter((p) => p.id !== id)
     await setItem(PROJECTS_KEY, updated)
-    // Also clean up canvas data for this project
+    // Also clean up canvas data for this project (rc.2b: aligned with getCanvasStorageKey)
+    const projectCanvasKey = `startrails_canvas_p:${encodeURIComponent(id)}`
+    await supermemory.delete(projectCanvasKey)
     await removeItem(`canvas_${id}`)
     await removeItem(`assets_${id}`)
     set({ projects: updated, currentProjectId: get().currentProjectId === id ? null : get().currentProjectId })

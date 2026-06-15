@@ -207,35 +207,34 @@ export const CharacterViewPanel = memo(function CharacterViewPanel({
 
         <button
           type="button"
-          className="flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[10px] font-medium transition disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[10px] font-medium transition opacity-40 cursor-not-allowed"
           style={{
             borderColor: DESIGN_TOKENS.border,
-            color: status === "failed" ? "#f87171" : DESIGN_TOKENS.text,
-            backgroundColor:
-              status === "failed"
-                ? "rgba(248, 113, 113, 0.08)"
-                : DESIGN_TOKENS.card,
+            color: DESIGN_TOKENS.textMuted,
+            backgroundColor: DESIGN_TOKENS.card,
           }}
-          disabled={status === "generating"}
-          onClick={handleGenerate}
+          disabled
+          title="三视图生成正在接入中，当前版本暂不可用"
         >
-          {status === "generating" ? (
-            <>
-              <Loader2 size={12} className="animate-spin" />
-              生成中...
-            </>
-          ) : status === "failed" ? (
-            <>
-              <RotateCcw size={12} />
-              重试
-            </>
-          ) : (
-            <>
-              <Sparkles size={12} />
-              生成三视图
-            </>
-          )}
+          <Sparkles size={12} />
+          生成三视图
         </button>
+      </div>
+
+      {/* Feature unavailable notice */}
+      <div
+        className="rounded-lg px-2.5 py-1.5"
+        style={{
+          backgroundColor: "rgba(245,158,11,0.06)",
+          border: "0.5px solid rgba(245,158,11,0.2)",
+        }}
+      >
+        <span
+          className="block text-[10px] leading-relaxed"
+          style={{ color: "#fbbf24" }}
+        >
+          三视图生成正在接入中，当前版本暂不可用。
+        </span>
       </div>
 
       {/* View Cards Grid */}
