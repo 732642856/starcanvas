@@ -585,7 +585,7 @@ test.describe("已知限制（skip 说明）", () => {
   })
 
   test("多项目切换与数据隔离", async () => {
-    test.skip(true, "项目 store 基于 localStorage key 'startrails_projects'，多项目隔离逻辑存在但未被测试覆盖")
+    test.skip(true, "已覆盖 → project-canvas-isolation.spec.ts")
   })
 
   test("剪映草稿导出端到端验证", async () => {
