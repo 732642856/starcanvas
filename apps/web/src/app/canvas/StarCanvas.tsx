@@ -552,11 +552,12 @@ const edgeTypes = { creative: CreativeEdge };
 
 // ============================================================================
 // STAR CANVAS (OUTER - provides ReactFlowProvider)
+// rc.2b: accepts projectId for per-project canvas storage isolation
 // ============================================================================
-export default function StarCanvas() {
+export default function StarCanvas({ projectId }: { projectId?: string }) {
   return (
     <ReactFlowProvider>
-      <StarCanvasInner />
+      <StarCanvasInner projectId={projectId} />
     </ReactFlowProvider>
   );
 }
@@ -617,8 +618,9 @@ function buildTimelineClipsFromNodes(nodes: Node<CanvasNodeData>[]): TimelineCli
 
 // ============================================================================
 // STAR CANVAS INNER (uses hooks that require ReactFlow context)
+// rc.2b: accepts projectId for per-project canvas storage isolation
 // ============================================================================
-function StarCanvasInner() {
+function StarCanvasInner({ projectId }: { projectId?: string }) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [reactFlowInstance, setReactFlowInstance] =
     useState<ReactFlowInstance | null>(null);
@@ -4260,6 +4262,7 @@ function StarCanvasInner() {
   // CANVAS PERSISTENCE — auto-save & restore
   // ========================================================================
   const persistence = useCanvasPersistence({
+    projectId,
     isRestored: isCanvasRestored,
     onRestored: () => setIsCanvasRestored(true),
     nodes,

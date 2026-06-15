@@ -288,12 +288,8 @@ export function ChatPanel({
     }
   }, [showHistoryFromOutside])
 
-  // 会话历史（模拟）
-  const [conversations, setConversations] = useState([
-    { id: "1", title: "新对话", timestamp: Date.now() - 1000 * 60 * 5 },
-    { id: "2", title: "角色设计讨论", timestamp: Date.now() - 1000 * 60 * 60 * 2 },
-    { id: "3", title: "分镜规划", timestamp: Date.now() - 1000 * 60 * 60 * 24 },
-  ])
+  // 会话历史 — 当前版本不持久化，用户开始新对话后显示在列表中
+  const [conversations, setConversations] = useState<Array<{ id: string; title: string; timestamp: number }>>([])
 
   // Chat 附件 hook
   const attachmentsState = useChatAttachments()
@@ -541,7 +537,21 @@ export function ChatPanel({
 
   // Hydration fix: only render Portal after client mount
   const [isClient, setIsClient] = useState(false)
+  // P0-3: Mock mode indicator — read from localStorage, listen for settings changes
+  const [isMockMode, setIsMockMode] = useState(false)
   useEffect(() => { setIsClient(true) }, [])
+
+  // P0-3: sync mock state from localStorage, listen for SettingsPanel changes
+  useEffect(() => {
+    const readMock = () => {
+      if (typeof window === "undefined") return false
+      return localStorage.getItem("startrails_use_mock") !== "false"
+    }
+    setIsMockMode(readMock())
+    const handler = () => setIsMockMode(readMock())
+    window.addEventListener("startrails-settings-updated", handler)
+    return () => window.removeEventListener("startrails-settings-updated", handler)
+  }, [])
 
   // 应用 AI actions 到画布，接收执行报告
   const handleApplyActions = useCallback(
@@ -598,6 +608,20 @@ export function ChatPanel({
           <span className="text-sm font-medium" style={{ color: DESIGN_TOKENS.text }}>
             {conversationTitle}
           </span>
+          {/* P0-3: Mock mode indicator */}
+          {isMockMode && (
+            <span
+              className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+              style={{
+                backgroundColor: "rgba(245,158,11,0.15)",
+                color: "#fbbf24",
+                border: "0.5px solid rgba(245,158,11,0.3)",
+              }}
+              title="模拟模式已启用 — 不会调用真实 API"
+            >
+              Mock
+            </span>
+          )}
           {/* Agent 模式切换器集成到 header */}
           {onAgentModeChange && (
             <AgentModeSwitcher
@@ -683,9 +707,14 @@ export function ChatPanel({
                 </button>
               ))}
               {conversations.length === 0 && (
-                <p className="px-3 py-2 text-xs" style={{ color: DESIGN_TOKENS.textMuted }}>
-                  暂无历史会话
-                </p>
+                <div className="px-3 py-6 text-center">
+                  <p className="text-xs mb-1" style={{ color: DESIGN_TOKENS.textSecondary }}>
+                    暂无历史对话
+                  </p>
+                  <p className="text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                    开始一次新的创作对话后，这里会显示你的会话记录。
+                  </p>
+                </div>
               )}
             </div>
           </div>
