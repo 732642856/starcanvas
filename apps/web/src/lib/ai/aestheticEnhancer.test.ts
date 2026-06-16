@@ -51,14 +51,19 @@ describe("Aesthetic Enhancer", () => {
   })
 
   describe("deAIPrompt", () => {
-    it("includes de-AI keywords", () => {
+    it("retains original prompt and adds de-AI aesthetics", () => {
       const result = deAIPrompt("a beautiful woman")
-      assert.equal(
-        result.includes("avoid plastic") ||
-        result.includes("natural skin") ||
-        result.includes("analog photography"),
-        true,
-      )
+      // 必须保留原始prompt
+      assert.equal(result.includes("a beautiful woman"), true)
+      // strong intensity + DE_AI_AESTHETICS layer (8 keywords) should make it longer
+      assert.equal(result.length > "a beautiful woman".length, true)
+      // 关键词源于 DE_AI_AESTHETICS：验证至少一个子串特征
+      const deAITokens = [
+        "plastic", "natural skin", "imperfection", "organic",
+        "film grain", "analog", "CGI", "oversaturated",
+      ]
+      const hasDeAIToken = deAITokens.some((t) => result.toLowerCase().includes(t.toLowerCase()))
+      assert.equal(hasDeAIToken, true)
     })
   })
 
