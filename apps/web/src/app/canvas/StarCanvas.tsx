@@ -156,6 +156,9 @@ const ReverseStoryboardPanel = dynamic(() => import("@/features/reverse-storyboa
 const ShotLibraryPanel = dynamic(() => import("@/features/shot-library/ShotLibraryPanel").then(m => ({ default: m.ShotLibraryPanelInner })), { ssr: false });
 const AIScriptPanel = dynamic(() => import("@/features/ai-script/AIScriptPanel").then(m => ({ default: m.AIScriptPanelInner })), { ssr: false });
 import { importStoryboardDraftToCanvas } from "@/features/storyboard/importDraftToCanvas"
+import { useOnboarding } from "@/features/onboarding/useOnboarding"
+import { completeStep } from "@/features/onboarding/onboardingStorage"
+const OnboardingPanel = dynamic(() => import("@/features/onboarding/OnboardingPanel").then(m => ({ default: m.OnboardingPanelInner })), { ssr: false })
 import type { ScriptImportPayload } from "./components/panels/ScriptImportPanel";
 import type { VideoRemixImportPayload } from "./components/panels/VideoRemixPanel";
 import type { CinematicParams } from "./components/panels/CinematicParamPanel";
@@ -842,6 +845,39 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
   const [showReverseStoryboard, setShowReverseStoryboard] = useState(false);
   const [showShotLibrary, setShowShotLibrary] = useState(false);
   const [showAIScript, setShowAIScript] = useState(false);
+
+  // ── Onboarding ──────────────────────────────────────
+  const onboarding = useOnboarding();
+
+  const onboardingStepActions = useMemo(
+    () => ({
+      "choose-style": () => {
+        setShowStyleLibrary(true)
+        onboarding.completeStep("choose-style")
+      },
+      "adjust-cinematic-params": () => {
+        setShowCinematicParams(true)
+        onboarding.completeStep("adjust-cinematic-params")
+      },
+      "generate-ai-script": () => {
+        setShowAIScript(true)
+        onboarding.completeStep("generate-ai-script")
+      },
+      "import-script-to-canvas": () => {
+        // This is completed via the AI Script panel's onImportShots callback
+        setShowAIScript(true)
+      },
+      "apply-shot-preset": () => {
+        setShowShotLibrary(true)
+        onboarding.completeStep("apply-shot-preset")
+      },
+      "adjust-color-grade": () => {
+        setShowColorGrade(true)
+        onboarding.completeStep("adjust-color-grade")
+      },
+    }),
+    [onboarding],
+  )
   const [showExportPreflight, setShowExportPreflight] = useState(false);
   const [exportPreflightType, setExportPreflightType] = useState<"json" | "zip">("json");
   const [showFileUpload, setShowFileUpload] = useState(false);
@@ -7858,6 +7894,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
         onOpenReverseStoryboard={() => setShowReverseStoryboard(true)}
         onOpenShotLibrary={() => setShowShotLibrary(true)}
         onOpenAIScript={() => setShowAIScript(true)}
+        onOpenOnboarding={onboarding.toggle}
         onOpenFileUpload={() => setShowFileUpload(true)}
       />
 
@@ -8579,9 +8616,25 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
                 })),
                 { existingNodeCount: nds.length },
               )
+              completeStep("import-script-to-canvas")
               return [...nds, ...nodes]
             })
           }}
+        />
+      )}
+
+      {/* 新手引导面板 (Onboarding Checklist) */}
+      {onboarding.showPanel && (
+        <OnboardingPanel
+          isOpen={onboarding.showPanel}
+          steps={onboarding.state.steps}
+          completedCount={onboarding.completedCount}
+          totalCount={onboarding.totalCount}
+          allComplete={onboarding.allComplete}
+          onClose={onboarding.close}
+          onDismiss={onboarding.dismiss}
+          onReset={onboarding.reset}
+          stepActions={onboardingStepActions}
         />
       )}
 
@@ -8626,6 +8679,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
                 })),
                 { existingNodeCount: nds.length },
               )
+              completeStep("import-script-to-canvas")
               return [...nds, ...nodes]
             })
           }}
