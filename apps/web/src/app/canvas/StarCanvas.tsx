@@ -153,6 +153,7 @@ const NodeHistoryPanel = dynamic(() => import("./components/history/NodeHistoryP
 const VideoRemixPanel = dynamic(() => import("./components/panels/VideoRemixPanel").then(m => ({ default: m.VideoRemixPanel })), { ssr: false });
 const ScriptImportPanel = dynamic(() => import("./components/panels/ScriptImportPanel").then(m => ({ default: m.ScriptImportPanel })), { ssr: false });
 const ReverseStoryboardPanel = dynamic(() => import("@/features/reverse-storyboard/ReverseStoryboardPanel").then(m => ({ default: m.ReverseStoryboardPanelInner })), { ssr: false });
+const ShotLibraryPanel = dynamic(() => import("@/features/shot-library/ShotLibraryPanel").then(m => ({ default: m.ShotLibraryPanelInner })), { ssr: false });
 import type { ScriptImportPayload } from "./components/panels/ScriptImportPanel";
 import type { VideoRemixImportPayload } from "./components/panels/VideoRemixPanel";
 import type { CinematicParams } from "./components/panels/CinematicParamPanel";
@@ -837,6 +838,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
   const [showPanorama, setShowPanorama] = useState(false);
   const [showCrewAgentPanel, setShowCrewAgentPanel] = useState(false);
   const [showReverseStoryboard, setShowReverseStoryboard] = useState(false);
+  const [showShotLibrary, setShowShotLibrary] = useState(false);
   const [showExportPreflight, setShowExportPreflight] = useState(false);
   const [exportPreflightType, setExportPreflightType] = useState<"json" | "zip">("json");
   const [showFileUpload, setShowFileUpload] = useState(false);
@@ -7851,6 +7853,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
         onOpenPanorama={() => setShowPanorama(true)}
         onOpenCrewAgent={() => setShowCrewAgentPanel(true)}
         onOpenReverseStoryboard={() => setShowReverseStoryboard(true)}
+        onOpenShotLibrary={() => setShowShotLibrary(true)}
         onOpenFileUpload={() => setShowFileUpload(true)}
       />
 
@@ -8602,6 +8605,27 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
 
               return [...nds, ...newNodes]
             })
+          }}
+        />
+      )}
+
+      {/* 镜头库面板 (P1-4: ShotLibraryPanel) */}
+      {showShotLibrary && (
+        <ShotLibraryPanel
+          isOpen={showShotLibrary}
+          onClose={() => setShowShotLibrary(false)}
+          selectedNodeId={selectedNodeId}
+          onApplyToNode={(nodeId: string, shotPrompt: string) => {
+            setNodes((nds) =>
+              nds.map((n) => {
+                if (n.id !== nodeId) return n
+                const previousPrompt = n.data.prompt || n.data.content || ""
+                const nextPrompt = previousPrompt
+                  ? `${previousPrompt}\n\nShot: ${shotPrompt}`
+                  : `Shot: ${shotPrompt}`
+                return { ...n, data: { ...n.data, prompt: nextPrompt } }
+              }),
+            )
           }}
         />
       )}
