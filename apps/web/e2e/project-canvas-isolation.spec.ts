@@ -12,6 +12,7 @@
  *   6. Two projects maintain separate canvas states simultaneously
  *   7. Distinct projectIds with special characters don't collide
  *   8. No projectId falls back to default canvas (backward compat)
+ *   9. Chinese / Unicode projectId is isolated correctly
  *
  * Design notes:
  *   - Uses direct IndexedDB injection (injectCanvasStates) instead of UI
@@ -385,5 +386,52 @@ test.describe("Project canvas isolation", () => {
 
     // Verify: content should persist after reload
     await expectMarkerVisible(page, markerText)
+  })
+
+  // ─── 9. Chinese / Unicode projectId is isolated correctly ───────────
+  test("Chinese and Unicode projectId is correctly isolated", async ({ page }) => {
+    // Real-world case: "demo/project:中文 test" with mixed chars
+    const idChinese = "demo/project:中文 test"
+    const idAscii = "demo-project-en"
+    const markerChinese = `chn_${Date.now()}`
+    const markerAscii = `eng_${Date.now()}`
+    const keyChinese = getCanvasStorageKey(idChinese)
+    const keyAscii = getCanvasStorageKey(idAscii)
+
+    // Sanity: storage keys should be different
+    expect(keyChinese).not.toBe(keyAscii)
+
+    // Step 1: Navigate to canvas to ensure IDB exists
+    await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(idChinese)}`)
+    await waitForCanvas(page)
+
+    // Step 2: Inject data for both projects
+    await injectCanvasStates(page, [
+      { storageKey: keyChinese, markerText: markerChinese },
+      { storageKey: keyAscii, markerText: markerAscii },
+    ])
+
+    // Step 3: Navigate to Chinese projectId canvas
+    await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(idChinese)}`)
+    await waitForCanvas(page)
+
+    // Verify: Chinese project shows its own marker, NOT the ascii one
+    await expectMarkerVisible(page, markerChinese)
+    await expectMarkerHidden(page, markerAscii)
+
+    // Step 4: Navigate to ascii projectId canvas
+    await gotoCanvas(page, `/canvas?projectId=${idAscii}`)
+    await waitForCanvas(page)
+
+    // Verify: ascii project shows its own marker, NOT the Chinese one
+    await expectMarkerHidden(page, markerChinese)
+    await expectMarkerVisible(page, markerAscii)
+
+    // Step 5: Return to Chinese project — verify state persists across navigation
+    await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(idChinese)}`)
+    await waitForCanvas(page)
+
+    await expectMarkerVisible(page, markerChinese)
+    await expectMarkerHidden(page, markerAscii)
   })
 })
