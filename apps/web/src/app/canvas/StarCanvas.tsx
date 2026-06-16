@@ -155,6 +155,7 @@ const ScriptImportPanel = dynamic(() => import("./components/panels/ScriptImport
 const ReverseStoryboardPanel = dynamic(() => import("@/features/reverse-storyboard/ReverseStoryboardPanel").then(m => ({ default: m.ReverseStoryboardPanelInner })), { ssr: false });
 const ShotLibraryPanel = dynamic(() => import("@/features/shot-library/ShotLibraryPanel").then(m => ({ default: m.ShotLibraryPanelInner })), { ssr: false });
 const AIScriptPanel = dynamic(() => import("@/features/ai-script/AIScriptPanel").then(m => ({ default: m.AIScriptPanelInner })), { ssr: false });
+import { importStoryboardDraftToCanvas } from "@/features/storyboard/importDraftToCanvas"
 import type { ScriptImportPayload } from "./components/panels/ScriptImportPanel";
 import type { VideoRemixImportPayload } from "./components/panels/VideoRemixPanel";
 import type { CinematicParams } from "./components/panels/CinematicParamPanel";
@@ -8565,48 +8566,20 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
           selectedNodeId={selectedNodeId}
           onImportShots={(shots, videoMeta) => {
             setNodes((nds) => {
-              const lastEndTime = nds.reduce(
-                (max, n) =>
-                  Math.max(
-                    max,
-                    (n.data.timelineStartTimeSeconds ?? 0) +
-                      (n.data.timelineDurationSeconds ?? 0),
-                  ),
-                0,
+              const nodes = importStoryboardDraftToCanvas(
+                shots.map((s) => ({
+                  id: s.id,
+                  title: s.title,
+                  description: s.description,
+                  durationSec: s.durationSec,
+                  visualPrompt: s.visualPrompt,
+                  thumbnail: s.thumbnail,
+                  sourceType: "reference-video",
+                  sourceMeta: { videoName: videoMeta.fileName, timeSec: s.timeSec, frameId: s.sourceFrameId },
+                })),
+                { existingNodeCount: nds.length },
               )
-              const existingCount = nds.length
-
-              const newNodes = shots.map(
-                (shot, i) => {
-                  const nodeId = generateId()
-                  const node: Node<CanvasNodeData> = {
-                    id: nodeId,
-                    type: "content",
-                    position: {
-                      x: 100 + (i % 4) * 360,
-                      y: 100 + Math.floor(i / 4) * 320 + existingCount * 10,
-                    },
-                    width: 320,
-                    height: 240,
-                    measured: { width: 320, height: 240 },
-                    data: {
-                      title: shot.title,
-                      nodeKind: "shot" as CanvasNodeKind,
-                      content: shot.description,
-                      prompt: shot.visualPrompt,
-                      imageUrl: shot.thumbnail,
-                      source: "generated",
-                      timelineStartTimeSeconds: lastEndTime,
-                      timelineDurationSeconds: shot.durationSec,
-                      timelineTrackId: 0,
-                      createdAt: Date.now(),
-                    },
-                  }
-                  return node
-                },
-              )
-
-              return [...nds, ...newNodes]
+              return [...nds, ...nodes]
             })
           }}
         />
@@ -8641,34 +8614,19 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
           selectedNodeId={selectedNodeId}
           onImportShots={(shots) => {
             setNodes((nds) => {
-              const existingCount = nds.length
-              const newNodes = shots.map((shot, i) => {
-                const nodeId = generateId()
-                return {
-                  id: nodeId,
-                  type: "content" as const,
-                  position: {
-                    x: 100 + (i % 4) * 360,
-                    y: 100 + Math.floor(i / 4) * 320 + existingCount * 10,
-                  },
-                  width: 320,
-                  height: 240,
-                  measured: { width: 320, height: 240 },
-                  data: {
-                    title: shot.title,
-                    nodeKind: "shot" as const,
-                    content: shot.description,
-                    prompt: shot.visualPrompt,
-                    source: "generated" as const,
-                    timelineStartTimeSeconds: 0,
-                    timelineDurationSeconds: shot.durationSec,
-                    timelineTrackId: 0,
-                    createdAt: Date.now(),
-                  },
-                }
-              })
-
-              return [...nds, ...newNodes] as typeof nds
+              const nodes = importStoryboardDraftToCanvas(
+                shots.map((s) => ({
+                  id: s.id,
+                  title: s.title,
+                  description: s.description,
+                  durationSec: s.durationSec,
+                  visualPrompt: s.visualPrompt,
+                  sourceType: "ai-script",
+                  sourceMeta: { scriptId: s.source.scriptId, sceneId: s.source.sceneId, shotPresetId: s.shotPresetId },
+                })),
+                { existingNodeCount: nds.length },
+              )
+              return [...nds, ...nodes]
             })
           }}
         />
