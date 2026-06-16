@@ -152,6 +152,7 @@ const SourceTracePanel = dynamic(() => import("./components/preview/SourceTraceP
 const NodeHistoryPanel = dynamic(() => import("./components/history/NodeHistoryPanel").then(m => ({ default: m.NodeHistoryPanel })), { ssr: false });
 const VideoRemixPanel = dynamic(() => import("./components/panels/VideoRemixPanel").then(m => ({ default: m.VideoRemixPanel })), { ssr: false });
 const ScriptImportPanel = dynamic(() => import("./components/panels/ScriptImportPanel").then(m => ({ default: m.ScriptImportPanel })), { ssr: false });
+const ReverseStoryboardPanel = dynamic(() => import("@/features/reverse-storyboard/ReverseStoryboardPanel").then(m => ({ default: m.ReverseStoryboardPanelInner })), { ssr: false });
 import type { ScriptImportPayload } from "./components/panels/ScriptImportPanel";
 import type { VideoRemixImportPayload } from "./components/panels/VideoRemixPanel";
 import type { CinematicParams } from "./components/panels/CinematicParamPanel";
@@ -835,6 +836,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
   const [showTimeline, setShowTimeline] = useState(false);
   const [showPanorama, setShowPanorama] = useState(false);
   const [showCrewAgentPanel, setShowCrewAgentPanel] = useState(false);
+  const [showReverseStoryboard, setShowReverseStoryboard] = useState(false);
   const [showExportPreflight, setShowExportPreflight] = useState(false);
   const [exportPreflightType, setExportPreflightType] = useState<"json" | "zip">("json");
   const [showFileUpload, setShowFileUpload] = useState(false);
@@ -8544,6 +8546,61 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
                 return { ...n, data: { ...n.data, prompt: nextPrompt, colorGradePrompt: promptSuffix } };
               }),
             );
+          }}
+        />
+      )}
+
+      {/* 参考视频逆向分镜面板 (P0-1: ReverseStoryboardPanel) */}
+      {showReverseStoryboard && (
+        <ReverseStoryboardPanel
+          isOpen={showReverseStoryboard}
+          onClose={() => setShowReverseStoryboard(false)}
+          selectedNodeId={selectedNodeId}
+          onImportShots={(shots, videoMeta) => {
+            setNodes((nds) => {
+              const lastEndTime = nds.reduce(
+                (max, n) =>
+                  Math.max(
+                    max,
+                    (n.data.timelineStartTimeSeconds ?? 0) +
+                      (n.data.timelineDurationSeconds ?? 0),
+                  ),
+                0,
+              )
+              const existingCount = nds.length
+
+              const newNodes = shots.map(
+                (shot, i) => {
+                  const nodeId = generateId()
+                  const node: Node<CanvasNodeData> = {
+                    id: nodeId,
+                    type: "content",
+                    position: {
+                      x: 100 + (i % 4) * 360,
+                      y: 100 + Math.floor(i / 4) * 320 + existingCount * 10,
+                    },
+                    width: 320,
+                    height: 240,
+                    measured: { width: 320, height: 240 },
+                    data: {
+                      title: shot.title,
+                      nodeKind: "shot" as CanvasNodeKind,
+                      content: shot.description,
+                      prompt: shot.visualPrompt,
+                      imageUrl: shot.thumbnail,
+                      source: "generated",
+                      timelineStartTimeSeconds: lastEndTime,
+                      timelineDurationSeconds: shot.durationSec,
+                      timelineTrackId: 0,
+                      createdAt: Date.now(),
+                    },
+                  }
+                  return node
+                },
+              )
+
+              return [...nds, ...newNodes]
+            })
           }}
         />
       )}
