@@ -1,19 +1,23 @@
 ---
-name: Feature request
-about: Suggest an idea for StarCanvas
+name: 功能建议
+about: 为 StarCanvas 提出新功能或改进建议
 title: '[Feature] '
-labels: enhancement
+labels: ['enhancement']
 assignees: ''
 ---
 
-**Is your feature request related to a problem?**
-A clear description of what the problem is.
+## 需求背景
 
-**Describe the solution**
-What you want to happen.
+<!-- 描述你遇到什么问题，或什么场景需要这个功能 -->
 
-**Describe alternatives**
-Alternative solutions or features you've considered.
+## 期望方案
 
-**Additional context**
-Add any other context, references, or screenshots here.
+<!-- 描述你期望的功能是什么样的 -->
+
+## 备选方案
+
+<!-- 你考虑过的其他解决方案 -->
+
+## 参考
+
+<!-- 相关开源项目、参考链接、截图等 -->

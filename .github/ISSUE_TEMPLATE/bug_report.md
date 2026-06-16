@@ -1,31 +1,36 @@
 ---
-name: Bug report
-about: Report a bug to help improve StarCanvas
+name: Bug 反馈
+about: 报告一个 Bug，帮助改进 StarCanvas
 title: '[Bug] '
-labels: bug
+labels: ['bug']
 assignees: ''
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+## 问题描述
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. See error
+<!-- 清晰描述 Bug 现象 -->
 
-**Expected behavior**
-What you expected to happen.
+## 复现步骤
 
-**Environment**
-- OS: [e.g. macOS 14.5]
-- Browser: [e.g. Chrome 120]
-- Node version: [e.g. 22.x]
-- StarCanvas commit: [e.g. 1e2c4c4]
+1. 进入 '...'
+2. 点击 '....'
+3. 查看错误
 
-**Error output**
-If applicable, add error messages or screenshots.
+## 期望行为
 
-**Additional context**
-Add any other context about the problem here.
+<!-- 你期望发生什么 -->
+
+## 环境信息
+
+- 操作系统：[e.g. macOS 15.4]
+- 浏览器：[e.g. Chrome 132]
+- Node 版本：[e.g. 22.12.0]
+- StarCanvas 提交：[e.g. d1379ad]
+
+## 错误信息
+
+<!-- 附上控制台错误、截图等 -->
+
+## 补充说明
+
+<!-- 任何有助于定位问题的额外信息 -->

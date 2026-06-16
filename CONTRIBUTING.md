@@ -11,8 +11,8 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/732642856/-ai-.git
-cd -ai-
+git clone https://github.com/732642856/starcanvas.git
+cd starcanvas
 pnpm install
 cp apps/web/.env.example apps/web/.env.local
 # 编辑 apps/web/.env.local 填写 AI Provider 配置
@@ -74,7 +74,7 @@ pnpm --filter web exec tsc --noEmit
 pnpm -C apps/web exec node --test --experimental-strip-types src/path/to/file.test.ts
 ```
 
-当前测试基线：**515 个测试，全部通过**。
+当前测试基线：**554 个测试**。
 
 ## PR 流程
 
