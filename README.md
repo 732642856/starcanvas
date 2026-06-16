@@ -12,8 +12,8 @@
 </p>
 
 <p align="center">
-  <img alt="Tests" src="https://img.shields.io/badge/Tests-554_✔️-success">
-  <img alt="Version" src="https://img.shields.io/badge/Version-v0.1.0_rc.2-6366f1">
+  <img alt="Tests" src="https://img.shields.io/badge/Tests-633_✔️-success">
+  <img alt="Version" src="https://img.shields.io/badge/Version-v0.1.0_rc.3-6366f1">
   <img alt="Status" src="https://img.shields.io/badge/Status-pre--release-yellow">
 </p>
 
@@ -31,11 +31,16 @@ StarCanvas 是一个**节点式 AI 影视创作无限画布**。创作人员可�
 
 | 能力 | 说明 |
 |------|------|
+| **AI 剧本生成** | 输入故事梗概，自动生成结构化分镜剧本，每个镜头绑定镜头预设 |
+| **参考视频逆向分镜** | 上传参考视频 → 抽取关键帧 → 生成分镜草稿 → 导入画布 |
+| **镜头库** | 55 个影视级镜头预设（6 分类），一键应用到分镜节点 |
+| **影视级画风库** | 109 种风格 / 7 分类，基于 awesome-seedance (CC BY 4.0) |
 | **AI 对话画布** | 流式 SSE 对话，支持 tool calling + canvas actions |
 | **角色三视图** | 正/侧/背三视图 AI 生成 + 角色参照锁定 |
 | **参数化控制面板** | 景别/镜头运动/光线/色调/景深/画幅比 6 维参数控制 |
+| **交互式色彩分级** | 基于 rgb-curve (MIT) 的 RGB 曲线编辑器，实时 LUT 分析 |
 | **720° 全景场景图** | 基于 react-pannellum 的全景场景预览 |
-| **影视级画风库** | 30+ 风格 / 7 分类，基于 awesome-seedance (CC BY 4.0) |
+| **新手引导** | 6 步 checklist 引导：风格→参数→剧本→画布→镜头→色彩 |
 | **紫微斗数角色设计** | 出生信息 → 命盘 → 性格自动映射（144 命盘版） |
 
 ### 制片层 — 生产管理与协作
@@ -122,23 +127,30 @@ starcanvas/
 │       │   │   ├── hooks/                 # React Hooks
 │       │   │   ├── stores/                # Zustand Stores
 │       │   │   └── utils/                 # 工具函数
+│       │   ├── features/          # 独立功能模块
+│       │   │   ├── ai-script/            # AI 剧本生成 (P1-1)
+│       │   │   ├── reverse-storyboard/   # 参考视频逆向分镜 (P0-1)
+│       │   │   ├── shot-library/         # 镜头库 55 预设 (P1-4)
+│       │   │   ├── storyboard/           # 分镜导入适配器
+│       │   │   └── onboarding/           # 新手引导
 │       │   └── api/ai/                    # AI API 路由（22 端点）
 │       └── lib/                           # 共享库
 │           ├── ai/                        # AI 服务（prompt 增强、服务器 fetch）
 │           ├── agents/                    # Film Crew Agent 定义
+│           ├── styles/                    # 风格库（109 种）
 │           ├── storyboard/                # 分镜引擎
 │           ├── workflow/                  # 工作流执行器
 │           └── export/                    # 导出（剪映草稿等）
-├── apps/api/                    # NestJS 后端（实验性，暂不动）
-├── packages/                    # 共享包（实验性，暂不动）
-├── docs/                        # 文档和审计报告
+├── apps/api/                    # NestJS 后端（实验性）
+├── packages/                    # 共享包（实验性）
+├── docs/                        # 文档（e2e-stability 等）
 └── scripts/                     # 工具脚本
 ```
 
 ## 开发
 
 ```bash
-# 单元测试（554 个）
+# 单元测试（633 个）
 pnpm --filter web test
 
 # 类型检查
@@ -151,14 +163,39 @@ cd apps/web && npx playwright test --project=chromium
 pnpm -C apps/web exec node --test --experimental-strip-types src/path/to/file.test.ts
 ```
 
+## Demo 流程
+
+首次打开应用时会自动弹出新手引导，6 步完成一个完整的创作流程：
+
+```
+1. 🎨 选择视觉风格   → 从 109 种风格中选择
+2. 🎥 调整影调参数   → 6 维 cinematic 参数控制
+3. ✨ AI 生成剧本     → 输入故事梗概，自动生成结构化分镜
+4. 📥 导入画布        → 剧本转画布节点，每个镜头可单独编辑
+5. 🔍 应用镜头预设   → 从 55 种镜头语言中选择并应用到分镜
+6. 🌈 调整色彩分级   → 使用交互式 RGB 曲线进行专业调色
+```
+
+也可以在左侧工具栏打开 **参考视频逆向分镜**（上传参考视频 → 提取关键帧 → 生成分镜 → 导入画布）。
+
 ## 路线图
 
-当前处于 **v0.1.0-rc.2 稳定化阶段**，P0 功能已全部完成。
+当前处于 **v0.1.0-rc.3** 阶段，创建层核心能力已完备。
+
+### 已完成（v0.1.0 rc.2 → rc.3）
+
+- ✅ 参考视频逆向分镜（P0-1）
+- ✅ 55 镜头预设库 + 搜索/筛选/应用（P1-4）
+- ✅ AI 自动剧本生成 + ShotPreset 绑定（P1-1）
+- ✅ 交互式 RGB 曲线色彩分级（P1-6）
+- ✅ 影视级画风库 30→109 项（P0-4）
+- ✅ 统一 draft-to-canvas 导入链路
+- ✅ e2e 稳定性基建 + 项目隔离保护
+- ✅ 新手引导 6 步 checklist
 
 ### 下一步
 
-- [ ] **CI/CD**：GitHub Actions 集成 typecheck + unit test + e2e
-- [ ] **Demo 路径打磨**：首次打开 → 创作 → 导出的完整演示
+- [ ] **截图/GIF 素材**：README 演示素材
 - [ ] **制片层 UI**：productionRunQueue 可视化管理面板
 - [ ] **角色资产库增强**：角色一致性跨镜头传递
 - [ ] **多语言支持**：国际化框架
