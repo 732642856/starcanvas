@@ -1,17 +1,17 @@
 /**
- * ColorGradePanel — 色彩分级面板（基于 rgb-curve）
+ * ColorGradePanel — 色彩分级面板（基于 rgb-curve MIT）
  *
- * 提供 Master / R / G / B 四通道 RGB 曲线调整。
- * 包含 6 种电影级预设（胶片/赛博朋克/复古/日系/黑白/默认）。
- * 支持导出调整为 SD 参数注入 Prompt。
+ * 提供 Master / R / G / B 四通道 RGB 曲线交互式调整 + 6 种电影级预设。
+ * 支持实时 LUT 输出和 AI prompt 生成。
  *
- * 对标本小云雀 2.0 的"100+ 影视级画风库"的调色能力。
+ * 对标 Lightroom / Premiere Pro 色彩分级 + 小云雀 2.0 100+ 影视级画风库。
  */
 "use client"
 
-import React, { useCallback, useMemo, useState } from "react"
+import React, { useCallback, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { X, Palette, Check, Copy, Undo2 } from "lucide-react"
+import { RGBCurve, type CurveChangeData, type RGBCurveRef } from "rgb-curve"
+import { X, Palette, Check, Copy, RotateCcw, Sparkles } from "lucide-react"
 
 // ── 类型 ──────────────────────────────────────────────
 
@@ -24,7 +24,6 @@ export interface ColorGradeProfile {
     green: [number, number][]
     blue: [number, number][]
   }
-  /** SD prompt 描述：对应的视觉风格英文 */
   sdPromptSuffix: string
 }
 
@@ -35,7 +34,7 @@ export interface ColorGradePanelProps {
   onApplyToNode?: (nodeId: string, promptSuffix: string) => void
 }
 
-// ── 预设 ──────────────────────────────────────────────
+// ── 6 种电影级预设曲线 ────────────────────────────────
 
 const PRESETS: ColorGradeProfile[] = [
   {
@@ -58,7 +57,7 @@ const PRESETS: ColorGradeProfile[] = [
       green: [[0,8],[64,60],[128,128],[192,196],[255,252]],
       blue: [[0,2],[64,68],[128,128],[192,188],[255,248]],
     },
-    sdPromptSuffix: "cinematic film look, kodak portra color grade, lifted blacks, warm highlights",
+    sdPromptSuffix: "cinematic film look, Kodak Portra color grade, lifted blacks, warm highlights, filmic S-curve contrast",
   },
   {
     name: "cyberpunk",
@@ -69,7 +68,7 @@ const PRESETS: ColorGradeProfile[] = [
       green: [[0,0],[64,72],[128,128],[192,184],[255,255]],
       blue: [[0,0],[64,88],[128,128],[192,168],[255,255]],
     },
-    sdPromptSuffix: "cyberpunk color grade, neon blue and magenta tones, crushed blacks, high contrast",
+    sdPromptSuffix: "cyberpunk color grade, neon blue and magenta tones, crushed blacks, high contrast, Blade Runner aesthetic",
   },
   {
     name: "vintage",
@@ -91,7 +90,7 @@ const PRESETS: ColorGradeProfile[] = [
       green: [[0,10],[64,72],[128,138],[192,202],[255,245]],
       blue: [[0,15],[64,72],[128,135],[192,195],[255,240]],
     },
-    sdPromptSuffix: "Japanese film aesthetic, soft pastel colors, overexposed highlights, fresh clean look",
+    sdPromptSuffix: "Japanese film aesthetic, soft pastel colors, overexposed highlights, fresh clean look, Fuji film simulation",
   },
   {
     name: "bw",
@@ -102,50 +101,46 @@ const PRESETS: ColorGradeProfile[] = [
       green: [[0,0],[255,255]],
       blue: [[0,0],[255,255]],
     },
-    sdPromptSuffix: "black and white cinematic, high contrast monochrome, ansel adams zone system",
+    sdPromptSuffix: "black and white cinematic, high contrast monochrome, Ansel Adams zone system, silver gelatin print",
   },
 ]
 
-// ── 简单的 SVG 曲线渲染（不依赖 rgb-curve 的复杂 Canvas） ──
+// ── 辅助：根据 LUT 分析生成色彩描述 ────────────────────
 
-function CurvePreview({
-  points,
-  color,
-  label,
-}: {
-  points: [number, number][]
-  color: string
-  label: string
-}) {
-  const pathD = points
-    .map(([x, y], i) => {
-      // 映射到 SVG 坐标系（x 左→右, y 上→下 反转）
-      const sx = ((x / 255) * 100).toFixed(1)
-      const sy = (100 - (y / 255) * 100).toFixed(1)
-      return i === 0 ? `M ${sx} ${sy}` : `L ${sx} ${sy}`
-    })
-    .join(" ")
+function analyzeLUT(lut: CurveChangeData["lut"]): string {
+  const countDiff = (ch: Uint8Array): { raised: number; lowered: number } => {
+    let raised = 0, lowered = 0
+    for (let i = 0; i < 256; i++) {
+      if (ch[i] > i + 5) raised++
+      else if (ch[i] < i - 5) lowered++
+    }
+    return { raised, lowered }
+  }
 
-  return (
-    <div className="flex items-center gap-2 mb-1">
-      <span
-        className="text-[10px] font-bold w-5 text-center rounded px-0.5"
-        style={{ color, backgroundColor: `${color}20` }}
-      >
-        {label}
-      </span>
-      <svg
-        viewBox="0 0 100 100"
-        className="w-full h-12 rounded border border-[var(--color-border)] bg-[var(--color-bg)]"
-      >
-        {/* 背景网格 */}
-        <line x1="50" y1="0" x2="50" y2="100" stroke="var(--color-border)" strokeWidth="0.3" />
-        <line x1="0" y1="50" x2="100" y2="50" stroke="var(--color-border)" strokeWidth="0.3" />
-        <line x1="0" y1="0" x2="100" y2="100" stroke="var(--color-border)" strokeWidth="0.2" strokeDasharray="2,2" />
-        <path d={pathD} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    </div>
-  )
+  const master = countDiff(lut.master)
+  const red = countDiff(lut.red)
+  const green = countDiff(lut.green)
+  const blue = countDiff(lut.blue)
+
+  const parts: string[] = []
+
+  // 整体对比度
+  if (master.raised > 60 && master.lowered > 60)
+    parts.push("S-curve contrast, deep blacks and bright highlights")
+  else if (master.raised > 60)
+    parts.push("lifted midtones, airy feel")
+  else if (master.lowered > 60)
+    parts.push("crushed shadows, high contrast punch")
+
+  // 色偏检测
+  if (red.raised > 30) parts.push("warm red push, golden skin tones")
+  if (blue.raised > 30) parts.push("cool blue shift, cyan atmosphere")
+  if (green.raised > 30) parts.push("green tint in midtones")
+  if (red.lowered > 30) parts.push("reduced red saturation, teal bias")
+  if (blue.lowered > 30) parts.push("blue suppression, warm amber cast")
+
+  if (parts.length === 0) return "neutral color balance, linear tone curve"
+  return parts.join(", ") + "."
 }
 
 // ── 组件 ──────────────────────────────────────────────
@@ -158,56 +153,122 @@ export function ColorGradePanel({
 }: ColorGradePanelProps) {
   const [activePreset, setActivePreset] = useState<string>("film")
   const [applied, setApplied] = useState(false)
+  const [lastChange, setLastChange] = useState<CurveChangeData | null>(null)
+  const [isCustomEdit, setIsCustomEdit] = useState(false)
+  const curveRef = useRef<RGBCurveRef>(null)
 
   const current = useMemo(
     () => PRESETS.find((p) => p.name === activePreset) ?? PRESETS[0],
     [activePreset],
   )
 
+  /** 从 LUT 数据生成更精确的色彩 prompt */
+  const livePrompt = useMemo(() => {
+    if (isCustomEdit && lastChange) {
+      return analyzeLUT(lastChange.lut)
+    }
+    return current.sdPromptSuffix
+  }, [isCustomEdit, lastChange, current])
+
+  /** 应用预设曲线 */
+  const applyPreset = useCallback((presetName: string) => {
+    const preset = PRESETS.find((p) => p.name === presetName) ?? PRESETS[0]
+    setActivePreset(presetName)
+    setIsCustomEdit(false)
+
+    // 通过 ref 设置曲线控制点
+    const toPoints = (pts: [number, number][]) =>
+      pts.map(([x, y]) => ({ x, y }))
+    curveRef.current?.setPoints({
+      master: toPoints(preset.curves.master),
+      red: toPoints(preset.curves.red),
+      green: toPoints(preset.curves.green),
+      blue: toPoints(preset.curves.blue),
+    })
+  }, [])
+
+  /** 曲线变化回调 */
+  const handleCurveChange = useCallback((data: CurveChangeData) => {
+    setLastChange(data)
+    setIsCustomEdit(true)
+  }, [])
+
+  /** 应用到节点 */
   const handleApply = useCallback(() => {
     if (selectedNodeId && onApplyToNode) {
-      const promptWithGrade = `Color grade: ${current.sdPromptSuffix}.`
-      onApplyToNode(selectedNodeId, promptWithGrade)
+      onApplyToNode(selectedNodeId, `Color grade: ${livePrompt}`)
       setApplied(true)
       setTimeout(() => setApplied(false), 2000)
     }
-  }, [selectedNodeId, onApplyToNode, current])
+  }, [selectedNodeId, onApplyToNode, livePrompt])
 
+  /** 复制 prompt */
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(current.sdPromptSuffix)
-  }, [current])
+    navigator.clipboard.writeText(livePrompt)
+  }, [livePrompt])
+
+  /** 重置所有通道 */
+  const handleReset = () => {
+    curveRef.current?.reset()
+    setIsCustomEdit(false)
+    applyPreset("default")
+  }
 
   if (!isOpen) return null
 
   return createPortal(
-    <div className="fixed top-16 right-4 z-[90] min-w-[320px]">
-      <div className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden">
-        {/* Header */}
+    <div className="fixed top-16 right-4 z-[90] flex flex-col gap-3">
+      {/* 主面板 */}
+      <div className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden min-w-[340px]">
+        {/* 标题栏 */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text)]">
             <Palette size={16} />
             色彩分级
+            {isCustomEdit && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-accent)]/20 text-[var(--color-accent)]">
+                自定义
+              </span>
+            )}
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-[var(--color-hover)] transition-colors text-[var(--color-text-secondary)]"
-          >
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleReset}
+              className="p-1.5 rounded-lg hover:bg-[var(--color-hover)] transition-colors text-[var(--color-text-secondary)]"
+              title="重置所有通道"
+            >
+              <RotateCcw size={14} />
+            </button>
+            <button
+              onClick={handleApply}
+              disabled={!selectedNodeId}
+              className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                applied
+                  ? "bg-green-500/20 text-green-400"
+                  : "bg-[var(--color-accent)] hover:brightness-110 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              }`}
+            >
+              {applied ? <Check size={14} /> : <Sparkles size={14} />}
+              {applied ? "已应用" : "应用"}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-[var(--color-hover)] transition-colors text-[var(--color-text-secondary)]"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
-        {/* Preset Selector */}
-        <div className="p-3 border-b border-[var(--color-border)]">
-          <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] mb-2">
-            预设风格
-          </div>
+        {/* 预设选择器 */}
+        <div className="px-3 pt-3">
           <div className="flex flex-wrap gap-1.5">
             {PRESETS.map((preset) => (
               <button
                 key={preset.name}
-                onClick={() => setActivePreset(preset.name)}
+                onClick={() => applyPreset(preset.name)}
                 className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
-                  activePreset === preset.name
+                  activePreset === preset.name && !isCustomEdit
                     ? "bg-[var(--color-accent)] text-white"
                     : "bg-[var(--color-hover)] text-[var(--color-text-secondary)] hover:text-[var(--color-text)]"
                 }`}
@@ -218,50 +279,110 @@ export function ColorGradePanel({
           </div>
         </div>
 
-        {/* Curve Display */}
+        {/* 交互式 RGB 曲线编辑器 */}
         <div className="p-3">
-          <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] mb-2">
-            RGB 曲线
+          <div className="rounded-lg overflow-hidden border border-[var(--color-border)]">
+            <RGBCurve
+              ref={curveRef}
+              width={310}
+              height={280}
+              onChange={handleCurveChange}
+              styles={{
+                container: {
+                  background: "var(--color-bg)",
+                },
+                canvasWrapper: {
+                  background: "#0d0d0d",
+                  borderRadius: 0,
+                },
+                grid: {
+                  color: "#2a2a2a",
+                  lineWidth: 1,
+                  subdivisions: 4,
+                  showDiagonal: true,
+                  diagonalColor: "#333333",
+                },
+                curve: {
+                  master: {
+                    color: "#e0e0e0",
+                    width: 2,
+                    shadowColor: "rgba(255, 255, 255, 0.15)",
+                    shadowBlur: 3,
+                  },
+                  red: {
+                    color: "#ff6b6b",
+                    width: 2,
+                    shadowColor: "rgba(255, 107, 107, 0.25)",
+                    shadowBlur: 3,
+                  },
+                  green: {
+                    color: "#51cf66",
+                    width: 2,
+                    shadowColor: "rgba(81, 207, 102, 0.25)",
+                    shadowBlur: 3,
+                  },
+                  blue: {
+                    color: "#339af0",
+                    width: 2,
+                    shadowColor: "rgba(51, 154, 240, 0.25)",
+                    shadowBlur: 3,
+                  },
+                },
+                controlPoint: {
+                  radius: 5,
+                  fill: "#ffffff",
+                  stroke: "#000000",
+                  strokeWidth: 2,
+                  activeFill: "#ffd43b",
+                  activeStroke: "#000000",
+                  hoverScale: 1.2,
+                },
+                tabs: {
+                  background: "transparent",
+                  gap: 2,
+                  tab: {
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: "#666666",
+                    background: "transparent",
+                    hoverBackground: "var(--color-hover)",
+                    activeColor: "#ffffff",
+                    activeBackground: "var(--color-hover)",
+                  },
+                },
+              }}
+            />
           </div>
-          <CurvePreview points={current.curves.master} color="#ffffff" label="M" />
-          <CurvePreview points={current.curves.red} color="#ff4444" label="R" />
-          <CurvePreview points={current.curves.green} color="#44ff44" label="G" />
-          <CurvePreview points={current.curves.blue} color="#4488ff" label="B" />
+
+          {/* 操作提示 */}
+          <div className="mt-2 flex items-center gap-3 text-[10px] text-[var(--color-text-tertiary)]">
+            <span>点击曲线添加控制点</span>
+            <span>拖动调整曲线</span>
+            <span>双击删除点</span>
+          </div>
         </div>
 
-        {/* Prompt Preview */}
-        <div className="px-3 pb-2">
-          <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)] mb-1">
-            SD Prompt 后缀
-          </div>
+        {/* Prompt 预览 */}
+        <div className="px-3 pb-3">
           <div className="bg-[var(--color-bg)] rounded-lg p-2.5 border border-[var(--color-border)]">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                色彩 Prompt
+              </span>
+              <button
+                onClick={handleCopy}
+                className="flex items-center gap-1 text-[10px] text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)] transition-colors"
+              >
+                <Copy size={10} />
+                复制
+              </button>
+            </div>
             <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
-              {current.sdPromptSuffix}
+              {livePrompt}
             </p>
           </div>
-        </div>
-
-        {/* Actions */}
-        <div className="flex items-center gap-2 px-3 py-3 border-t border-[var(--color-border)]">
-          <button
-            onClick={handleCopy}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--color-hover)] text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors"
-          >
-            <Copy size={13} />
-            复制
-          </button>
-          <button
-            onClick={handleApply}
-            disabled={!selectedNodeId}
-            className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ml-auto ${
-              applied
-                ? "bg-green-500/20 text-green-400"
-                : "bg-[var(--color-accent)] hover:brightness-110 text-white disabled:opacity-40 disabled:cursor-not-allowed"
-            }`}
-          >
-            {applied ? <Check size={13} /> : <Undo2 size={13} />}
-            {applied ? "已应用" : "应用到节点"}
-          </button>
         </div>
       </div>
     </div>,
