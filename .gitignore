@@ -17,6 +17,10 @@ coverage
 # local backups
 *.bak
 
+# playwright
+playwright-report/
+test-results/
+
 # security
 *.pem
 *.key
