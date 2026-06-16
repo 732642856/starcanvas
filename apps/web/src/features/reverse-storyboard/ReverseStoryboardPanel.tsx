@@ -161,7 +161,7 @@ function ReverseStoryboardPanelInner({
 
   return createPortal(
     <div className="fixed top-16 right-4 z-[90] min-w-[360px] max-w-[420px] max-h-[calc(100vh-120px)] overflow-y-auto">
-      <div className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden">
+      <div data-testid="reverse-storyboard-panel" className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden">
         {/* ── Header ─────────────────────────────────── */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text)]">

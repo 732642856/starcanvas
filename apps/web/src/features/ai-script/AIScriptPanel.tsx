@@ -97,7 +97,7 @@ function AIScriptPanelInner({
 
   return createPortal(
     <div className="fixed top-16 right-4 z-[90] min-w-[380px] max-w-[440px] max-h-[calc(100vh-120px)] overflow-y-auto">
-      <div className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden">
+      <div data-testid="ai-script-panel" className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden">
         {/* ── Header ─────────────────────────────────── */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text)]">
@@ -120,6 +120,7 @@ function AIScriptPanelInner({
               故事梗概 / 产品信息
             </label>
             <textarea
+              data-testid="ai-script-brief"
               value={brief}
               onChange={(e) => setBrief(e.target.value)}
               placeholder="例如：一个年轻人辞掉工作环游世界，在旅途中找回自我..."
@@ -217,6 +218,7 @@ function AIScriptPanelInner({
 
           {/* Generate Button */}
           <button
+            data-testid="ai-script-generate-button"
             onClick={handleGenerate}
             disabled={isGenerating || !brief.trim()}
             className="w-full bg-[var(--color-accent)] hover:brightness-110 text-white text-xs font-medium px-4 py-2.5 rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
@@ -244,7 +246,7 @@ function AIScriptPanelInner({
 
         {/* ── Draft Preview ────────────────────────────── */}
         {draft && (
-          <div className="p-4 space-y-3">
+          <div data-testid="ai-script-draft-preview" className="p-4 space-y-3">
             {/* Meta */}
             <div className="bg-[var(--color-hover)] rounded-lg p-3 space-y-1">
               <h3 className="text-xs font-semibold text-[var(--color-text)]">{draft.title}</h3>
@@ -307,6 +309,7 @@ function AIScriptPanelInner({
 
             {/* Import Button */}
             <button
+              data-testid="ai-script-import-button"
               onClick={handleImport}
               disabled={imported}
               className={`w-full text-xs font-medium px-4 py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 ${

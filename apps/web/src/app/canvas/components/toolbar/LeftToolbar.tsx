@@ -161,6 +161,7 @@ export function LeftToolbar({
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{ color: DESIGN_TOKENS.textMuted }}
         title="运镜参数控制"
+        data-testid="toolbar-cinematic-params"
       >
         <Camera size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>
@@ -171,6 +172,7 @@ export function LeftToolbar({
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{ color: DESIGN_TOKENS.textMuted }}
         title="色彩分级"
+        data-testid="toolbar-color-grade"
       >
         <Palette size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>
@@ -191,6 +193,7 @@ export function LeftToolbar({
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{ color: DESIGN_TOKENS.textMuted }}
         title="AI 影视创作剧组 (7 Agent)"
+        data-testid="toolbar-crew-agent"
       >
         <Clapperboard size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>
@@ -201,6 +204,7 @@ export function LeftToolbar({
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{ color: DESIGN_TOKENS.textMuted }}
         title="参考视频逆向分镜"
+        data-testid="toolbar-reverse-storyboard"
       >
         <Film size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>
@@ -211,6 +215,7 @@ export function LeftToolbar({
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{ color: DESIGN_TOKENS.textMuted }}
         title="镜头库 (55 个预设)"
+        data-testid="toolbar-shot-library"
       >
         <Crosshair size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>
@@ -221,6 +226,7 @@ export function LeftToolbar({
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{ color: DESIGN_TOKENS.textMuted }}
         title="AI 剧本生成"
+        data-testid="toolbar-ai-script"
       >
         <Sparkles size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>
@@ -231,6 +237,7 @@ export function LeftToolbar({
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{ color: DESIGN_TOKENS.textMuted }}
         title="时间轴编辑"
+        data-testid="toolbar-timeline"
       >
         <Film size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>

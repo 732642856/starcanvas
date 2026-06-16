@@ -219,7 +219,7 @@ export function ColorGradePanel({
   return createPortal(
     <div className="fixed top-16 right-4 z-[90] flex flex-col gap-3">
       {/* 主面板 */}
-      <div className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden min-w-[340px]">
+      <div data-testid="color-grade-panel" className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden min-w-[340px]">
         {/* 标题栏 */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text)]">
