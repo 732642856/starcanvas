@@ -1,0 +1,7 @@
+{
+  "name": "rgb-curve-vendor",
+  "private": true,
+  "main": "./index.mjs",
+  "types": "./index.d.ts",
+  "sideEffects": false
+}

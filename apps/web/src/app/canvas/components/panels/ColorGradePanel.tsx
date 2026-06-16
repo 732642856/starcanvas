@@ -10,7 +10,7 @@
 
 import React, { useCallback, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { RGBCurve, type CurveChangeData, type RGBCurveRef } from "rgb-curve"
+import { RGBCurve, type CurveChangeData, type RGBCurveRef } from "@/vendor/rgb-curve"
 import { X, Palette, Check, Copy, RotateCcw, Sparkles } from "lucide-react"
 
 // ── 类型 ──────────────────────────────────────────────
