@@ -24,6 +24,7 @@ interface LeftToolbarProps {
   onToggleTimeline?: () => void
   onOpenPanorama?: () => void
   onOpenCrewAgent?: () => void
+  onOpenReverseStoryboard?: () => void
 }
 
 export function LeftToolbar({
@@ -41,6 +42,7 @@ export function LeftToolbar({
   onToggleTimeline,
   onOpenPanorama,
   onOpenCrewAgent,
+  onOpenReverseStoryboard,
   onOpenFileUpload,
 }: LeftToolbarProps) {
   return (
@@ -187,6 +189,16 @@ export function LeftToolbar({
         title="AI 影视创作剧组 (7 Agent)"
       >
         <Clapperboard size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+      </button>
+
+      {/* 参考视频逆向分镜 */}
+      <button
+        onClick={onOpenReverseStoryboard}
+        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+        style={{ color: DESIGN_TOKENS.textMuted }}
+        title="参考视频逆向分镜"
+      >
+        <Film size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>
 
       {/* 时间轴 */}

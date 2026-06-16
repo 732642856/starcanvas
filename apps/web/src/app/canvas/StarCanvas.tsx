@@ -7850,6 +7850,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
         onToggleTimeline={() => setShowTimeline((prev) => !prev)}
         onOpenPanorama={() => setShowPanorama(true)}
         onOpenCrewAgent={() => setShowCrewAgentPanel(true)}
+        onOpenReverseStoryboard={() => setShowReverseStoryboard(true)}
         onOpenFileUpload={() => setShowFileUpload(true)}
       />
 
