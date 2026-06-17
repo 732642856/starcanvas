@@ -165,7 +165,7 @@ export const StyleLibraryPanel = memo(function StyleLibraryPanel({
         {/* Hint */}
         {currentPrompt && (
           <div className="border-t px-5 py-2 text-center text-[10px]" style={{ borderColor: DESIGN_TOKENS.border, color: DESIGN_TOKENS.textMuted }}>
-            点击"应用"将风格注入当前选中分镜的视觉提示词
+            点击&ldquo;应用&rdquo;将风格注入当前选中分镜的视觉提示词
           </div>
         )}
       </div>

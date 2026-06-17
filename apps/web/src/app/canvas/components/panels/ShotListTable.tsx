@@ -175,7 +175,7 @@ export const ShotListTable = memo(function ShotListTable({
       >
         <Clapperboard size={40} strokeWidth={1.2} />
         <p className="text-sm">当前画布没有分镜节点</p>
-        <p className="text-xs opacity-60">在故事板节点上右键选择"拆分为分镜"来创建</p>
+        <p className="text-xs opacity-60">在故事板节点上右键选择&ldquo;拆分为分镜&rdquo;来创建</p>
       </div>
     )
   }
