@@ -57,6 +57,7 @@ import {
   ArrowRight,
   Play,
   ListChecks,
+  ClipboardList,
   BookOpen,
   FileText,
   Table2,
@@ -106,6 +107,7 @@ import { CanvasDropOverlay } from "./components/canvas/CanvasDropOverlay";
 import { AssetLibraryPanel } from "./components/canvas/AssetLibraryPanel";
 import { CharacterAssetLibraryPanel } from "./components/canvas/CharacterAssetLibraryPanel";
 import { ProductionRunQueuePanel } from "./components/canvas/ProductionRunQueuePanel";
+import { ShotPlanningPanel } from "@/features/production/ShotPlanningPanel";
 import { useProductionRunExecutor } from "./hooks/useProductionRunExecutor";
 import { StoryboardBatchProgressOverlay } from "./components/canvas/StoryboardBatchProgressOverlay";
 import { CanvasContextMenu } from "./components/menus/CanvasContextMenu";
@@ -882,6 +884,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
   const [exportPreflightType, setExportPreflightType] = useState<"json" | "zip">("json");
   const [showFileUpload, setShowFileUpload] = useState(false);
   const [showProductionQueue, setShowProductionQueue] = useState(false);
+  const [showShotPlanning, setShowShotPlanning] = useState(false);
   const [historyNodeId, setHistoryNodeId] = useState<string | null>(null);
   const [isComposingSelectedShots, setIsComposingSelectedShots] = useState(false);
   const [showStoryboardCompositeSettings, setShowStoryboardCompositeSettings] =
@@ -1111,6 +1114,33 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
     const manifest = buildProjectPackageManifest({ shots: briefs.map((b) => ({ id: b.shotId, order: b.order, title: b.title })), productionBriefs: briefs });
     return buildProductionRunQueue(manifest, { jobId: "canvas-production-run" });
   }, [nodes]);
+
+  // Derive project title from storyboard content node
+  const projectTitle = useMemo(() => {
+    const storyboardNode = nodes.find(
+      (n) =>
+        (n.type === "content" || n.type === "storyboard") &&
+        ((n.data as Record<string, unknown>)?.nodeKind === "storyboard" ||
+          (n.data as Record<string, unknown>)?.storyboardAssistantStage != null),
+    );
+    return (storyboardNode?.data as Record<string, unknown>)?.title as string | undefined;
+  }, [nodes]);
+
+  // Extract planning-relevant fields from canvas nodes
+  const planningNodes = useMemo(
+    () =>
+      nodes
+        .filter((n) => n.type === "shot" || n.type === "storyboardImage" || n.type === "storyboardText")
+        .map((n) => ({
+          id: n.id,
+          title: (n.data as Record<string, unknown>)?.title as string | undefined,
+          description: (n.data as Record<string, unknown>)?.description as string | undefined,
+          shotPresetId: (n.data as Record<string, unknown>)?.shotPresetId as string | undefined,
+          stylePresetId: (n.data as Record<string, unknown>)?.stylePresetId as string | undefined,
+          durationSec: (n.data as Record<string, unknown>)?.duration as number | undefined,
+        })),
+    [nodes],
+  );
 
   // ── Production Run Executor (Step 3: real executor mapping) ──
   const productionExecutor = useProductionRunExecutor({
@@ -7471,6 +7501,21 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
             <span>生产队列 {productionRunQueue.totalTasks}</span>
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => setShowShotPlanning((value) => !value)}
+          className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+          style={{
+            borderColor: showShotPlanning ? DESIGN_TOKENS.borderStrong : DESIGN_TOKENS.border,
+            backgroundColor: showShotPlanning ? "rgba(255,255,255,0.08)" : "rgba(18,18,24,0.7)",
+            color: DESIGN_TOKENS.textSecondary,
+          }}
+          title="制片规划"
+          data-testid="shot-planning-toggle"
+        >
+          <ClipboardList size={14} strokeWidth={1.7} />
+          <span>制片规划</span>
+        </button>
       </div>
 
       {selectedShotCount >= 2 && (
@@ -9041,6 +9086,19 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
             execState={productionExecutor.execState}
             onRetryTask={productionExecutor.retryTask}
             onSkipTask={productionExecutor.skipTask}
+          />,
+          document.body,
+        )}
+
+      {/* Shot Planning Panel */}
+      {showShotPlanning && typeof document !== "undefined" &&
+        createPortal(
+          <ShotPlanningPanel
+            isOpen={showShotPlanning}
+            onClose={() => setShowShotPlanning(false)}
+            projectId={projectId ?? null}
+            projectTitle={projectTitle}
+            nodes={planningNodes}
           />,
           document.body,
         )}
