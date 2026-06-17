@@ -108,6 +108,7 @@ import { AssetLibraryPanel } from "./components/canvas/AssetLibraryPanel";
 import { CharacterAssetLibraryPanel } from "./components/canvas/CharacterAssetLibraryPanel";
 import { ProductionRunQueuePanel } from "./components/canvas/ProductionRunQueuePanel";
 import { ShotPlanningPanel } from "@/features/production/ShotPlanningPanel";
+import { useShotPlanningRunQueueStore } from "@/features/production/useShotPlanningRunQueueStore";
 import { useProductionRunExecutor } from "./hooks/useProductionRunExecutor";
 import { StoryboardBatchProgressOverlay } from "./components/canvas/StoryboardBatchProgressOverlay";
 import { CanvasContextMenu } from "./components/menus/CanvasContextMenu";
@@ -1114,6 +1115,16 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
     const manifest = buildProjectPackageManifest({ shots: briefs.map((b) => ({ id: b.shotId, order: b.order, title: b.title })), productionBriefs: briefs });
     return buildProductionRunQueue(manifest, { jobId: "canvas-production-run" });
   }, [nodes]);
+
+  // Bridged queue from Shot Planning Board
+  const planningRunQueue = useShotPlanningRunQueueStore((s) => s.queue);
+
+  // Auto-open production queue panel when bridged queue is built
+  useEffect(() => {
+    if (planningRunQueue) {
+      setShowProductionQueue(true);
+    }
+  }, [planningRunQueue]);
 
   // Derive project title from storyboard content node
   const projectTitle = useMemo(() => {
@@ -9075,12 +9086,17 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
       )}
 
       {/* Production Run Queue Panel */}
-      {showProductionQueue && productionRunQueue &&
+      {showProductionQueue && (productionRunQueue || planningRunQueue) &&
         typeof document !== "undefined" &&
         createPortal(
           <ProductionRunQueuePanel
-            queue={productionRunQueue}
-            onClose={() => setShowProductionQueue(false)}
+            queue={planningRunQueue ?? productionRunQueue!}
+            onClose={() => {
+              setShowProductionQueue(false);
+              if (planningRunQueue) {
+                useShotPlanningRunQueueStore.getState().clear();
+              }
+            }}
             isRunning={productionExecutor.isRunning}
             onStart={productionExecutor.start}
             execState={productionExecutor.execState}

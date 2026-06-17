@@ -2,8 +2,9 @@
 
 import React, { useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, ClipboardList, Download, Plus, Loader2 } from "lucide-react";
+import { X, ClipboardList, Download, Plus, Loader2, Play } from "lucide-react";
 import { useShotPlanningStore } from "./useShotPlanningStore.ts";
+import { useShotPlanningRunQueueStore } from "./useShotPlanningRunQueueStore.ts";
 import { exportShotPlanningBoardToMarkdown } from "./shotPlanningExport.ts";
 import type {
   ShotPlanningStatus,
@@ -241,6 +242,12 @@ export function ShotPlanningPanel({
   const updateNotes = useShotPlanningStore((s) => s.updateNotes);
   const getSummary = useShotPlanningStore((s) => s.getSummary);
 
+  // Run queue bridge
+  const runQueue = useShotPlanningRunQueueStore((s) => s.queue);
+  const buildRunQueue = useShotPlanningRunQueueStore((s) => s.buildFromBoard);
+  const lastMessage = useShotPlanningRunQueueStore((s) => s.lastMessage);
+  const dismissMessage = useShotPlanningRunQueueStore((s) => s.dismissMessage);
+
   const [generating, setGenerating] = useState(false);
 
   // Load board when project changes
@@ -280,6 +287,17 @@ export function ShotPlanningPanel({
     a.click();
     URL.revokeObjectURL(url);
   }, [board]);
+
+  // Create run queue from ready shots
+  const readyCount = useMemo(
+    () => board?.items.filter((item) => item.status === "ready").length ?? 0,
+    [board],
+  );
+
+  const handleCreateRunQueue = useCallback(() => {
+    if (!board || !projectId) return;
+    buildRunQueue(board, projectId);
+  }, [board, projectId, buildRunQueue]);
 
   // Handle status change
   const handleStatusChange = useCallback(
@@ -353,6 +371,16 @@ export function ShotPlanningPanel({
           <Download size={13} />
           导出 Markdown
         </button>
+        <button
+          type="button"
+          onClick={handleCreateRunQueue}
+          disabled={readyCount === 0}
+          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 disabled:opacity-30 disabled:cursor-not-allowed transition"
+          data-testid="shot-planning-create-queue"
+        >
+          <Play size={13} />
+          创建执行队列
+        </button>
         {!projectId && (
           <span className="text-[11px] text-amber-400/60 ml-auto">
             请先打开项目
@@ -367,6 +395,20 @@ export function ShotPlanningPanel({
 
       {/* Summary */}
       {summary && hasItems && <SummaryBar summary={summary} />}
+
+      {/* Bridge message */}
+      {lastMessage && (
+        <div className="flex items-center justify-between px-4 py-2 text-xs bg-emerald-900/20 border-b border-emerald-800/20">
+          <span className="text-emerald-300">{lastMessage}</span>
+          <button
+            type="button"
+            onClick={dismissMessage}
+            className="text-emerald-400/50 hover:text-emerald-400"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
 
       {/* Empty state */}
       {!hasItems && (
