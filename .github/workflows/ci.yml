@@ -20,6 +20,8 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        env:
+          PNPM_STORE_DIR: /home/runner/.local/share/pnpm/store
 
       - name: Lint (web only)
         run: pnpm lint:web
@@ -37,6 +39,8 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        env:
+          PNPM_STORE_DIR: /home/runner/.local/share/pnpm/store
 
       - name: TypeCheck (web only)
         run: pnpm typecheck:web
@@ -54,6 +58,8 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        env:
+          PNPM_STORE_DIR: /home/runner/.local/share/pnpm/store
 
       - name: Test (web only)
         run: pnpm test:web
@@ -73,6 +79,8 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        env:
+          PNPM_STORE_DIR: /home/runner/.local/share/pnpm/store
 
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
@@ -111,6 +119,8 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+        env:
+          PNPM_STORE_DIR: /home/runner/.local/share/pnpm/store
 
       - name: Build (web only)
         run: pnpm build:web
