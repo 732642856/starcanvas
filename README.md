@@ -178,6 +178,23 @@ pnpm -C apps/web exec node --test --experimental-strip-types src/path/to/file.te
 
 也可以在左侧工具栏打开 **参考视频逆向分镜**（上传参考视频 → 提取关键帧 → 生成分镜 → 导入画布）。
 
+## 截图预览
+
+<details open>
+<summary><b>rc.3 功能截图（点击展开/折叠）</b></summary>
+
+| 功能 | 截图 |
+|------|------|
+| **新手引导** — 6 步 checklist 引导完整创作流程 | <img src="docs/assets/screenshots/rc3-onboarding.png" alt="新手引导" width="480"> |
+| **AI 剧本生成** — 输入故事梗概，结构化分镜输出 | <img src="docs/assets/screenshots/rc3-ai-script.png" alt="AI 剧本生成" width="480"> |
+| **分镜画布** — AI 剧本一键导入画布，可视化编辑 | <img src="docs/assets/screenshots/rc3-storyboard-canvas.png" alt="分镜画布" width="480"> |
+| **镜头库** — 55 个影视级镜头预设，一键应用 | <img src="docs/assets/screenshots/rc3-shot-library.png" alt="镜头库" width="480"> |
+| **色彩分级** — 交互式 RGB 曲线编辑器 | <img src="docs/assets/screenshots/rc3-color-grading.png" alt="色彩分级" width="480"> |
+| **影视风格库** — 109 种风格 / 7 分类 | <img src="docs/assets/screenshots/rc3-style-library.png" alt="风格库" width="480"> |
+| **参考视频逆向分镜** — 上传视频 → 抽取关键帧 → 生成分镜 | <img src="docs/assets/screenshots/rc3-reverse-storyboard.png" alt="逆向分镜" width="480"> |
+
+</details>
+
 ## 路线图
 
 当前处于 **v0.1.0-rc.3** 阶段，创建层核心能力已完备。
@@ -192,10 +209,10 @@ pnpm -C apps/web exec node --test --experimental-strip-types src/path/to/file.te
 - ✅ 统一 draft-to-canvas 导入链路
 - ✅ e2e 稳定性基建 + 项目隔离保护
 - ✅ 新手引导 6 步 checklist
+- ✅ **截图素材**：7 张功能截图
 
 ### 下一步
 
-- [ ] **截图/GIF 素材**：README 演示素材
 - [ ] **制片层 UI**：productionRunQueue 可视化管理面板
 - [ ] **角色资产库增强**：角色一致性跨镜头传递
 - [ ] **多语言支持**：国际化框架
