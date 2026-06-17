@@ -88,12 +88,12 @@ function AIScriptPanelInner({
     setTimeout(() => setImported(false), 2000)
   }, [draft, onImportShots])
 
-  if (!isOpen) return null
-
   const totalShots = useMemo(
     () => draft?.scenes.reduce((s, sc) => s + sc.shots.length, 0) ?? 0,
     [draft],
   )
+
+  if (!isOpen) return null
 
   return createPortal(
     <div className="fixed top-16 right-4 z-[90] min-w-[380px] max-w-[440px] max-h-[calc(100vh-120px)] overflow-y-auto">
