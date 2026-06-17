@@ -1126,6 +1126,12 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
     }
   }, [planningRunQueue]);
 
+  // ── Active production queue (bridged from planning or node-derived) ──
+  const activeProductionQueue = useMemo(
+    () => planningRunQueue ?? productionRunQueue,
+    [planningRunQueue, productionRunQueue],
+  );
+
   // Derive project title from storyboard content node
   const projectTitle = useMemo(() => {
     const storyboardNode = nodes.find(
@@ -1155,13 +1161,15 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
 
   // ── Production Run Executor (Step 3: real executor mapping) ──
   const productionExecutor = useProductionRunExecutor({
-    queue: productionRunQueue,
+    queue: activeProductionQueue,
     onExecuteTask: useCallback(
       async (task, signal) => {
-        // 找到包含该 shot 的 canvas node
-        const shotNode = nodesRef.current.find(
-          (n) => n.data.shot?.id === task.shotId,
-        );
+        // 找到包含该 shot 的 canvas node（支持 shotId 或 nodeId）
+        const shotNode = task.shotId
+          ? nodesRef.current.find(
+              (n) => n.data.shot?.id === task.shotId || n.id === task.shotId,
+            )
+          : undefined;
         if (!shotNode) {
           throw new Error(`找不到 shotId=${task.shotId} 对应的画布节点`);
         }
@@ -1552,6 +1560,25 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
         }
       },
       [setNodes, setEdges],
+    ),
+    onTaskCompleted: useCallback(
+      (taskId: string) => {
+        // Update bridged queue status if active
+        const store = useShotPlanningRunQueueStore.getState();
+        if (store.queue) {
+          store.markTaskCompleted(taskId);
+        }
+      },
+      [],
+    ),
+    onTaskFailed: useCallback(
+      (taskId: string, error: Error) => {
+        const store = useShotPlanningRunQueueStore.getState();
+        if (store.queue) {
+          store.markTaskFailed(taskId, error.message);
+        }
+      },
+      [],
     ),
   });
 
@@ -9086,11 +9113,11 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
       )}
 
       {/* Production Run Queue Panel */}
-      {showProductionQueue && (productionRunQueue || planningRunQueue) &&
+      {showProductionQueue && activeProductionQueue &&
         typeof document !== "undefined" &&
         createPortal(
           <ProductionRunQueuePanel
-            queue={planningRunQueue ?? productionRunQueue!}
+            queue={activeProductionQueue}
             onClose={() => {
               setShowProductionQueue(false);
               if (planningRunQueue) {
