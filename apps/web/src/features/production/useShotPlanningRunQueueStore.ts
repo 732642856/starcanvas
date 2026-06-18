@@ -9,6 +9,7 @@
 
 import { create } from "zustand";
 import type { ProductionRunQueue } from "@/lib/storyboard/productionRunQueue";
+import { completeProductionRunTask, failProductionRunTask } from "@/lib/storyboard/productionRunQueue";
 import { createProductionRunQueueFromReadyShots } from "./shotPlanningRunQueueAdapter";
 import type { ShotPlanningBoard } from "./shotPlanningTypes";
 
@@ -28,6 +29,10 @@ export interface ShotPlanningRunQueueState {
 export interface ShotPlanningRunQueueActions {
   /** Create a run queue from a ShotPlanningBoard's ready items */
   buildFromBoard: (board: ShotPlanningBoard, projectId: string) => void;
+  /** Mark a task as completed (recomputes queue status) */
+  markTaskCompleted: (taskId: string) => void;
+  /** Mark a task as failed (recomputes queue status) */
+  markTaskFailed: (taskId: string, error: string) => void;
   /** Clear the queue */
   clear: () => void;
   /** Acknowledge lastMessage (set to null) */
@@ -61,6 +66,18 @@ export const useShotPlanningRunQueueStore = create<ShotPlanningRunQueueStore>()(
           ? `Created ${readyCount} queue task${readyCount > 1 ? "s" : ""}`
           : "No ready shots to queue",
     });
+  },
+
+  markTaskCompleted: (taskId: string) => {
+    set((state) => ({
+      queue: state.queue ? completeProductionRunTask(state.queue, taskId) : null,
+    }));
+  },
+
+  markTaskFailed: (taskId: string, error: string) => {
+    set((state) => ({
+      queue: state.queue ? failProductionRunTask(state.queue, taskId, error) : null,
+    }));
   },
 
   clear: () => set({ ...initialState }),
