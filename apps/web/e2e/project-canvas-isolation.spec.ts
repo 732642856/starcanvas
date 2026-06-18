@@ -31,6 +31,7 @@
  */
 
 import { expect, test } from "@playwright/test"
+import { waitForCanvasReady } from "./utils"
 
 test.setTimeout(300_000)
 
@@ -47,17 +48,10 @@ function getCanvasStorageKey(projectId?: string): string {
 // ── Helpers: navigate and wait for canvas to be ready ──────────────────
 
 async function gotoCanvas(page: import("@playwright/test").Page, url: string) {
-  // The canvas page may keep loading non-critical browser assets (e.g. AI/TTS
-  // chunks) during dev-server cold start. Waiting for the full load event makes
-  // the first navigation flaky, so wait for DOM readiness and then assert the
-  // actual app shell below.
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180_000 })
 }
 
-async function waitForCanvas(page: import("@playwright/test").Page, timeout = 90_000) {
-  await expect(page.locator(".react-flow").first()).toBeVisible({ timeout })
-  await page.waitForTimeout(2000) // let hydration + restore complete
-}
+// Re-export waitForCanvasReady for local use — already imported from ./utils
 
 // ── Helper: verify node count on canvas ────────────────────────────────
 
@@ -157,14 +151,14 @@ test.describe("Project canvas isolation", () => {
 
     // Step 1: Navigate to canvas to ensure IDB exists
     await gotoCanvas(page, "/canvas")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Step 2: Inject data into default canvas storage
     await injectCanvasStates(page, [{ storageKey: defaultKey, markerText: defaultMarker }])
 
     // Step 3: Navigate to project-scoped canvas (triggers fresh mount + restore)
     await gotoCanvas(page, "/canvas?projectId=project-x")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: project canvas should start empty (no nodes from default canvas)
     const nodeCount = await getNodeCount(page)
@@ -175,7 +169,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 4: Navigate back to default canvas to confirm data exists
     await gotoCanvas(page, "/canvas")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     await expectMarkerVisible(page, defaultMarker)
   })
@@ -188,14 +182,14 @@ test.describe("Project canvas isolation", () => {
 
     // Step 1: Navigate to project canvas to ensure IDB exists
     await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(projectId)}`)
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Step 2: Inject data into project-scoped storage
     await injectCanvasStates(page, [{ storageKey: projectKey, markerText: projectMarker }])
 
     // Step 3: Navigate to default canvas (no projectId)
     await gotoCanvas(page, "/canvas")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: default canvas should be empty
     const nodeCount = await getNodeCount(page)
@@ -206,7 +200,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 4: Navigate back to project canvas to confirm data exists
     await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(projectId)}`)
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     await expectMarkerVisible(page, projectMarker)
   })
@@ -219,14 +213,14 @@ test.describe("Project canvas isolation", () => {
 
     // Step 1: Navigate to project A canvas to ensure IDB exists
     await gotoCanvas(page, "/canvas?projectId=project-alpha")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Step 2: Inject data for project A only
     await injectCanvasStates(page, [{ storageKey: keyA, markerText: markerA }])
 
     // Step 3: Navigate to project B canvas (fresh mount + restore)
     await gotoCanvas(page, "/canvas?projectId=project-beta")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: project B canvas should be empty
     const nodeCountB = await getNodeCount(page)
@@ -244,14 +238,14 @@ test.describe("Project canvas isolation", () => {
 
     // Step 1: Navigate to a canvas page to ensure IDB exists
     await gotoCanvas(page, "/canvas?projectId=isolation-test-a")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Step 2: Inject data for project A
     await injectCanvasStates(page, [{ storageKey: keyA, markerText: markerA }])
 
     // Step 3: Navigate to project B canvas
     await gotoCanvas(page, "/canvas?projectId=isolation-test-b")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: project B canvas should have 0 nodes
     const nodeCountB = await getNodeCount(page)
@@ -265,14 +259,14 @@ test.describe("Project canvas isolation", () => {
 
     // Step 1: Navigate to project A to ensure IDB exists
     await gotoCanvas(page, "/canvas?projectId=return-test-a")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Step 2: Inject data for project A
     await injectCanvasStates(page, [{ storageKey: keyA, markerText: markerA }])
 
     // Step 3: Navigate to project B (should be empty)
     await gotoCanvas(page, "/canvas?projectId=return-test-b")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: project B should have 0 nodes and NOT show project A's marker
     const nodeCountB = await getNodeCount(page)
@@ -281,7 +275,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 4: Return to project A
     await gotoCanvas(page, "/canvas?projectId=return-test-a")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: project A should restore its content
     await expectMarkerVisible(page, markerA)
@@ -296,7 +290,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 1: Navigate to canvas to ensure IDB exists
     await gotoCanvas(page, "/canvas?projectId=roundtrip-a")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Step 2: Inject data for BOTH projects
     await injectCanvasStates(page, [
@@ -306,7 +300,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 3: Navigate to project A (fresh mount + restore)
     await gotoCanvas(page, "/canvas?projectId=roundtrip-a")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: project A has its own marker, NOT project B's
     await expectMarkerVisible(page, markerA)
@@ -314,7 +308,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 4: Navigate to project B (fresh mount + restore)
     await gotoCanvas(page, "/canvas?projectId=roundtrip-b")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: project B has its own marker, NOT project A's
     await expectMarkerHidden(page, markerA)
@@ -336,7 +330,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 1: Navigate to canvas to ensure IDB exists
     await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(id1)}`)
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Step 2: Inject data for both projects
     await injectCanvasStates(page, [
@@ -346,7 +340,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 3: Navigate to project proj/a
     await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(id1)}`)
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: proj/a has its own marker, NOT proj-b's
     await expectMarkerVisible(page, marker1)
@@ -354,7 +348,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 4: Navigate to project proj-b
     await gotoCanvas(page, `/canvas?projectId=${id2}`)
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: proj-b has its own marker, NOT proj/a's
     await expectMarkerHidden(page, marker1)
@@ -368,21 +362,21 @@ test.describe("Project canvas isolation", () => {
 
     // Step 1: Navigate to canvas WITHOUT projectId to ensure IDB exists
     await gotoCanvas(page, "/canvas")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Step 2: Inject data into default canvas storage
     await injectCanvasStates(page, [{ storageKey: defaultKey, markerText }])
 
     // Step 3: Navigate to the default canvas again (fresh mount + restore)
     await gotoCanvas(page, "/canvas")
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: default canvas should restore the injected content
     await expectMarkerVisible(page, markerText)
 
     // Step 4: Reload the page to test persistence across reloads
     await page.reload()
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: content should persist after reload
     await expectMarkerVisible(page, markerText)
@@ -403,7 +397,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 1: Navigate to canvas to ensure IDB exists
     await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(idChinese)}`)
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Step 2: Inject data for both projects
     await injectCanvasStates(page, [
@@ -413,7 +407,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 3: Navigate to Chinese projectId canvas
     await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(idChinese)}`)
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: Chinese project shows its own marker, NOT the ascii one
     await expectMarkerVisible(page, markerChinese)
@@ -421,7 +415,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 4: Navigate to ascii projectId canvas
     await gotoCanvas(page, `/canvas?projectId=${idAscii}`)
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     // Verify: ascii project shows its own marker, NOT the Chinese one
     await expectMarkerHidden(page, markerChinese)
@@ -429,7 +423,7 @@ test.describe("Project canvas isolation", () => {
 
     // Step 5: Return to Chinese project — verify state persists across navigation
     await gotoCanvas(page, `/canvas?projectId=${encodeURIComponent(idChinese)}`)
-    await waitForCanvas(page)
+    await waitForCanvasReady(page)
 
     await expectMarkerVisible(page, markerChinese)
     await expectMarkerHidden(page, markerAscii)

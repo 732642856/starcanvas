@@ -10,7 +10,14 @@
  *   - 等待逻辑优先使用 assert 而非固定 timeout
  */
 
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
+import {
+  clearAppStorageInitScript,
+  collectConsoleErrors,
+  dismissOnboardingIfPresent,
+  waitForCanvasReady,
+  waitForCanvasSave,
+} from "./utils"
 
 // ── 辅助工具 ─────────────────────────────────────────
 
@@ -21,77 +28,32 @@ const APP_KEY_PREFIXES = [
   "project_",
 ]
 
-/**
- * 清除应用相关 storage，不影响其他应用或浏览器扩展的数据。
- */
-async function clearAppStorage(page: import("@playwright/test").Page) {
-  await page.evaluate((prefixes) => {
-    for (const key of Object.keys(localStorage)) {
-      if (prefixes.some((p) => key.startsWith(p))) {
-        localStorage.removeItem(key)
-      }
-    }
-    sessionStorage.clear()
-  }, APP_KEY_PREFIXES)
+/** Wait for canvas and dismiss onboarding (call in beforeEach after page loads). */
+async function prepareCanvas(page: Page) {
+  await waitForCanvasReady(page)
+  await dismissOnboardingIfPresent(page)
 }
 
 /**
- * 收集页面控制台错误和未捕获异常，排除已知无害噪音。
- * 每次 test.beforeEach 中绑定。
- * 返回 { consoleErrors, pageErrors } 供断言使用。
+ * Wait for content to restore after a page reload.
+ * Polls for the expected text to confirm hydration + restore is complete.
  */
-function collectConsoleErrors(page: import("@playwright/test").Page) {
-  const consoleErrors: Array<{ text: string; url: string }> = []
-  const pageErrors: Error[] = []
-
-  page.on("console", (message) => {
-    if (message.type() !== "error") return
-    const text = message.text()
-    // 排除已知无害噪音
-    const harmless = [
-      "favicon",
-      "Failed to load resource",
-      "ResizeObserver loop completed with undelivered notifications",
-      "WebSocket",
-      "ECONNREFUSED",
-      "hot-update",
-      "_next/static",
-      "Next.js HMR",
-    ]
-    if (harmless.some((h) => text.includes(h))) return
-    consoleErrors.push({ text, url: page.url() })
+async function waitForContentRestore(page: Page, uniqueText: string, timeout = 30_000) {
+  await expect(
+    page.locator(`textarea`).filter({ hasText: uniqueText }).first()
+  ).toBeVisible({ timeout }).catch(async () => {
+    // Fallback: check anywhere on the page
+    await expect(
+      page.locator(`text=${uniqueText}`).first()
+    ).toBeVisible({ timeout: 10_000 })
   })
-
-  page.on("pageerror", (err) => {
-    pageErrors.push(err)
-  })
-
-  // 监听 HTTP 错误响应（API 500、资源加载失败等）
-  page.on("response", (response) => {
-    if (response.status() >= 500) {
-      consoleErrors.push({
-        text: `HTTP ${response.status()}: ${response.url()}`,
-        url: page.url(),
-      })
-    }
-  })
-
-  return { consoleErrors, pageErrors }
-}
-
-// ── 辅助等待函数 ─────────────────────────────────────
-
-/** 等待 canvas 画布就绪（ReactFlow 渲染完成） */
-async function waitForCanvas(page: import("@playwright/test").Page, timeout = 60_000) {
-  // 使用 .first() 避免 strict mode（画布可能有多个 ReactFlow 实例，如 mini-map）
-  await expect(page.locator(".react-flow").first()).toBeVisible({ timeout })
-  await page.waitForTimeout(1000)
 }
 
 // ── 测试套件 ─────────────────────────────────────────
 
 test.describe("StarCanvas 核心工作流冒烟测试", () => {
   // 每个测试前用 addInitScript 清理应用 storage（在页面加载前执行）
+  // 同时解除引导面板避免 z-index: 92 遮挡 UI 交互
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((prefixes) => {
       for (const key of Object.keys(localStorage)) {
@@ -146,7 +108,11 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
       return
     }
     await newBtn.first().click()
-    await page.waitForTimeout(500)
+    // 等待名称输入框出现，替代固定 timeout
+    const nameInputFallback = page.locator("input").first()
+    await expect(
+      page.getByTestId("new-project-name-input").or(nameInputFallback).first()
+    ).toBeVisible({ timeout: 10_000 })
 
     // 填写项目名称 (优先 data-testid)
     let nameInput = page.getByTestId("new-project-name-input")
@@ -176,7 +142,8 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     expect(firstProjectId).toBeTruthy()
 
     // 验证画布存在
-    await waitForCanvas(page, 60_000)
+    await waitForCanvasReady(page, 60_000)
+    await dismissOnboardingIfPresent(page)
 
     // ── projectId 一致性验证：回 Dashboard 再进，应进入同一项目 ──
     await page.goto("/dashboard")
@@ -205,10 +172,10 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
 
     // 直接从 /canvas 进入（跳过 Dashboard）
     await page.goto("/canvas")
-    await waitForCanvas(page, 90_000)
+    await waitForCanvasReady(page, 90_000)
+    await dismissOnboardingIfPresent(page)
 
-    // 查找添加节点面板 — 左侧工具栏或浮动按钮
-    // 尝试多种可能的UI模式
+    // 查找添加节点面板
     const addNodeTrigger = page.locator('button[title*="添加"], button[title*="新建"], button[title*="Add"]').first()
     const textTrigger = page.locator('button[title*="文本"], button[title*="Text"], button[title*="content"]').first()
 
@@ -228,13 +195,19 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
       }
     }
 
-    // 等待一小段时间让节点出现在画布上
-    await page.waitForTimeout(500)
+    // 等待节点出现在画布上
+    await expect(page.locator(".react-flow__node").first()).toBeVisible({
+      timeout: 10_000,
+    }).catch(() => {
+      // 添加可能失败 — 不算硬失败
+    })
 
     // 验证画布上有节点
     const nodeCount = await page.locator(".react-flow__node").count()
-    // 如果没有任何节点，可能是添加失败。不算硬失败，因为可能需要在弹窗中选择
-    expect(nodeCount).toBeGreaterThanOrEqual(0)
+    // 如果是空画布启动，可能没有初始节点
+    if (nodeCount > 0) {
+      expect(nodeCount).toBeGreaterThan(0)
+    }
 
     expect(consoleErrors).toHaveLength(0)
     expect(pageErrors).toHaveLength(0)
@@ -247,7 +220,8 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     const { consoleErrors, pageErrors } = collectConsoleErrors(page)
 
     await page.goto("/canvas")
-    await waitForCanvas(page, 90_000)
+    await waitForCanvasReady(page, 90_000)
+    await dismissOnboardingIfPresent(page)
 
     // 选中一个节点
     const node = page.locator(".react-flow__node").first()
@@ -256,7 +230,11 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
       return
     }
     await node.click()
-    await page.waitForTimeout(300)
+    // 等待属性面板或编辑状态出现（替代固定等待）
+    await expect(
+      page.locator("text=属性面板").or(page.locator("text=标题")).or(page.locator(".react-flow__node.selected"))
+        .first()
+    ).toBeVisible({ timeout: 5_000 }).catch(() => {})
 
     // 检查属性面板是否出现
     const propertyPanel = page.locator("text=属性面板").or(
@@ -265,7 +243,10 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     // 双击节点进入文本编辑模式（如果属性面板没有输入框）
     if (await propertyPanel.count() === 0) {
       await node.dblclick()
-      await page.waitForTimeout(300)
+      // 等待 textarea 或 input 可编辑
+      await expect(
+        page.locator(".react-flow__node textarea, .react-flow__node input[type='text']").first()
+      ).toBeVisible({ timeout: 5_000 }).catch(() => {})
     }
 
     // 查找输入框/textarea
@@ -273,7 +254,7 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     if (await inputField.count() > 0) {
       const testText = `测试文本_${Date.now()}`
       await inputField.fill(testText)
-      await page.waitForTimeout(500)
+      await expect(inputField).toHaveValue(testText, { timeout: 5_000 })
       // 点击画布空白处提交
       await page.locator(".react-flow__pane").click({ position: { x: 10, y: 10 } })
     } else {
@@ -292,7 +273,8 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     const { consoleErrors, pageErrors } = collectConsoleErrors(page)
 
     await page.goto("/canvas")
-    await waitForCanvas(page, 90_000)
+    await waitForCanvasReady(page, 90_000)
+    await dismissOnboardingIfPresent(page)
 
     const node = page.locator(".react-flow__node").first()
     if (await node.count() === 0) {
@@ -350,7 +332,10 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
       return
     }
     await newBtn.first().click()
-    await page.waitForTimeout(500)
+    // 等待名称输入框出现，替代固定 timeout
+    await expect(
+      page.getByTestId("new-project-name-input").or(page.locator("input").first())
+    ).toBeVisible({ timeout: 10_000 })
 
     let nameInput = page.getByTestId("new-project-name-input")
     if (await nameInput.count() === 0) nameInput = page.locator("input").first()
@@ -369,7 +354,8 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     const projectId = new URL(page.url()).searchParams.get("projectId")
     expect(projectId).toBeTruthy()
 
-    await waitForCanvas(page, 60_000)
+    await waitForCanvasReady(page, 60_000)
+    await dismissOnboardingIfPresent(page)
 
     // ── Phase 2: 添加文本节点 ──
     // 点击左侧 '+' 按钮
@@ -380,7 +366,17 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
       return
     }
     await addBtn.click()
-    await page.waitForTimeout(500)
+    // 等待 AddNodePanel 出现（替代固定等待）
+    await expect(
+      page.locator("[class*='addNodePanel'], [class*='add-node-panel'], [data-testid='add-node-panel']").first()
+    ).toBeVisible({ timeout: 10_000 }).catch(() => {})
+
+    // 如果面板默认打开了 Agent tab，切换到文本/内容 tab
+    const textTab = page.getByText(/文本|内容|content|text/i).first()
+    if (await textTab.count() > 0) {
+      await textTab.click().catch(() => {})
+      await page.waitForTimeout(300) // small wait for tab transition
+    }
 
     // 在 AddNodePanel 中点击"写作文本"
     let textItem = page.getByTestId("add-node-item-写作文本")
@@ -392,7 +388,10 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
       return
     }
     await textItem.first().click()
-    await page.waitForTimeout(1000)
+    // 验证节点出现（用状态断言替代固定等待）
+    await expect(page.locator(".react-flow__node").first()).toBeVisible({
+      timeout: 10_000,
+    })
 
     // 验证节点出现
     const nodesAfterAdd = await page.locator(".react-flow__node").count()
@@ -406,22 +405,25 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     }
     // 点击 textarea 获取焦点（节点有 stopPropagation，需直接点击内部）
     await textarea.click()
-    await page.waitForTimeout(200)
+    await expect(textarea).toBeFocused({ timeout: 5_000 })
     // 清除默认内容并填入唯一文本
     await textarea.fill(uniqueText)
-    await page.waitForTimeout(300)
+    await expect(textarea).toHaveValue(uniqueText, { timeout: 5_000 })
     // 点击画布空白提交编辑
     await page.locator(".react-flow__pane").click({ position: { x: 10, y: 10 } })
-    await page.waitForTimeout(500)
+    // 等待编辑模式退出（textarea 失焦）
+    await expect(textarea).not.toBeFocused({ timeout: 5_000 }).catch(() => {
+      // 有些实现中 textarea 不会立即失焦 — 可接受
+    })
 
     // ── Phase 4: 等待自动保存 ──
-    // TODO: 后续用 data-testid="canvas-save-status" 替代固定等待
-    await page.waitForTimeout(6000)
+    await waitForCanvasSave(page)
 
     // ── Phase 5: 刷新，验证 projectId 和文本均恢复 ──
     await page.reload()
-    await waitForCanvas(page, 60_000)
-    await page.waitForTimeout(3000)
+    await waitForCanvasReady(page, 60_000)
+    // 等待内容恢复（轮询 + 断言，替代固定等待）
+    await waitForContentRestore(page, uniqueText)
 
     const projectIdAfterRefresh = new URL(page.url()).searchParams.get("projectId")
     expect(projectIdAfterRefresh).toBe(projectId)
@@ -437,18 +439,26 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     // ── Phase 6: 删除节点 ──
     // 选中包含唯一文本的节点
     const targetNode = page.locator(".react-flow__node").filter({ hasText: uniqueText }).first()
+    await expect(targetNode).toBeVisible({ timeout: 5_000 })
     await targetNode.click()
-    await page.waitForTimeout(300)
+    await expect(targetNode).toHaveClass(/selected/, { timeout: 3_000 }).catch(() => {
+      // selected 状态可能通过不同 CSS class 表达
+    })
     await page.keyboard.press("Delete")
-    await page.waitForTimeout(500)
+    // 等待节点从 DOM 中消失（替代固定等待）
+    await expect(targetNode).toBeHidden({ timeout: 10_000 }).catch(async () => {
+      // 备选：等待节点数量减少
+      const currentCount = await page.locator(".react-flow__node").count()
+      expect(currentCount).toBeLessThan(nodesAfterAdd)
+    })
 
     // 等待删除的自动保存
-    await page.waitForTimeout(6000)
+    await waitForCanvasSave(page)
 
     // ── Phase 7: 再次刷新，验证文本不存在 ──
     await page.reload()
-    await waitForCanvas(page, 60_000)
-    await page.waitForTimeout(3000)
+    await waitForCanvasReady(page, 60_000)
+    // 不再需要固定等待 — waitForCanvasReady 已确认画布就绪
 
     // 验证唯一文本不再出现
     const textAfterDelete = await page.locator(`textarea`).filter({ hasText: uniqueText }).count()
@@ -465,7 +475,8 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     const { consoleErrors, pageErrors } = collectConsoleErrors(page)
 
     await page.goto("/canvas")
-    await waitForCanvas(page, 90_000)
+    await waitForCanvasReady(page, 90_000)
+    await dismissOnboardingIfPresent(page)
 
     // 查找导出按钮 (ExportDropdown)
     const exportBtn = page.getByRole("button", { name: /导出|export|download/i }).or(
@@ -487,7 +498,10 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
       await exportBtn.first().click()
     }
 
-    await page.waitForTimeout(500)
+    // 等待导出菜单出现（替代固定等待）
+    await expect(
+      page.locator("text=导出项目包").or(page.locator("text=导出分镜本")).or(page.locator("text=剪映草稿")).or(page.locator("text=export"))
+    ).toBeVisible({ timeout: 10_000 }).catch(() => {})
 
     // 检查导出菜单是否出现
     const exportMenu = page.locator("text=导出项目包").or(
@@ -514,7 +528,8 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     const { consoleErrors, pageErrors } = collectConsoleErrors(page)
 
     await page.goto("/canvas")
-    await waitForCanvas(page, 90_000)
+    await waitForCanvasReady(page, 90_000)
+    await dismissOnboardingIfPresent(page)
 
     // 预览按钮：通常是 Play 图标 或 "预览" 文字
     const previewBtn = page.getByRole("button", { name: /预览|preview|play/i }).or(
@@ -524,9 +539,13 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     )
 
     if (await previewBtn.count() > 0) {
+      await expect(previewBtn.first()).toBeEnabled({ timeout: 5_000 })
       await previewBtn.first().click()
-      await page.waitForTimeout(500)
       // 检查是否有播放相关变化（时间轴、播放器等）
+      // 可选：验证预览面板/时间轴已可见
+      await expect(
+        page.locator("[class*='timeline'], [class*='player'], [class*='preview']").first()
+      ).toBeVisible({ timeout: 10_000 }).catch(() => {})
     } else {
       // 如果是时间轴底部的播放按钮，也可以算预览
       const timelinePlay = page.locator("button").filter({ has: page.locator("svg.lucide-play") }).first()
@@ -549,8 +568,7 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     const { consoleErrors, pageErrors } = collectConsoleErrors(page)
 
     await page.goto("/")
-    await page.waitForLoadState("load")
-    await page.waitForTimeout(1000)
+    await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {})
 
     expect(consoleErrors).toHaveLength(0)
     expect(pageErrors).toHaveLength(0)
@@ -563,8 +581,9 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     const { consoleErrors, pageErrors } = collectConsoleErrors(page)
 
     await page.goto("/canvas")
-    await waitForCanvas(page, 90_000)
-    await page.waitForTimeout(2000)
+    await waitForCanvasReady(page, 90_000)
+    // Let remaining background tasks settle
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {})
 
     expect(consoleErrors).toHaveLength(0)
     expect(pageErrors).toHaveLength(0)
