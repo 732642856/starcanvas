@@ -847,6 +847,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
   const [showCrewAgentPanel, setShowCrewAgentPanel] = useState(false);
   const [showReverseStoryboard, setShowReverseStoryboard] = useState(false);
   const [showShotLibrary, setShowShotLibrary] = useState(false);
+  const [isMiniMapVisible, setIsMiniMapVisible] = useState(true);
   const [showAIScript, setShowAIScript] = useState(false);
 
   // ── Onboarding ──────────────────────────────────────
@@ -7898,14 +7899,54 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
               color="rgba(255,255,255,0.12)"
             />
           )}
-          <MiniMap
-            nodeStrokeColor="rgba(168, 85, 247, 0.3)"
-            nodeColor="rgba(168, 85, 247, 0.1)"
-            maskColor="rgba(0,0,0,0.5)"
-            style={{ background: "rgba(18,18,24,0.85)" }}
-            pannable
-            zoomable
-          />
+          {isMiniMapVisible && (
+            <MiniMap
+              position="bottom-right"
+              nodeStrokeColor="rgba(168, 85, 247, 0.3)"
+              nodeColor={(node) => {
+                const kind = (node.data as Record<string, unknown>)?.nodeKind as string | undefined;
+                switch (kind) {
+                  case "image":
+                  case "ai-generated-image":
+                  case "image-result":
+                    return "rgba(168, 85, 247, 0.18)";
+                  case "shot":
+                  case "storyboard":
+                  case "storyboard-grid":
+                    return "rgba(59, 130, 246, 0.2)";
+                  case "video":
+                  case "video-generation":
+                  case "video-result":
+                  case "uploaded-video":
+                    return "rgba(239, 68, 68, 0.2)";
+                  case "audio":
+                  case "tts":
+                  case "bgm":
+                  case "uploaded-audio":
+                    return "rgba(34, 197, 94, 0.18)";
+                  case "agent":
+                    return "rgba(250, 204, 21, 0.22)";
+                  case "sketch":
+                    return "rgba(129, 140, 248, 0.2)";
+                  case "script":
+                    return "rgba(236, 72, 153, 0.18)";
+                  case "subtitle":
+                  case "subtitle-srt":
+                    return "rgba(168, 162, 158, 0.18)";
+                  case "composition":
+                  case "poster":
+                    return "rgba(245, 158, 11, 0.18)";
+                  default:
+                    return "rgba(100, 116, 139, 0.15)";
+                }
+              }}
+              maskColor="rgba(0,0,0,0.5)"
+              style={{ background: "rgba(18,18,24,0.85)" }}
+              pannable
+              zoomable
+              ariaLabel="画布小地图"
+            />
+          )}
         </ReactFlow>
       </div>
 
@@ -8313,6 +8354,20 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
           title="快捷键帮助"
         >
           <HelpCircle size={14} strokeWidth={1.5} />
+        </button>
+        {/* MiniMap 切换 */}
+        <button
+          type="button"
+          data-testid="minimap-toggle"
+          onClick={() => setIsMiniMapVisible((v) => !v)}
+          className="flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-white/10"
+          style={{
+            color: isMiniMapVisible ? DESIGN_TOKENS.accent : DESIGN_TOKENS.textMuted,
+          }}
+          title={isMiniMapVisible ? "隐藏小地图" : "显示小地图"}
+          aria-label={isMiniMapVisible ? "隐藏小地图" : "显示小地图"}
+        >
+          <Eye size={14} strokeWidth={1.5} />
         </button>
         {/* 执行工作流按钮 */}
         {hasWorkflowNodes && (
