@@ -27,8 +27,8 @@ export interface CreateRunQueueFromReadyShotsInput {
 
 const DEFAULT_ACTION: ProductionRunQueueAction = "generate-storyboard-image";
 
-function buildTaskId(planningItemId: string, action: ProductionRunQueueAction): string {
-  return `${planningItemId}:${action}`;
+function buildTaskId(shotId: string, action: ProductionRunQueueAction): string {
+  return `${shotId}:${action}`;
 }
 
 // ============================================================================
@@ -49,8 +49,8 @@ export function createRunQueueTasksFromReadyShots(
     .filter((item) => item.status === "ready")
     .sort((a, b) => a.order - b.order)
     .map((item) => ({
-      id: buildTaskId(item.id, DEFAULT_ACTION),
-      shotId: item.sourceNodeId,
+      id: buildTaskId(item.shotId, DEFAULT_ACTION),
+      shotId: item.shotId,
       order: item.order,
       title: item.title,
       action: DEFAULT_ACTION,
