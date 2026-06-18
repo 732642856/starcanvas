@@ -6,6 +6,11 @@
  *   ProductionRunQueue  = 自动执行（queued → preparing → running → completed → failed）
  *
  * 只有人工标记为 ready 的 shot，才进入自动执行队列（后续通过 adapter 桥接）。
+ *
+ * Canonical shot identity:
+ *   ShotPlanningItem.shotId is the canonical shot identity shared across
+ *   planning (this layer), canvas shot nodes, and run queue / executor tasks.
+ *   It is derived from the source canvas node id at board creation time.
  */
 
 export type ShotPlanningStatus =
@@ -16,7 +21,15 @@ export type ShotPlanningStatus =
   | "blocked";
 
 export interface ShotPlanningItem {
+  /** Planning item id (local to the planning board) */
   id: string;
+  /**
+   * Canonical shot identity.
+   * Shared across planning, canvas shot nodes, and run queue / executor tasks.
+   * Set to sourceNodeId at creation time.
+   */
+  shotId: string;
+  /** Reference to the source canvas node that generated this planning item */
   sourceNodeId: string;
   title: string;
   description?: string;

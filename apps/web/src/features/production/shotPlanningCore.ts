@@ -17,6 +17,7 @@ export function createShotPlanningBoardFromStoryboard(
 
   const items: ShotPlanningItem[] = input.nodes.map((node, index) => ({
     id: `plan-item-${node.id}`,
+    shotId: node.id,
     sourceNodeId: node.id,
     title: node.title?.trim() || `Shot ${index + 1}`,
     description: node.description,

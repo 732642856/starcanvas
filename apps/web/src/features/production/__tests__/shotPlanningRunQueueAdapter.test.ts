@@ -20,6 +20,7 @@ function makeItem(
   overrides: Partial<ShotPlanningItem> & { id: string; order: number },
 ): ShotPlanningItem {
   return {
+    shotId: overrides.shotId ?? `node-${overrides.id}`,
     sourceNodeId: overrides.sourceNodeId ?? `node-${overrides.id}`,
     title: overrides.title ?? `Shot ${overrides.order}`,
     description: overrides.description,
@@ -88,9 +89,9 @@ describe("createRunQueueTasksFromReadyShots", () => {
     );
   });
 
-  it("includes shot/project identifiers", () => {
+  it("includes shot/project identifiers and canonical shotId", () => {
     const board = makeBoard({
-      items: [makeItem({ id: "plan-item-1", order: 1, sourceNodeId: "node-abc", title: "Hero Shot" })],
+      items: [makeItem({ id: "plan-item-1", order: 1, shotId: "node-abc", sourceNodeId: "node-abc", title: "Hero Shot" })],
     });
 
     const tasks = createRunQueueTasksFromReadyShots({ board, projectId: "p1" });
@@ -98,7 +99,8 @@ describe("createRunQueueTasksFromReadyShots", () => {
     assert.equal(tasks.length, 1);
     assert.equal(tasks[0]!.shotId, "node-abc");
     assert.equal(tasks[0]!.title, "Hero Shot");
-    assert.match(tasks[0]!.id, /^plan-item-1:generate-storyboard-image$/);
+    // task.id now built from canonical shotId
+    assert.match(tasks[0]!.id, /^node-abc:generate-storyboard-image$/);
   });
 
   it("returns empty array when no ready shots", () => {
