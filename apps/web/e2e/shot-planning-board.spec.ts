@@ -90,34 +90,7 @@ async function seedCanvasData(page: Page, projectId: string): Promise<void> {
   );
 }
 
-/**
- * Dismiss the onboarding checklist panel if it is visible.
- * Onboarding has z-index 92 and intercepts pointer events on panels below it.
- * Uses same robust pattern as demo-screenshots.spec.ts.
- */
-async function dismissOnboardingIfPresent(page: Page): Promise<void> {
-  const onboarding = page.locator("[data-testid='onboarding-panel']");
-  try {
-    await onboarding.waitFor({ state: "visible", timeout: 10_000 });
-    await page.getByRole("button", { name: "跳过引导" }).click();
-    await expect(onboarding).toBeHidden({ timeout: 10_000 });
-  } catch {
-    // Already dismissed or never appeared — fine
-  }
-}
-
-/** Navigate to canvas and wait for the React Flow shell to be visible. */
-async function gotoCanvas(page: Page, projectId: string): Promise<void> {
-  await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
-    waitUntil: "domcontentloaded",
-    timeout: 180_000,
-  });
-  await expect(page.locator(".react-flow").first()).toBeVisible({
-    timeout: 90_000,
-  });
-  // Let hydration + restore complete
-  await page.waitForTimeout(2_000);
-}
+import { dismissOnboardingIfPresent, gotoCanvas } from "./utils";
 
 // ============================================================================
 // Tests
