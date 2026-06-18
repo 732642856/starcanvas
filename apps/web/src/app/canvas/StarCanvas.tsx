@@ -123,6 +123,8 @@ import { BibleDropdown, type BibleActions } from "./components/toolbar/BibleDrop
 import { WorkflowTemplatesDialog } from "./components/toolbar/WorkflowTemplatesDialog";
 import { useWorkflowTemplates, type WorkflowTemplate } from "./hooks/useWorkflowTemplates";
 import { AddNodePanel } from "./components/toolbar/AddNodePanel";
+import { QuickAddNodeSearch } from "./components/quick-add/QuickAddNodeSearch";
+import { QUICK_ADD_NODE_OPTIONS } from "./components/quick-add/quickAddNodeOptions";
 import { ChatPanel } from "./components/chat/ChatPanel";
 import { SettingsPanel } from "./components/panels/SettingsPanel";
 import {
@@ -809,6 +811,14 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
   const [showTemplatesDialog, setShowTemplatesDialog] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
+  // Quick Add Node Search (ComfyUI 风格双击画布快速添加)
+  const [quickAddState, setQuickAddState] = useState<{
+    open: boolean;
+    screenPosition: { x: number; y: number };
+    flowPosition: { x: number; y: number };
+  }>({ open: false, screenPosition: { x: 0, y: 0 }, flowPosition: { x: 0, y: 0 } });
+  // key 计数器：每次打开面板时递增，强制 QuickAddNodeSearch 重新挂载以重置内部状态
+  const [quickAddKey, setQuickAddKey] = useState(0);
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAddNodePanel, setShowAddNodePanel] = useState(false);
@@ -4757,6 +4767,122 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
   );
 
   // ========================================================================
+  // QUICK ADD NODE SEARCH — ComfyUI 风格双击画布快速添加节点
+  //
+  // 实现方式：原生 document.addEventListener('dblclick', ..., capture=true)
+  //   - 绕过 React 合成事件系统和 @xyflow/react 的事件拦截
+  //   - 检测 target 是否为 .react-flow__pane（或其祖先包含 .react-flow__pane）
+  //   - reactFlowWrapper 内才响应，避免全局误触
+  // ========================================================================
+
+  /** 打开 Quick Add 面板的公共逻辑 */
+  const openQuickAddPanel = useCallback(
+    (clientX: number, clientY: number) => {
+      // 不依赖 reactFlowInstance state（可能因时序问题为 null），
+      // 而是直接通过 DOM API 读取 @xyflow/react 内部的 transform 来转换坐标。
+      // 备用：如果 reactFlowInstance 可用，使用 screenToFlowPosition
+      const wrapperEl = reactFlowWrapper.current;
+      let flowPosition: { x: number; y: number };
+      if (reactFlowInstance) {
+        flowPosition = reactFlowInstance.screenToFlowPosition({ x: clientX, y: clientY });
+      } else if (wrapperEl) {
+        // 从 React Flow 的 transform 中反算 flow 坐标
+        const viewport = wrapperEl.querySelector('.react-flow__viewport') as HTMLElement | null;
+        if (viewport) {
+          const style = viewport.style.transform || '';
+          const match = style.match(/translate\(([^)]+)\)\s*scale\(([^)]+)\)/);
+          if (match) {
+            const tx = parseFloat(match[1].split(',')[0]) || 0;
+            const ty = parseFloat(match[1].split(',')[1]) || 0;
+            const scale = parseFloat(match[2]) || 1;
+            const wrapperRect = wrapperEl.getBoundingClientRect();
+            flowPosition = {
+              x: (clientX - wrapperRect.left - tx) / scale,
+              y: (clientY - wrapperRect.top - ty) / scale,
+            };
+          } else {
+            flowPosition = { x: clientX, y: clientY };
+          }
+        } else {
+          flowPosition = { x: clientX, y: clientY };
+        }
+      } else {
+        flowPosition = { x: clientX, y: clientY };
+      }
+      setQuickAddState({
+        open: true,
+        screenPosition: { x: clientX, y: clientY },
+        flowPosition,
+      });
+      setQuickAddKey((k) => k + 1);
+    },
+    [reactFlowInstance],
+  );
+
+  // 保持 openQuickAddPanel 的稳定引用，避免每次渲染都重新注册事件监听
+  const openQuickAddPanelRef = useRef(openQuickAddPanel);
+  useEffect(() => {
+    openQuickAddPanelRef.current = openQuickAddPanel;
+  }, [openQuickAddPanel]);
+
+  // 使用原生 dblclick 事件监听（capture 阶段），绑定到 reactFlowWrapper DOM
+  useEffect(() => {
+    const wrapperEl = reactFlowWrapper.current;
+    if (!wrapperEl) return;
+
+    const handleNativeDblClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      // 只响应点击在 pane 上的双击（pane 是 .react-flow__pane 元素）
+      // @xyflow/react v12 的 pane 元素带有 react-flow__pane 类
+      const isPaneTarget =
+        target.classList.contains("react-flow__pane") ||
+        target.closest(".react-flow__pane") !== null;
+      if (!isPaneTarget) return;
+
+      // 判断 closest 的结果是否超出 wrapper（防止页面其他地方的 pane 类误触）
+      const paneEl = target.classList.contains("react-flow__pane")
+        ? target
+        : target.closest(".react-flow__pane");
+      if (!paneEl || !wrapperEl.contains(paneEl)) return;
+
+      openQuickAddPanelRef.current(event.clientX, event.clientY);
+    };
+
+    wrapperEl.addEventListener("dblclick", handleNativeDblClick, { capture: true });
+    return () => {
+      wrapperEl.removeEventListener("dblclick", handleNativeDblClick, { capture: true });
+    };
+  }, []);  // 仅挂载一次；通过 ref 获取最新的 openQuickAddPanel
+
+  /** 保留：后备路径（onPaneClick timer 双击检测），处理原生 dblclick 不触发的边界情况 */
+  const paneClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const DOUBLE_CLICK_THRESHOLD_MS = 350;
+
+  const handlePaneClickForQuickAdd = useCallback(
+    (event: React.MouseEvent) => {
+      if (!reactFlowInstance) return;
+      if (paneClickTimerRef.current) {
+        clearTimeout(paneClickTimerRef.current);
+        paneClickTimerRef.current = null;
+        openQuickAddPanel(event.clientX, event.clientY);
+      } else {
+        paneClickTimerRef.current = setTimeout(() => {
+          paneClickTimerRef.current = null;
+        }, DOUBLE_CLICK_THRESHOLD_MS);
+      }
+    },
+    [reactFlowInstance, openQuickAddPanel],
+  );
+
+  /** 原 handleWrapperDoubleClick 已被原生监听器替代，保留为空以避免删除 JSX onDoubleClick 处的引用 */
+  const handleWrapperDoubleClick = useCallback(
+    (_event: React.MouseEvent<HTMLDivElement>) => {
+      // no-op：已由原生 dblclick addEventListener 替代
+    },
+    [],
+  );
+
+  // ========================================================================
   // CONTEXT MENU - NODE
   // ========================================================================
   const handleNodeContextMenu = useCallback(
@@ -7811,6 +7937,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={combinedHandleDrop}
+        onDoubleClick={handleWrapperDoubleClick}
       >
         <ReactFlow
           nodes={visibleNodes}
@@ -7860,7 +7987,9 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
           onPaneContextMenu={handlePaneContextMenu}
           onNodeContextMenu={handleNodeContextMenu}
           onEdgeContextMenu={handleEdgeContextMenu}
-          onPaneClick={() => {
+          zoomOnDoubleClick={false}
+          onPaneClick={(event) => {
+            handlePaneClickForQuickAdd(event);
             setSelectedNodeId(null);
             setShowPropertyPanel(false);
             setSelectionCount(0);
@@ -9372,6 +9501,20 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
           // Deselect all nodes
           (document.querySelector('.react-flow__pane') as HTMLElement)?.click()
         }}
+      />
+
+      {/* Quick Add Node Search — 双击画布快速添加 */}
+      <QuickAddNodeSearch
+        key={quickAddKey}
+        open={quickAddState.open}
+        position={quickAddState.screenPosition}
+        options={QUICK_ADD_NODE_OPTIONS}
+        onSelect={(option) => {
+          handleAddNode(option.nodeType, quickAddState.flowPosition, option.nodeKind);
+        }}
+        onClose={() =>
+          setQuickAddState((prev) => ({ ...prev, open: false }))
+        }
       />
 
       {/* Chat Panel */}
