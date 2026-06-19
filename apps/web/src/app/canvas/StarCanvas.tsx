@@ -113,6 +113,7 @@ import { useProductionRunExecutor } from "./hooks/useProductionRunExecutor";
 import { StoryboardBatchProgressOverlay } from "./components/canvas/StoryboardBatchProgressOverlay";
 import { CanvasContextMenu } from "./components/menus/CanvasContextMenu";
 import PropertyPanel from "./components/panels/PropertyPanel";
+import ShotParameterPanel from "./components/panels/ShotParameterPanel";
 import { NodeContextMenu } from "./components/menus/NodeContextMenu";
 import { EdgeContextMenu } from "./components/menus/EdgeContextMenu";
 import { ImageHoverToolbar } from "./components/toolbar/ImageHoverToolbar";
@@ -318,6 +319,7 @@ import type {
   ApplyActionResult,
 } from "./features/canvas/actions/chatActions";
 import type { WorkflowRunEvent } from "./types/workflow-run";
+import type { ProjectEntryMode } from "./stores/useProjectStore";
 import type { CanvasSnapshot } from "./types/canvas-snapshot";
 import { useCanvasSnapshotStore } from "./stores/useCanvasSnapshotStore";
 import { useWorkspaceHistoryStore } from "./stores/useWorkspaceHistoryStore";
@@ -566,10 +568,16 @@ const edgeTypes = { creative: CreativeEdge };
 // STAR CANVAS (OUTER - provides ReactFlowProvider)
 // rc.2b: accepts projectId for per-project canvas storage isolation
 // ============================================================================
-export default function StarCanvas({ projectId }: { projectId?: string }) {
+export default function StarCanvas({
+  projectId,
+  entryMode,
+}: {
+  projectId?: string
+  entryMode?: ProjectEntryMode
+}) {
   return (
     <ReactFlowProvider>
-      <StarCanvasInner projectId={projectId} />
+      <StarCanvasInner projectId={projectId} entryMode={entryMode} />
     </ReactFlowProvider>
   );
 }
@@ -632,7 +640,13 @@ function buildTimelineClipsFromNodes(nodes: Node<CanvasNodeData>[]): TimelineCli
 // STAR CANVAS INNER (uses hooks that require ReactFlow context)
 // rc.2b: accepts projectId for per-project canvas storage isolation
 // ============================================================================
-function StarCanvasInner({ projectId }: { projectId?: string }) {
+function StarCanvasInner({
+  projectId,
+  entryMode = "blank",
+}: {
+  projectId?: string
+  entryMode?: ProjectEntryMode
+}) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [reactFlowInstance, setReactFlowInstance] =
     useState<ReactFlowInstance | null>(null);
@@ -7477,6 +7491,27 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
     [setNodes],
   );
 
+  // Update shot-specific fields on the selected node's data.shot
+  const handleShotUpdate = useCallback(
+    (patch: Partial<NonNullable<CanvasNodeData["shot"]>>) => {
+      if (!selectedNodeId) return;
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === selectedNodeId && n.data?.shot
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  shot: { ...n.data.shot, ...patch },
+                },
+              }
+            : n,
+        ),
+      );
+    },
+    [selectedNodeId, setNodes],
+  );
+
   // ========================================================================
   // RENDER
   // ========================================================================
@@ -7535,6 +7570,16 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
         onClose={() => setShowPropertyPanel(false)}
         onUpdateData={handlePropertyUpdate}
       />
+      {selectedNode?.type === "shot" && selectedNode?.data?.shot && (
+        <ShotParameterPanel
+          node={selectedNode}
+          onClose={() => {
+            setShowPropertyPanel(false);
+            setSelectedNodeId(null);
+          }}
+          onUpdateShot={handleShotUpdate}
+        />
+      )}
       <div className="relative h-screen w-screen overflow-hidden startrails-flow">
       <div
         className="fixed left-20 top-3 z-20 flex items-center overflow-x-auto scrollbar-none"
@@ -8081,9 +8126,11 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
           onUploadImage={handleUploadClick}
           onCreateTextNode={() => handleAddNode("content", undefined, "storyboard")}
           onImportScript={() => setShowScriptImportPanel(true)}
+          onImportReferenceVideo={() => setShowReverseStoryboard(true)}
           chatOpen={chatOpen}
           chatPanelWidth={CHAT_PANEL_WIDTH}
           leftToolbarWidth={LEFT_TOOLBAR_SAFE_WIDTH}
+          entryMode={entryMode}
         />
       )}
 
@@ -8131,6 +8178,7 @@ function StarCanvasInner({ projectId }: { projectId?: string }) {
       <AddNodePanel
         isOpen={showAddNodePanel}
         onClose={() => setShowAddNodePanel(false)}
+        entryMode={entryMode}
         onAddNode={(nodeType, nodeKind) =>
           handleAddNode(nodeType, undefined, nodeKind)
         }
