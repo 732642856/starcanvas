@@ -114,6 +114,7 @@ import { StoryboardBatchProgressOverlay } from "./components/canvas/StoryboardBa
 import { CanvasContextMenu } from "./components/menus/CanvasContextMenu";
 import PropertyPanel from "./components/panels/PropertyPanel";
 import ShotParameterPanel from "./components/panels/ShotParameterPanel";
+import PosterEditorModal from "./components/panels/PosterEditorModal";
 import { NodeContextMenu } from "./components/menus/NodeContextMenu";
 import { EdgeContextMenu } from "./components/menus/EdgeContextMenu";
 import { ImageHoverToolbar } from "./components/toolbar/ImageHoverToolbar";
@@ -840,6 +841,7 @@ function StarCanvasInner({
   const [showScriptImportPanel, setShowScriptImportPanel] = useState(false);
   const [showVideoRemixPanel, setShowVideoRemixPanel] = useState(false);
   const [showProjectBiblePanel, setShowProjectBiblePanel] = useState(false);
+  const [posterEditorImage, setPosterEditorImage] = useState<string | null>(null);
   const [showCharacterBiblePanel, setShowCharacterBiblePanel] = useState(false);
   const [showShotList, setShowShotList] = useState(false);
   const [showStyleLibrary, setShowStyleLibrary] = useState(false);
@@ -9581,6 +9583,33 @@ function StarCanvasInner({
         onAgentModeChange={setAgentMode}
       />
     </div>
+      {posterEditorImage && (
+        <PosterEditorModal
+          imageUrl={posterEditorImage}
+          onSave={(dataUrl) => {
+            // Create an image node on the canvas with the edited poster
+            const now = Date.now()
+            const nodeId = `poster-${now}`
+            setNodes((nds) => [
+              ...nds,
+              {
+                id: nodeId,
+                type: "image",
+                position: { x: 200, y: 200 },
+                data: {
+                  title: "编辑后的海报",
+                  imageUrl: dataUrl,
+                  nodeKind: "poster",
+                  createdAt: now,
+                  displayWidth: 400,
+                },
+              },
+            ])
+            setPosterEditorImage(null)
+          }}
+          onClose={() => setPosterEditorImage(null)}
+        />
+      )}
     </>
   );
 }
