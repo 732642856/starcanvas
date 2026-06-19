@@ -123,7 +123,7 @@ function getNodeTitle(node: Node): string {
 function toCanvasNodeContext(node: Node): CanvasNodeContextSnapshot {
   const data = node.data as Record<string, any> | undefined
 
-  return {
+  const context: CanvasNodeContextSnapshot = {
     id: node.id,
     type: node.type,
     nodeKind: data?.nodeKind,
@@ -142,6 +142,26 @@ function toCanvasNodeContext(node: Node): CanvasNodeContextSnapshot {
     inputs: data?.inputs,
     outputs: data?.outputs,
   }
+
+  // Inject shot-specific context when the node is a shot type
+  if (data?.shot) {
+    const shot = data.shot as Record<string, any>
+    Object.assign(context, {
+      shotId: shot.id || node.id,
+      shotType: shot.shotType,
+      cameraMovement: shot.cameraMovement,
+      shotDuration: shot.duration,
+      shotDescription: shot.description,
+      shotVisualPrompt: shot.visualPrompt,
+      shotStatus: shot.generationStatus || shot.status,
+      shotOrder: shot.order,
+      characterIdentities: Array.isArray(shot.characterIdentities)
+        ? shot.characterIdentities.map((c: any) => c.name || c.label).filter(Boolean)
+        : undefined,
+    })
+  }
+
+  return context
 }
 
 /**
@@ -181,6 +201,15 @@ function expandMentionsInMessage(input: string, nodes: Node[]): string {
       if (data?.content) contextParts.push(`内容: ${typeof data.content === "string" ? data.content.slice(0, 500) : ""}`)
       if (data?.prompt) contextParts.push(`提示词: ${typeof data.prompt === "string" ? data.prompt.slice(0, 300) : ""}`)
       if (data?.nodeKind) contextParts.push(`类型: ${data.nodeKind}`)
+      // Shot-specific details
+      if (data?.shot) {
+        const shot = data.shot as Record<string, any>
+        if (shot.shotType) contextParts.push(`景别: ${shot.shotType}`)
+        if (shot.cameraMovement) contextParts.push(`运镜: ${shot.cameraMovement}`)
+        if (shot.duration) contextParts.push(`时长: ${shot.duration}`)
+        if (shot.description) contextParts.push(`描述: ${String(shot.description).slice(0, 200)}`)
+        if (shot.visualPrompt) contextParts.push(`视觉提示词: ${String(shot.visualPrompt).slice(0, 300)}`)
+      }
       expanded = expanded.replace(m[0], contextParts.filter(Boolean).join("\n"))
     }
   }
@@ -738,10 +767,17 @@ export function ChatPanel({
           </div>
           <div className="flex-1">
             <p className="text-sm font-medium" style={{ color: DESIGN_TOKENS.text }}>
-              已选中节点
+              {selectedNode.type === "shot" ? "当前镜头" : "已选中节点"}
             </p>
             <p className="text-xs" style={{ color: DESIGN_TOKENS.textMuted }}>
               {String(selectedNode.data?.title || selectedNode.type || "未命名节点")}
+              {(selectedNode.data?.shot as Record<string, any> | undefined) && (
+                <span style={{ color: DESIGN_TOKENS.accent }}>
+                  {(selectedNode.data?.shot as Record<string, any>).shotType ? ` · ${(selectedNode.data?.shot as Record<string, any>).shotType}` : ""}
+                  {(selectedNode.data?.shot as Record<string, any>).cameraMovement ? ` · ${(selectedNode.data?.shot as Record<string, any>).cameraMovement}` : ""}
+                  {(selectedNode.data?.shot as Record<string, any>).duration ? ` · ${(selectedNode.data?.shot as Record<string, any>).duration}` : ""}
+                </span>
+              )}
             </p>
           </div>
         </div>

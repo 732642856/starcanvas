@@ -133,6 +133,16 @@ type CanvasNodeContext = {
   assetUrl?: string
   inputs?: Array<{ label?: string; type?: string }>
   outputs?: Array<{ label?: string; type?: string; url?: string }>
+  // Shot-specific fields (populated when node.type === "shot")
+  shotId?: string
+  shotType?: string
+  cameraMovement?: string
+  shotDuration?: string
+  shotDescription?: string
+  shotVisualPrompt?: string
+  shotStatus?: string
+  shotOrder?: number
+  characterIdentities?: string[]
 }
 
 function summarizeNode(node: CanvasNodeContext): string {
@@ -142,6 +152,16 @@ function summarizeNode(node: CanvasNodeContext): string {
     node.status ? `状态: ${node.status}` : undefined,
     node.model ? `模型: ${node.model}` : undefined,
     node.duration ? `时长: ${node.duration}` : undefined,
+    // Shot-specific fields
+    node.shotId ? `Shot ID: ${node.shotId}` : undefined,
+    node.shotType ? `景别: ${node.shotType}` : undefined,
+    node.cameraMovement ? `运镜: ${node.cameraMovement}` : undefined,
+    node.shotDuration ? `Shot 时长: ${node.shotDuration}` : undefined,
+    node.shotStatus ? `Shot 状态: ${node.shotStatus}` : undefined,
+    node.shotDescription ? `Shot 描述: ${node.shotDescription.slice(0, 180)}` : undefined,
+    node.shotVisualPrompt ? `Shot 视觉提示: ${node.shotVisualPrompt.slice(0, 180)}` : undefined,
+    node.characterIdentities?.length ? `角色: ${node.characterIdentities.join(", ")}` : undefined,
+    // General fields
     node.prompt ? `Prompt: ${node.prompt.slice(0, 180)}` : undefined,
     node.content ? `内容: ${node.content.slice(0, 180)}` : undefined,
     node.summary ? `摘要: ${node.summary.slice(0, 180)}` : undefined,
