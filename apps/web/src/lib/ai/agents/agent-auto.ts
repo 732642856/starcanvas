@@ -17,6 +17,7 @@ export type AutoAgentAction = {
     | "batch-shot-variation"
     | "script-to-concept"
     | "multi-step-pipeline"
+    | "extract-production-assets"
     | "chat"
     | "unknown"
   /** 各意图对应的参数 */
@@ -134,12 +135,24 @@ export const AUTO_AGENT_SYSTEM_PROMPT = `你是一位专业的影视创作助理
 示例用户："帮我写一个古风仙侠短剧的剧本，然后做成故事板，再生成角色设计"
 → {"intent":"multi-step-pipeline","params":{"goal":"古风仙侠短剧全流程创作","steps":[{"type":"script","description":"生成剧本"},{"type":"storyboard","description":"将剧本拆为分镜"},{"type":"character","description":"设计角色"}],"genre":"古装仙侠","style":"水墨画风"},"description":"正在规划古风仙侠短剧的全流程创作","confidence":0.95}
 
-### 12. chat（普通对话）
+### 12. extract-production-assets（制作资产拆解 / Project Bible）
+当用户给出较长剧本、短剧/电影大纲，希望提取角色、场景、道具、服装、声线、视觉资产，或提到“项目圣经 / 制作圣经 / 资产拆解 / 全局角色管理 / 长剧本理解 / 10万字剧本”时使用。
+参数：
+- script: 剧本或故事文本
+- goal: 制作目标
+- genre: 题材类型
+- style: 视觉风格
+- targetPlatform: 目标平台（short-drama/film/interactive/commercial）
+
+示例用户："把这段短剧剧本拆成角色、场景、道具和分镜制作圣经"
+→ {"intent":"extract-production-assets","params":{"script":"用户提供的剧本文本","goal":"短剧制作资产拆解","genre":"短剧","style":"cinematic","targetPlatform":"short-drama"},"description":"正在拆解制作资产并生成项目圣经","confidence":0.92}
+
+### 13. chat（普通对话）
 如果用户的输入只是打招呼、闲聊、或询问一般性问题，使用 chat 意图。
 参数：
 - topic: 话题
 
-### 13. unknown（无法识别的意图）
+### 14. unknown（无法识别的意图）
 当无法确定用户意图时使用。
 
 ## 输出规则
@@ -149,6 +162,7 @@ export const AUTO_AGENT_SYSTEM_PROMPT = `你是一位专业的影视创作助理
 - 当用户提到“角色漂移 / 一致性 / 合规 / 检查角色”时，优先使用 validate-character-consistency
 - 当用户提到“批量变化 / 组镜变化 / 多套镜头 / 节奏版本”时，优先使用 batch-shot-variation
 - 当用户提到“剧本到概念图 / 一键概念图 / 从故事生成角色场景图”时，优先使用 script-to-concept
+- 当用户提到“制作圣经 / 项目圣经 / 资产拆解 / 长剧本理解 / 全局角色 / 道具服装清单 / 短剧资产”时，优先使用 extract-production-assets
 - confidence 表示你对意图判断的信心，低于 0.6 时应回退到 chat 或 unknown
 `
 
@@ -371,6 +385,8 @@ export function getActionDescription(action: AutoAgentAction): string {
       return `🎞️ 正在生成批量组镜变化方案...`
     case "script-to-concept":
       return `🖼️ 正在把剧本转成概念图任务...`
+    case "extract-production-assets":
+      return `📚 正在拆解制作资产并生成项目圣经...`
     case "multi-step-pipeline": {
       const stepCount = action.params.steps?.length || 0
       return `🚀 正在执行全流程创作（共 ${stepCount} 步）\n${action.params.steps?.map((s: any, i: number) => `  ${i + 1}. ${s.description || s.type || "..."}`).join("\n") || ""}`

@@ -7,6 +7,10 @@
 
 import type { NormalizedAiError } from "./errors"
 import type { AiProviderOverrides } from "./provider-config"
+import type {
+  ProviderRealSmokeTarget,
+  ProviderSmokeReport,
+} from "./providerSmoke"
 
 // ============================================================================
 // Types
@@ -52,6 +56,11 @@ export interface AiHealthResponse {
     videoModel?: string
     timeoutMs: number
   }
+}
+
+export interface RuntimeProviderState {
+  overrides: AiProviderOverrides | null
+  usageProvider: string
 }
 
 // ============================================================================
@@ -162,6 +171,55 @@ export async function checkAiHealth(overrides?: AiProviderOverrides): Promise<Ai
   return res.json()
 }
 
+export async function checkProviderSmoke(overrides?: AiProviderOverrides): Promise<ProviderSmokeReport> {
+  const res = await fetch("/api/ai/provider-smoke", {
+    method: overrides ? "POST" : "GET",
+    headers: { "Content-Type": "application/json" },
+    ...(overrides ? { body: JSON.stringify({ _providerOverrides: overrides }) } : {}),
+  })
+
+  if (!res.ok) {
+    throw new Error(`Provider smoke failed: ${res.status}`)
+  }
+
+  return res.json()
+}
+
+export async function runProviderSmoke(
+  target: ProviderRealSmokeTarget,
+  options?: {
+    overrides?: AiProviderOverrides
+    confirmCost?: boolean
+    confirmationText?: string
+    waitForResult?: boolean
+  },
+): Promise<{
+  ok: boolean
+  target: ProviderRealSmokeTarget
+  message: string
+  status: "passed" | "failed" | "blocked"
+  details?: string[]
+  artifact?: {
+    type: "image" | "video"
+    url: string
+    mimeType?: string
+  }
+}> {
+  const res = await fetch("/api/ai/provider-smoke/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      target,
+      confirmCost: options?.confirmCost === true,
+      confirmationText: options?.confirmationText,
+      waitForResult: options?.waitForResult === true,
+      ...(options?.overrides ? { _providerOverrides: options.overrides } : {}),
+    }),
+  })
+
+  return res.json()
+}
+
 /**
  * 获取当前 Provider 配置（不含 API Key）。
  */
@@ -230,6 +288,57 @@ export async function getVideoModel(): Promise<string> {
     return _cachedVideoModel!
   } catch {
     return "gpt-5.5" // fallback
+  }
+}
+
+function getStoredSessionApiKey(): string | undefined {
+  if (typeof window === "undefined") return undefined
+  try {
+    const sessionKey = window.sessionStorage.getItem("startrails_session_api_key")
+    if (sessionKey) return sessionKey
+    const localKey = window.localStorage.getItem("startrails_ui_api_key")
+    return localKey || undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function inferUsageProvider(baseUrl?: string): Promise<string> {
+  if (baseUrl) {
+    try {
+      const hostname = new URL(baseUrl).hostname.replace(/^www\./, "")
+      return hostname || "custom"
+    } catch {
+      return "custom"
+    }
+  }
+
+  try {
+    const config = await getAiConfig()
+    if (config.baseUrl) {
+      const hostname = new URL(config.baseUrl).hostname.replace(/^www\./, "")
+      return hostname || "default"
+    }
+  } catch {
+    // Ignore and fall back below.
+  }
+
+  return "default"
+}
+
+export async function getRuntimeProviderState(): Promise<RuntimeProviderState> {
+  const overrides = getLocalProviderOverrides()
+  const sessionApiKey = getStoredSessionApiKey()
+  const mergedOverrides = overrides || sessionApiKey
+    ? {
+        ...(overrides || {}),
+        ...(sessionApiKey ? { sessionApiKey } : {}),
+      }
+    : null
+
+  return {
+    overrides: mergedOverrides,
+    usageProvider: await inferUsageProvider(mergedOverrides?.baseUrl),
   }
 }
 

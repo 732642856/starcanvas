@@ -4,6 +4,10 @@ const PORT = Number(process.env.STARCANVAS_E2E_PORT || 3107)
 const baseURL = process.env.STARCANVAS_E2E_BASE_URL || `http://127.0.0.1:${PORT}`
 const isCI = Boolean(process.env.CI)
 const isProdE2E = process.env.E2E_SERVER === "prod"
+const chromeExecutablePath = process.env.STARCANVAS_E2E_CHROME_PATH?.trim()
+const videoMode = process.env.STARCANVAS_E2E_DISABLE_VIDEO === "1"
+  ? "off"
+  : "retain-on-failure"
 
 export default defineConfig({
   testDir: "./e2e",
@@ -31,14 +35,19 @@ export default defineConfig({
     navigationTimeout: isProdE2E ? 30_000 : 90_000,
 
     trace: "retain-on-failure",
-    video: "retain-on-failure",
+    video: videoMode,
     screenshot: "only-on-failure",
   },
 
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        ...(chromeExecutablePath
+          ? { launchOptions: { executablePath: chromeExecutablePath } }
+          : {}),
+      },
     },
   ],
 

@@ -6,12 +6,25 @@ import { NextRequest, NextResponse } from "next/server"
 import { normalizeGenerationError } from "@/lib/ai/normalizeGenerationError"
 import { getImageProviderCapability } from "@/lib/ai/imageProviderCapabilities"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
-import { getProvider } from "@/lib/ai/provider-registry"
+import { getProvider, mergeProviderConfig, type AiProviderOverrides } from "@/lib/ai/provider-registry"
 
 // ── Config ──────────────────────────────────────────────────────────────────
 // 通过 Provider Registry 统一读取，不再直接读 process.env
 function getImageConfig() {
   const provider = getProvider()
+  return {
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    timeoutMs: provider.timeoutMs,
+    enhanceTimeoutMs: Math.min(provider.timeoutMs, 30000),
+    retryAttempts: Math.max(1, Number(process.env.AI_IMAGE_RETRY_ATTEMPTS || 2)),
+  }
+}
+
+function getImageConfigFromOverrides(overrides?: AiProviderOverrides) {
+  if (!overrides) return getImageConfig()
+
+  const provider = mergeProviderConfig(overrides)
   return {
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
@@ -224,10 +237,20 @@ function buildEnhanceSystemPrompt(hasSourceImage: boolean): string {
 
 // ── Main handler ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
-  const config = getImageConfig()
+  let activeProviderId = getProvider().id
 
   try {
     const body = await request.json()
+    const overrides: AiProviderOverrides | undefined =
+      body?._providerOverrides && typeof body._providerOverrides === "object"
+        ? body._providerOverrides as AiProviderOverrides
+        : undefined
+    const config = getImageConfigFromOverrides(overrides)
+    if (overrides?.providerId) {
+      activeProviderId = overrides.providerId
+    } else if (overrides?.baseUrl) {
+      activeProviderId = "custom"
+    }
     const {
       prompt,
       model = "gpt-image-2",
@@ -525,10 +548,10 @@ export async function POST(request: NextRequest) {
       referenceFormat: isImageToImage ? "multipart_form_image_file" : REFERENCE_IMAGE_FORMAT,
     })
   } catch (error: any) {
-    const normalized = normalizeGenerationError({ error, provider: "copse" })
+    const normalized = normalizeGenerationError({ error, provider: activeProviderId })
     devDebug("[generate-image] unexpected error raw:", normalized.raw)
     return NextResponse.json(
-      { ok: false, error: normalized, attempts: 0, provider: "copse" },
+      { ok: false, error: normalized, attempts: 0, provider: activeProviderId },
       { status: normalized.status || 500 },
     )
   }

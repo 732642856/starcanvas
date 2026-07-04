@@ -191,6 +191,7 @@ export type CanvasActionType =
   | "run_node"
   | "create_workflow_template"
   | "open_panel"
+  | "configure_provider"
   | "generate_storyboard"
   | "layout_canvas"
   | "delete_node"
@@ -214,11 +215,24 @@ export interface CanvasAction {
   // select_node / focus_node / run_node / delete_node
   id?: string
   // create_workflow_template / open_panel / generate_storyboard / layout_canvas
-  template?: "tapnow_preproduction" | "arc_reel_agent" | "video_preproduction"
-  panel?: "chat" | "add_node" | "asset_library" | "project_bible" | "character_bible" | "scene_bible" | "style_bible" | "run_queue" | "property"
+  template?:
+    | "tapnow_preproduction"
+    | "arc_reel_agent"
+    | "video_preproduction"
+    | "grid_storyboard_video"
+    | "character_turnaround_video"
+  panel?: "chat" | "add_node" | "asset_library" | "project_bible" | "character_bible" | "scene_bible" | "style_bible" | "run_queue" | "property" | "settings"
   layout?: "horizontal" | "vertical" | "grid"
   sourceNodeId?: string
   shots?: Array<{ title?: string; content?: string; prompt?: string; duration?: string; cameraMovement?: string; shotType?: string }>
+  baseUrl?: string
+  apiKey?: string
+  defaultModel?: string
+  imageModel?: string
+  videoModel?: string
+  timeoutMs?: number
+  keyStorageMode?: "session" | "local"
+  openSettings?: boolean
   description?: string
 }
 
@@ -268,7 +282,7 @@ const CANVAS_ACTION_SCHEMA = `
     },
     {
       "action": "create_workflow_template",
-      "template": "arc_reel_agent" | "tapnow_preproduction" | "video_preproduction",
+      "template": "arc_reel_agent" | "tapnow_preproduction" | "video_preproduction" | "grid_storyboard_video" | "character_turnaround_video",
       "description": "创建可编辑的视频创作工作流模板"
     },
     {
@@ -281,8 +295,20 @@ const CANVAS_ACTION_SCHEMA = `
     },
     {
       "action": "open_panel",
-      "panel": "chat" | "add_node" | "asset_library" | "project_bible" | "character_bible" | "scene_bible" | "style_bible" | "run_queue" | "property",
+      "panel": "chat" | "add_node" | "asset_library" | "project_bible" | "character_bible" | "scene_bible" | "style_bible" | "run_queue" | "property" | "settings",
       "description": "打开用户下一步需要的面板"
+    },
+    {
+      "action": "configure_provider",
+      "baseUrl": "用户的 OpenAI-compatible 中转站地址",
+      "apiKey": "用户明确提供的 Key，仅在用户主动要求配置时填写",
+      "defaultModel": "文本模型名",
+      "imageModel": "图片模型名",
+      "videoModel": "视频模型名",
+      "timeoutMs": 120000,
+      "keyStorageMode": "session" | "local",
+      "openSettings": true,
+      "description": "帮用户把中转站和模型配置到星轨画布"
     },
     {
       "action": "layout_canvas",
@@ -305,8 +331,11 @@ const CANVAS_ACTION_SCHEMA = `
 - create_node 不需要 nodeId，系统会自动生成；需要导演 Agent 时用 nodeType:"agent", nodeKind:"agent"
 - position 是画布坐标（不是屏幕坐标），可省略让系统自动居中
 - 用户要“一键做视频/从小说到视频/搭建完整流程/像 ArcReel 一样”时优先用 create_workflow_template，减少手写多个 create_node
+- 用户要“3×3 分镜/九宫格分镜/网格分镜转视频”时用 template:"grid_storyboard_video"
+- 用户要“角色三视图/角色设定表/角色转身动画/角色一致性动画”时用 template:"character_turnaround_video"
 - 用户要"拆分镜/生成镜头表"时优先用 generate_storyboard，shots 必须能直接形成可运行的镜头节点。**单次 generate_storyboard 的 shots 不要超过 6 个（系统上限 12 个，但用户界面不适合放太多）。如果用户没指定数量，默认拆分 4-6 个关键镜头即可，不用把每个细节都变成节点。对于长剧本，先拆关键镜头，问用户是否需要更多。**
 - 用户要“打开素材库/Bible/队列/添加节点”时用 open_panel，不要只文字建议
+- 用户要“帮我把某个中转站地址 / API Key / 模型填进星轨画布设置里”时，优先输出 configure_provider；如果只是让你展示设置页，也可以用 open_panel + settings
 - run_node 建议运行节点（默认不会自动执行，需用户确认）
 - delete_node 仅当用户明确要求删除节点时使用
 `

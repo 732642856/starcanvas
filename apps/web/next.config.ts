@@ -18,6 +18,16 @@ const nextConfig: NextConfig = {
       use: "ignore-loader",
     })
 
+    // Suppress a known webpack warning from the Kokoro -> transformers.web.js chain.
+    // This comes from third-party code and does not affect runtime behavior.
+    config.ignoreWarnings = [
+      ...(config.ignoreWarnings || []),
+      {
+        module: /@huggingface[\\/]transformers[\\/]dist[\\/]transformers\.web\.js$/,
+        message: /Accessing import\.meta directly is unsupported/,
+      },
+    ]
+
     return config
   },
 
