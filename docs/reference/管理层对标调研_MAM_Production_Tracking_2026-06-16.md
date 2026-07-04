@@ -121,5 +121,5 @@
 ## 注意事项
 
 1. Kitsu/Nebula/WrangleBot 均为 GPL/AGPL 传染性许可证，**不得直接复制代码**，只能借鉴架构设计思路。
-2. StarCanvas 已有基础资产库面板（CharacterAssetLibraryPanel、AssetLibraryPanel），管理层建设应在现有基础上渐进增强。
+2. StarCanvas 当前运行时资产入口以 `ProjectBiblePanel` 角色页和 `AssetLibraryPanel` 为主；`CharacterAssetLibraryPanel` 属历史并行 UI，不宜再作为现役入口判断依据。
 3. 优先建设"可见的"功能（搜索、过滤、看板），让开源社区能直观看到管理层价值。
