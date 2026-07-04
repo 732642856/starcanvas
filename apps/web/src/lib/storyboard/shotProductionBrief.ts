@@ -30,6 +30,15 @@ export type ShotProductionBrief = {
   handoff: {
     notes?: string;
     warnings?: string[];
+    source?: {
+      type?: string;
+      videoName?: string;
+      timeSec?: number;
+      timestampMs?: number;
+      frameIndex?: number;
+      sourceVideoId?: string;
+      referenceImageUrl?: string;
+    };
   };
 };
 
@@ -59,9 +68,7 @@ function formatDuration(shot: StoryboardShotData): string | undefined {
 function getVisualPrompt(shot: StoryboardShotData): string {
   return cleanText(
     shot.cinematicShot?.visualPrompt ||
-      shot.visualPrompt ||
-      shot.description ||
-      shot.title,
+      shot.visualPrompt,
   );
 }
 
@@ -110,6 +117,34 @@ function buildHandoffNotes(shot: StoryboardShotData): string | undefined {
   ]);
 }
 
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return cleanText(value) || undefined;
+}
+
+function buildSourceMeta(shot: StoryboardShotData): ShotProductionBrief["handoff"]["source"] | undefined {
+  const meta = shot.sourceMeta;
+  const sourceType = readString(shot.sourceType);
+  const referenceImageUrl = readString(shot.referenceImageUrl);
+
+  if (!meta && !sourceType && !referenceImageUrl) return undefined;
+
+  const source = {
+    type: sourceType,
+    videoName: readString(meta?.videoName) || readString(meta?.sourceTitle),
+    timeSec: readNumber(meta?.timeSec),
+    timestampMs: readNumber(meta?.timestampMs),
+    frameIndex: readNumber(meta?.frameIndex),
+    sourceVideoId: readString(meta?.sourceVideoId),
+    referenceImageUrl,
+  };
+
+  return Object.values(source).some((value) => value !== undefined) ? source : undefined;
+}
+
 export function buildShotProductionBrief(shot: StoryboardShotData): ShotProductionBrief {
   const dialogue = getDialogue(shot);
   const voiceIntent = cleanText(shot.cinematicShot?.voiceIntent) || cleanText(shot.voiceConfig?.instruct) || undefined;
@@ -143,6 +178,7 @@ export function buildShotProductionBrief(shot: StoryboardShotData): ShotProducti
     handoff: {
       notes: buildHandoffNotes(shot),
       warnings: collectWarnings(shot),
+      source: buildSourceMeta(shot),
     },
   };
 }

@@ -293,9 +293,21 @@ export async function exportJianyingDraftZip(result: JianyingExportResult): Prom
   return await zip.generateAsync({ type: "blob" })
 }
 
+function dispatchCanvasNotice(title: string, description: string) {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(
+    new CustomEvent("starcanvas:notice", {
+      detail: { kind: "warning", title, description },
+    }),
+  )
+}
+
 export async function downloadJianyingDraft(nodes: Node<CanvasNodeData>[], name?: string): Promise<boolean> {
   const result = buildJianyingDraft(nodes, name)
-  if (!result) { alert("当前画布没有分镜节点。"); return false }
+  if (!result) {
+    dispatchCanvasNotice("还没有可导出的剪映草稿", "请先生成分镜节点后再导出。")
+    return false
+  }
   const blob = await exportJianyingDraftZip(result)
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")

@@ -50,6 +50,12 @@ export function exportShotPlanningBoardToMarkdown(
     if (item.durationSec != null) {
       lines.push(`- **Duration**: ${item.durationSec}s`);
     }
+    if (item.sourceType) {
+      lines.push(`- **Source**: ${item.sourceType}${item.sourceTimeSec != null ? ` @ ${Math.round(item.sourceTimeSec * 10) / 10}s` : ""}`);
+    }
+    if (item.referenceImageUrl) {
+      lines.push(`- **Reference Frame**: ${item.referenceImageUrl}`);
+    }
     if (item.shotPresetId) {
       lines.push(`- **Shot Preset**: \`${item.shotPresetId}\``);
     }

@@ -173,8 +173,8 @@ describe("shotProductionBrief", () => {
       visualPrompt: "",
     });
 
-    assert.equal(brief.visual.prompt, "空镜头");
-    assert.equal(brief.handoff.warnings, undefined);
+    assert.equal(brief.visual.prompt, "");
+    assert.deepEqual(brief.handoff.warnings, ["Missing visual prompt for shot generation"]);
 
     const missingPromptBrief = buildShotProductionBrief({
       id: "shot-missing",
@@ -185,5 +185,34 @@ describe("shotProductionBrief", () => {
     });
 
     assert.deepEqual(missingPromptBrief.handoff.warnings, ["Missing visual prompt for shot generation"]);
+  });
+
+  it("preserves reference-video source metadata for handoff", () => {
+    const brief = buildShotProductionBrief({
+      id: "shot-reference",
+      order: 6,
+      title: "参考视频镜头",
+      description: "基于参考视频关键帧",
+      visualPrompt: "cinematic frame from reference",
+      referenceImageUrl: "data:image/jpeg;base64,frame",
+      sourceType: "reference-video",
+      sourceMeta: {
+        videoName: "reference.webm",
+        timeSec: 12.5,
+        timestampMs: 12500,
+        frameIndex: 3,
+        sourceVideoId: "video-node-1",
+      },
+    });
+
+    assert.deepEqual(brief.handoff.source, {
+      type: "reference-video",
+      videoName: "reference.webm",
+      timeSec: 12.5,
+      timestampMs: 12500,
+      frameIndex: 3,
+      sourceVideoId: "video-node-1",
+      referenceImageUrl: "data:image/jpeg;base64,frame",
+    });
   });
 });

@@ -9,9 +9,29 @@ export type CharacterAssetLibraryItem = CharacterIdentityAsset & {
   shotTitles: string[];
 };
 
+export type CharacterAssetSeed = {
+  id: string;
+  name: string;
+  role: string;
+  notes?: string;
+};
+
 export type CharacterAssetLibraryPatch = Partial<Pick<
   CharacterIdentityAsset,
-  "name" | "role" | "visualSignature" | "costume" | "props" | "physicalTraits" | "colorPalette" | "notes"
+  | "name"
+  | "role"
+  | "visualSignature"
+  | "costume"
+  | "props"
+  | "physicalTraits"
+  | "colorPalette"
+  | "notes"
+  | "frontViewUrl"
+  | "sideViewUrl"
+  | "backViewUrl"
+  | "frontViewAssetId"
+  | "sideViewAssetId"
+  | "backViewAssetId"
 >>;
 
 function cleanText(value: unknown): string {
@@ -52,6 +72,12 @@ export function mergeCharacterIdentityAsset(
     physicalTraits: uniqueStrings([...(base.physicalTraits ?? []), ...(override.physicalTraits ?? [])]),
     colorPalette: uniqueStrings([...(base.colorPalette ?? []), ...(override.colorPalette ?? [])]),
     referenceAssetId: mergeText(override.referenceAssetId, base.referenceAssetId),
+    frontViewUrl: mergeText(override.frontViewUrl, base.frontViewUrl),
+    sideViewUrl: mergeText(override.sideViewUrl, base.sideViewUrl),
+    backViewUrl: mergeText(override.backViewUrl, base.backViewUrl),
+    frontViewAssetId: mergeText(override.frontViewAssetId, base.frontViewAssetId),
+    sideViewAssetId: mergeText(override.sideViewAssetId, base.sideViewAssetId),
+    backViewAssetId: mergeText(override.backViewAssetId, base.backViewAssetId),
     notes: mergeText(override.notes, base.notes),
   };
 }
@@ -97,6 +123,45 @@ export function collectCharacterAssetLibraryItemsFromShots(shots: StoryboardShot
         });
       }
     }
+  }
+
+  return [...itemByKey.values()].sort((a, b) => b.shotCount - a.shotCount || a.name.localeCompare(b.name));
+}
+
+export function collectCharacterAssetLibraryItemsFromSeeds(seeds: CharacterAssetSeed[]): CharacterAssetLibraryItem[] {
+  return seeds
+    .map((seed) => ({
+      id: cleanText(seed.id) || cleanText(seed.name),
+      name: cleanText(seed.name) || "未命名角色",
+      role: cleanText(seed.role) || undefined,
+      notes: cleanText(seed.notes) || undefined,
+      shotCount: 0,
+      shotTitles: [],
+    }))
+    .filter((item) => Boolean(item.id || item.name))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function mergeCharacterAssetLibraryItems(
+  primary: CharacterAssetLibraryItem[],
+  secondary: CharacterAssetLibraryItem[],
+): CharacterAssetLibraryItem[] {
+  const itemByKey = new Map<string, CharacterAssetLibraryItem>();
+
+  for (const item of [...primary, ...secondary]) {
+    const key = normalizeIdentityKey(item);
+    if (!key) continue;
+    const existing = itemByKey.get(key);
+    if (existing) {
+      const merged = mergeCharacterIdentityAsset(existing, item);
+      itemByKey.set(key, {
+        ...merged,
+        shotCount: Math.max(existing.shotCount, item.shotCount),
+        shotTitles: [...new Set([...(existing.shotTitles ?? []), ...(item.shotTitles ?? [])])],
+      });
+      continue;
+    }
+    itemByKey.set(key, item);
   }
 
   return [...itemByKey.values()].sort((a, b) => b.shotCount - a.shotCount || a.name.localeCompare(b.name));
@@ -171,6 +236,12 @@ export function applyCharacterAssetLibraryPatchToShots(
         ...(patch.physicalTraits !== undefined ? { physicalTraits: cleanStringList(patch.physicalTraits) } : {}),
         ...(patch.colorPalette !== undefined ? { colorPalette: cleanStringList(patch.colorPalette) } : {}),
         ...(patch.notes !== undefined ? { notes: cleanText(patch.notes) || undefined } : {}),
+        ...(patch.frontViewUrl !== undefined ? { frontViewUrl: cleanText(patch.frontViewUrl) || undefined } : {}),
+        ...(patch.sideViewUrl !== undefined ? { sideViewUrl: cleanText(patch.sideViewUrl) || undefined } : {}),
+        ...(patch.backViewUrl !== undefined ? { backViewUrl: cleanText(patch.backViewUrl) || undefined } : {}),
+        ...(patch.frontViewAssetId !== undefined ? { frontViewAssetId: cleanText(patch.frontViewAssetId) || undefined } : {}),
+        ...(patch.sideViewAssetId !== undefined ? { sideViewAssetId: cleanText(patch.sideViewAssetId) || undefined } : {}),
+        ...(patch.backViewAssetId !== undefined ? { backViewAssetId: cleanText(patch.backViewAssetId) || undefined } : {}),
       };
     });
 

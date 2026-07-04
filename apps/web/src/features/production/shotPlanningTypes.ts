@@ -36,6 +36,9 @@ export interface ShotPlanningItem {
   shotPresetId?: string;
   stylePresetId?: string;
   durationSec?: number;
+  sourceType?: string;
+  sourceTimeSec?: number;
+  referenceImageUrl?: string;
   status: ShotPlanningStatus;
   notes?: string;
   order: number;
@@ -73,6 +76,9 @@ export interface CreateShotPlanningBoardInput {
     shotPresetId?: string;
     stylePresetId?: string;
     durationSec?: number;
+    sourceType?: string;
+    sourceTimeSec?: number;
+    referenceImageUrl?: string;
   }>;
   now?: Date;
 }

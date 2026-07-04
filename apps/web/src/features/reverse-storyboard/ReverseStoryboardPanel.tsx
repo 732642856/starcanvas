@@ -9,7 +9,7 @@
 
 import React, { useCallback, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { X, Upload, Camera, Film, Image, Play, Loader2, Check, Sparkles, Clock } from "lucide-react"
+import { X, Upload, Camera, Film, Image, Play, Loader2, Check, Sparkles, Clock, Wand2 } from "lucide-react"
 import { DESIGN_TOKENS } from "../../app/canvas/styles/designSystem"
 import { useVideoFrameExtractor } from "@/features/reverse-storyboard/useVideoFrameExtractor.ts"
 import { generateStoryboardDraft } from "@/features/reverse-storyboard/generateStoryboardDraft.ts"
@@ -48,6 +48,7 @@ function ReverseStoryboardPanelInner({
   const [imported, setImported] = useState(false)
   const [fileError, setFileError] = useState<string | null>(null)
   const [durationError, setDurationError] = useState<string | null>(null)
+  const [extractionStrategy, setExtractionStrategy] = useState<"scene-change" | "uniform">("scene-change")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { state: extractor, extractFromFile, reset: resetExtractor } = useVideoFrameExtractor()
@@ -86,6 +87,7 @@ function ReverseStoryboardPanelInner({
     const frames = await extractFromFile(file, {
       count: VIDEO_CONSTRAINTS.defaultFrameCount,
       maxFrames: VIDEO_CONSTRAINTS.maxFrames,
+      strategy: extractionStrategy,
     })
 
     if (frames.length > 0) {
@@ -109,7 +111,7 @@ function ReverseStoryboardPanelInner({
 
       setVideoMeta(meta)
     }
-  }, [file, extractFromFile, extractor.videoDuration, extractor.videoWidth, extractor.videoHeight, resetExtractor])
+  }, [file, extractFromFile, extractor.videoDuration, extractor.videoWidth, extractor.videoHeight, extractionStrategy, resetExtractor])
 
   // ── Step 3: Generate storyboard draft ───────────────
   const handleGenerateDraft = useCallback(() => {
@@ -270,13 +272,52 @@ function ReverseStoryboardPanelInner({
               )}
 
               {!hasFrames && !isExtracting && (
-                <button
-                  onClick={handleExtractFrames}
-                  className="w-full bg-[var(--color-accent)] hover:brightness-110 text-white text-xs font-medium px-4 py-2 rounded-lg transition-all flex items-center justify-center gap-2"
-                >
-                  <Camera size={14} />
-                  抽取 {VIDEO_CONSTRAINTS.defaultFrameCount} 个关键帧
-                </button>
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExtractionStrategy("scene-change")}
+                      className="rounded-lg border px-3 py-2 text-[11px] transition-all"
+                      style={{
+                        borderColor: extractionStrategy === "scene-change" ? "rgba(99,102,241,0.55)" : "var(--color-border)",
+                        backgroundColor: extractionStrategy === "scene-change" ? "rgba(99,102,241,0.12)" : "transparent",
+                        color: extractionStrategy === "scene-change" ? "var(--color-text)" : "var(--color-text-secondary)",
+                      }}
+                    >
+                      <div className="flex items-center justify-center gap-1.5">
+                        <Wand2 size={12} />
+                        智能转场
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExtractionStrategy("uniform")}
+                      className="rounded-lg border px-3 py-2 text-[11px] transition-all"
+                      style={{
+                        borderColor: extractionStrategy === "uniform" ? "rgba(99,102,241,0.55)" : "var(--color-border)",
+                        backgroundColor: extractionStrategy === "uniform" ? "rgba(99,102,241,0.12)" : "transparent",
+                        color: extractionStrategy === "uniform" ? "var(--color-text)" : "var(--color-text-secondary)",
+                      }}
+                    >
+                      <div className="flex items-center justify-center gap-1.5">
+                        <Clock size={12} />
+                        均匀抽帧
+                      </div>
+                    </button>
+                  </div>
+                  <button
+                    onClick={handleExtractFrames}
+                    className="w-full bg-[var(--color-accent)] hover:brightness-110 text-white text-xs font-medium px-4 py-2 rounded-lg transition-all flex items-center justify-center gap-2"
+                  >
+                    <Camera size={14} />
+                    {extractionStrategy === "scene-change"
+                      ? `智能抽取 ${VIDEO_CONSTRAINTS.defaultFrameCount} 个关键帧`
+                      : `均匀抽取 ${VIDEO_CONSTRAINTS.defaultFrameCount} 个关键帧`}
+                  </button>
+                  <p className="text-[10px] leading-4 text-[var(--color-text-tertiary)]">
+                    智能转场模式参考 PySceneDetect 的内容检测思路，优先抓取场景切换；均匀抽帧适合镜头变化较少的参考片。
+                  </p>
+                </div>
               )}
 
               {hasFrames && (
@@ -301,6 +342,7 @@ function ReverseStoryboardPanelInner({
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] text-[var(--color-text-tertiary)]">
                       已抽取 {extractor.frames.length} 个关键帧
+                      {extractor.frames[0]?.strategy === "scene-change" ? " · 智能转场模式" : " · 均匀抽帧模式"}
                     </span>
                     <button
                       onClick={handleExtractFrames}

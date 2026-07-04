@@ -28,6 +28,13 @@ const STATUS_BG_MAP: Record<ShotPlanningStatus, string> = Object.fromEntries(
   STATUS_OPTIONS.map((o) => [o.value, o.bg]),
 ) as Record<ShotPlanningStatus, string>;
 
+function formatSourceTag(sourceType: string, sourceTimeSec?: number): string {
+  const time = typeof sourceTimeSec === "number" && Number.isFinite(sourceTimeSec)
+    ? ` ${Math.round(sourceTimeSec * 10) / 10}s`
+    : "";
+  return `${sourceType}${time}`;
+}
+
 // ============================================================================
 // Props
 // ============================================================================
@@ -38,14 +45,7 @@ interface ShotPlanningPanelProps {
   projectId: string | null;
   projectTitle?: string;
   /** Canvas nodes to generate planning from */
-  nodes: Array<{
-    id: string;
-    title?: string;
-    description?: string;
-    shotPresetId?: string;
-    stylePresetId?: string;
-    durationSec?: number;
-  }>;
+  nodes: CreateShotPlanningBoardInput["nodes"];
 }
 
 // ============================================================================
@@ -115,6 +115,9 @@ function ShotItemRow({
     durationSec?: number;
     shotPresetId?: string;
     stylePresetId?: string;
+    sourceType?: string;
+    sourceTimeSec?: number;
+    referenceImageUrl?: string;
     status: ShotPlanningStatus;
     notes?: string;
   };
@@ -176,6 +179,16 @@ function ShotItemRow({
           {item.stylePresetId && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/40">
               {item.stylePresetId}
+            </span>
+          )}
+          {item.sourceType && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-200/70">
+              {formatSourceTag(item.sourceType, item.sourceTimeSec)}
+            </span>
+          )}
+          {item.referenceImageUrl && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-200/70">
+              reference frame
             </span>
           )}
         </div>

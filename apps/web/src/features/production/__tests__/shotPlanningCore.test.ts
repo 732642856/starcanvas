@@ -79,6 +79,24 @@ describe("createShotPlanningBoardFromStoryboard", () => {
     assert.equal(first.durationSec, 5);
   });
 
+  it("preserves reference-video source fields", () => {
+    const board = makeBoard({
+      nodes: [
+        {
+          id: "node-ref",
+          title: "Reference Shot",
+          sourceType: "reference-video",
+          sourceTimeSec: 12.5,
+          referenceImageUrl: "data:image/jpeg;base64,frame",
+        },
+      ],
+    });
+
+    assert.equal(board.items[0].sourceType, "reference-video");
+    assert.equal(board.items[0].sourceTimeSec, 12.5);
+    assert.equal(board.items[0].referenceImageUrl, "data:image/jpeg;base64,frame");
+  });
+
   it("trims title whitespace", () => {
     const board = makeBoard();
     const second = board.items[1];

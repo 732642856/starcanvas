@@ -222,11 +222,11 @@ describe("generateStoryboardTableCsv", () => {
     assert.ok(csv.startsWith("\uFEFF"));
   });
 
-  it("包含 12 列表头", () => {
+  it("包含 15 列表头", () => {
     const csv = generateStoryboardTableCsv([makeBrief()]);
     const header = csv.split("\n")[0];
     const cols = header.split(",");
-    assert.equal(cols.length, 12);
+    assert.equal(cols.length, 15);
   });
 
   it("按 order 排序", () => {
@@ -255,6 +255,24 @@ describe("generateStoryboardTableCsv", () => {
     assert.ok(csv.includes("鸟鸣"));
     assert.ok(csv.includes("后期加特效"));
     assert.ok(csv.includes("注意光线"));
+  });
+
+  it("导出来源类型、来源时间码和参考帧", () => {
+    const csv = generateStoryboardTableCsv([
+      makeBrief({
+        handoff: {
+          source: {
+            type: "reference-video",
+            timeSec: 12.5,
+            referenceImageUrl: "data:image/jpeg;base64,frame",
+          },
+        },
+      }),
+    ]);
+
+    assert.ok(csv.includes("reference-video"));
+    assert.ok(csv.includes("12.5s"));
+    assert.ok(csv.includes("data:image/jpeg;base64,frame"));
   });
 
   it("空分镜列表仅有表头", () => {

@@ -76,6 +76,7 @@ export function createProductionRunQueueFromReadyShots(
     totalTasks: tasks.length,
     completedTasks: 0,
     failedTasks: 0,
+    skippedTasks: 0,
     progress: 0,
     tasks,
     blockedActions: [],

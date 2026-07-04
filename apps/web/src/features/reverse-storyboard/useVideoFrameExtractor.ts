@@ -9,6 +9,7 @@
 import { useCallback, useRef, useState } from "react"
 import type { ExtractedVideoFrame, FrameExtractionOptions } from "./types"
 import { computeFrameTimes } from "./computeFrameTimes.ts"
+import { computeSceneChangeFrameTimes } from "./computeSceneChangeFrameTimes.ts"
 
 export type ExtractStatus =
   | "idle"
@@ -68,6 +69,8 @@ export function useVideoFrameExtractor() {
       const maxFrames = options.maxFrames ?? 12
       const format = options.format ?? "image/jpeg"
       const quality = options.quality ?? 0.85
+      const strategy = options.strategy ?? "scene-change"
+      const sampleCount = Math.max(count * 3, options.sampleCount ?? 24)
 
       try {
         setState((prev) => ({ ...prev, status: "loading-video", error: null }))
@@ -90,8 +93,25 @@ export function useVideoFrameExtractor() {
           progress: 0,
         }))
 
-        // Compute frame times
-        const times = computeFrameTimes(videoMeta.duration, { count, maxFrames })
+        let times = computeFrameTimes(videoMeta.duration, { count, maxFrames })
+        if (strategy === "scene-change") {
+          const sampleTimes = computeFrameTimes(videoMeta.duration, {
+            count: Math.min(sampleCount, Math.max(count, maxFrames * 3)),
+            maxFrames: Math.min(sampleCount, Math.max(count, maxFrames * 3)),
+          })
+          const sceneSamples = await captureFrameSamples({
+            videoUrl,
+            times: sampleTimes,
+            sourceWidth: videoMeta.width,
+            sourceHeight: videoMeta.height,
+          })
+          if (sceneSamples.length > 0) {
+            times = computeSceneChangeFrameTimes(videoMeta.duration, sceneSamples, {
+              count,
+              maxFrames,
+            })
+          }
+        }
         const totalFrames = times.length
 
         // Extract each frame
@@ -109,6 +129,7 @@ export function useVideoFrameExtractor() {
             quality,
             sourceWidth: videoMeta.width,
             sourceHeight: videoMeta.height,
+            strategy,
           })
 
           frames.push(frame)
@@ -191,6 +212,7 @@ interface CaptureFrameOptions {
   quality: number
   sourceWidth: number
   sourceHeight: number
+  strategy: "uniform" | "scene-change"
 }
 
 function captureFrame(opts: CaptureFrameOptions): Promise<ExtractedVideoFrame> {
@@ -224,6 +246,7 @@ function captureFrame(opts: CaptureFrameOptions): Promise<ExtractedVideoFrame> {
         dataUrl,
         width: opts.sourceWidth,
         height: opts.sourceHeight,
+        strategy: opts.strategy,
       })
     }
 
@@ -241,5 +264,76 @@ function captureFrame(opts: CaptureFrameOptions): Promise<ExtractedVideoFrame> {
 
     // Set currentTime after src is set
     video.currentTime = Math.min(opts.timeSec, opts.totalFrames > 0 ? opts.timeSec : 0)
+  })
+}
+
+async function captureFrameSamples(params: {
+  videoUrl: string
+  times: number[]
+  sourceWidth: number
+  sourceHeight: number
+}): Promise<Array<{ timeSec: number; imageData: ImageData }>> {
+  const samples: Array<{ timeSec: number; imageData: ImageData }> = []
+
+  for (const timeSec of params.times) {
+    const sample = await captureFrameImageData({
+      videoUrl: params.videoUrl,
+      timeSec,
+      sourceWidth: params.sourceWidth,
+      sourceHeight: params.sourceHeight,
+    }).catch(() => null)
+
+    if (sample) samples.push(sample)
+  }
+
+  return samples
+}
+
+function captureFrameImageData(opts: {
+  videoUrl: string
+  timeSec: number
+  sourceWidth: number
+  sourceHeight: number
+}): Promise<{ timeSec: number; imageData: ImageData }> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video")
+    const canvas = document.createElement("canvas")
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })
+
+    if (!ctx) {
+      reject(new Error("Canvas 2D context not available"))
+      return
+    }
+
+    const targetWidth = Math.max(32, Math.min(160, Math.round(opts.sourceWidth / 8)))
+    const targetHeight = Math.max(18, Math.round((targetWidth / Math.max(1, opts.sourceWidth)) * opts.sourceHeight))
+    canvas.width = targetWidth
+    canvas.height = targetHeight
+
+    const cleanup = () => {
+      video.removeEventListener("seeked", onSeeked)
+      video.removeEventListener("error", onError)
+    }
+
+    const onSeeked = () => {
+      cleanup()
+      ctx.drawImage(video, 0, 0, targetWidth, targetHeight)
+      resolve({
+        timeSec: opts.timeSec,
+        imageData: ctx.getImageData(0, 0, targetWidth, targetHeight),
+      })
+    }
+
+    const onError = () => {
+      cleanup()
+      reject(new Error("sample frame extraction failed"))
+    }
+
+    video.addEventListener("seeked", onSeeked)
+    video.addEventListener("error", onError)
+    video.preload = "auto"
+    video.muted = true
+    video.src = opts.videoUrl
+    video.currentTime = opts.timeSec
   })
 }

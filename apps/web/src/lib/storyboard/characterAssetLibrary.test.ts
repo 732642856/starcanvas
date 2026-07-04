@@ -4,8 +4,10 @@ import type { StoryboardShotData } from "@/app/canvas/components/canvas/types";
 import {
   applyCharacterAssetLibraryPatchToShots,
   applyCharacterAssetLibraryToShots,
+  collectCharacterAssetLibraryItemsFromSeeds,
   collectCharacterAssetLibraryFromShots,
   collectCharacterAssetLibraryItemsFromShots,
+  mergeCharacterAssetLibraryItems,
   resolveCharacterIdentityAsset,
 } from "./characterAssetLibrary.ts";
 import { buildStoryboardImagePrompt } from "./storyboardImagePrompt.ts";
@@ -84,6 +86,64 @@ describe("characterAssetLibrary", () => {
     assert.deepEqual(items[0]?.props, ["old brass key", "black shoulder bag"]);
     assert.equal(items[1]?.name, "同伴阿青");
     assert.equal(items[1]?.shotCount, 1);
+  });
+
+  void it("collects UI-ready library items from production bible character seeds", () => {
+    const items = collectCharacterAssetLibraryItemsFromSeeds([
+      {
+        id: "character-linwu",
+        name: "林雾",
+        role: "女主",
+        notes: "待补角色外貌签名与参考图",
+      },
+      {
+        id: "character-zhouqi",
+        name: "周祁",
+        role: "男主",
+      },
+    ]);
+
+    assert.equal(items.length, 2);
+    assert.equal(items[0]?.shotCount, 0);
+    assert.deepEqual(items[0]?.shotTitles, []);
+    assert.equal(items[0]?.name, "周祁");
+    assert.equal(items[1]?.name, "林雾");
+    assert.equal(items[1]?.role, "女主");
+  });
+
+  void it("merges production bible seeds with shot-derived character assets", () => {
+    const merged = mergeCharacterAssetLibraryItems(
+      collectCharacterAssetLibraryItemsFromShots([
+        makeShot(1, [
+          {
+            id: "character-linwu",
+            name: "林雾",
+            visualSignature: "短发，左脸痣",
+          },
+        ]),
+      ]),
+      collectCharacterAssetLibraryItemsFromSeeds([
+        {
+          id: "character-linwu",
+          name: "林雾",
+          role: "女主",
+          notes: "待补正侧背三视图",
+        },
+        {
+          id: "character-zhouqi",
+          name: "周祁",
+          role: "男主",
+        },
+      ]),
+    );
+
+    assert.equal(merged.length, 2);
+    assert.equal(merged[0]?.name, "林雾");
+    assert.equal(merged[0]?.shotCount, 1);
+    assert.equal(merged[0]?.role, "女主");
+    assert.equal(merged[0]?.visualSignature, "短发，左脸痣");
+    assert.equal(merged[1]?.name, "周祁");
+    assert.equal(merged[1]?.shotCount, 0);
   });
 
   void it("resolves shot-local identities from referenceAssetId", () => {
