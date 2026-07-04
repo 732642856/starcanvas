@@ -2,6 +2,7 @@
 
 export const TALKING_PHOTO_CLIENT_TIMEOUT_MS = 120_000;
 type ImageUrlToBase64Fn = (imageUrl: string, assetId?: string) => Promise<string>;
+type AudioUrlToBase64Fn = (audioUrl: string, assetId?: string) => Promise<string>;
 
 export type TalkingPhotoMode = "lip-sync" | "full-head" | "avatar";
 export type TalkingPhotoAudioSource = "text-to-speech" | "upload" | "clone";
@@ -73,11 +74,37 @@ async function defaultImageUrlToBase64(imageUrl: string, assetId?: string): Prom
   return imageUrlToBase64(imageUrl, assetId);
 }
 
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("Failed to read audio blob as base64"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function fetchAudioAsBase64(audioUrl: string): Promise<string> {
+  const res = await fetch(audioUrl);
+  if (!res.ok) throw new Error(`Failed to fetch audio (${res.status})`);
+  return blobToBase64(await res.blob());
+}
+
+async function defaultAudioUrlToBase64(audioUrl: string, assetId?: string): Promise<string> {
+  if (audioUrl.startsWith("data:audio")) return audioUrl;
+  if (assetId) {
+    const { getLocalMediaAsset } = await import("../../../lib/assets/localMediaStore.ts");
+    const asset = await getLocalMediaAsset(assetId);
+    if (asset?.blob) return blobToBase64(asset.blob);
+  }
+  return fetchAudioAsBase64(audioUrl);
+}
+
 export async function requestTalkingPhoto(input: {
   imageUrl: string;
   imageAssetId?: string;
   text?: string;
   audioUrl?: string;
+  audioAssetId?: string;
   mode?: TalkingPhotoMode;
   audioSource?: TalkingPhotoAudioSource;
   voiceId?: string;
@@ -90,7 +117,7 @@ export async function requestTalkingPhoto(input: {
 }, deps?: {
   fetchImpl?: typeof fetch;
   imageUrlToBase64Fn?: ImageUrlToBase64Fn;
-  audioUrlToBase64Fn?: (audioUrl: string) => Promise<string>;
+  audioUrlToBase64Fn?: AudioUrlToBase64Fn;
 }): Promise<TalkingPhotoResult> {
   if (!input.imageUrl) {
     throw new TalkingPhotoError({ message: "缺少角色头像图片，请连接图片节点。" });
@@ -107,6 +134,7 @@ export async function requestTalkingPhoto(input: {
 
   const fetchImpl = deps?.fetchImpl ?? fetch;
   const imageUrlToBase64Fn = deps?.imageUrlToBase64Fn ?? defaultImageUrlToBase64;
+  const audioUrlToBase64Fn = deps?.audioUrlToBase64Fn ?? defaultAudioUrlToBase64;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? TALKING_PHOTO_CLIENT_TIMEOUT_MS);
 
@@ -117,8 +145,8 @@ export async function requestTalkingPhoto(input: {
       throw new TalkingPhotoError({ message: "数字人当前只支持图片头像输入。" });
     }
 
-    const audio = input.audioUrl && deps?.audioUrlToBase64Fn
-      ? await deps.audioUrlToBase64Fn(input.audioUrl)
+    const audio = input.audioUrl
+      ? await audioUrlToBase64Fn(input.audioUrl, input.audioAssetId)
       : input.audioUrl;
 
     res = await fetchImpl("/api/ai/talking-photo", {

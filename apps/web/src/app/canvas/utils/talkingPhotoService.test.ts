@@ -42,6 +42,40 @@ describe("requestTalkingPhoto", () => {
     });
   });
 
+  void it("bridges uploaded local audio into base64 before calling the API", async () => {
+    let requestBody: Record<string, unknown> | undefined;
+
+    const result = await requestTalkingPhoto(
+      {
+        imageUrl: "data:image/png;base64,AVATAR",
+        audioUrl: "blob:http://localhost/voice",
+        audioAssetId: "voice-asset-1",
+        mode: "lip-sync",
+      },
+      {
+        imageUrlToBase64Fn: async (url) => url,
+        audioUrlToBase64Fn: async (url, assetId) => {
+          assert.equal(url, "blob:http://localhost/voice");
+          assert.equal(assetId, "voice-asset-1");
+          return "data:audio/wav;base64,VOICE_AUDIO";
+        },
+        fetchImpl: async (_url, init) => {
+          requestBody = JSON.parse(String(init?.body ?? "{}"));
+          return new Response(JSON.stringify({
+            status: "completed",
+            videoUrl: "https://cdn.example.com/talking-audio.mp4",
+            durationMs: 1800,
+          }));
+        },
+      },
+    );
+
+    assert.equal(requestBody?.audio, "data:audio/wav;base64,VOICE_AUDIO");
+    assert.equal(requestBody?.audioSource, "upload");
+    assert.equal(result.status, "ready");
+    assert.equal(result.videoUrl, "https://cdn.example.com/talking-audio.mp4");
+  });
+
   void it("returns not-ready deployment guidance without fake success", async () => {
     const result = await requestTalkingPhoto(
       {

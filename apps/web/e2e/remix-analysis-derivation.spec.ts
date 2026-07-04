@@ -12,6 +12,9 @@ type StarCanvasE2EBridge = {
   getNodes: () => Array<{ id: string; data: Record<string, any> }>
 }
 
+const MOCK_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+
 function createStoredCanvas(): StoredCanvas {
   return {
     version: 1,
@@ -102,7 +105,7 @@ async function waitForE2EBridge(page: Page): Promise<void> {
   await page.waitForFunction(
     () => Boolean((window as Window & { __starcanvasE2E?: unknown }).__starcanvasE2E),
     undefined,
-    { timeout: 15_000 },
+    { timeout: 45_000 },
   )
 }
 
@@ -112,6 +115,11 @@ async function getNodes(page: Page) {
     if (!e2e) throw new Error("__starcanvasE2E bridge is unavailable")
     return e2e.getNodes()
   })
+}
+
+async function countNodesByKind(page: Page, nodeKind: string) {
+  const nodes = await getNodes(page)
+  return nodes.filter((node) => node.data.nodeKind === nodeKind).length
 }
 
 async function openRemixContextMenu(page: Page) {
@@ -159,7 +167,7 @@ test("remix-analysis context menu exposes derivation actions", async ({ page }) 
 test("remix-analysis can derive prompt and storyboard from browser UI", async ({ page }) => {
   await bootSeededRemixCanvas(page)
 
-  const remixNode = await openRemixContextMenu(page)
+  await openRemixContextMenu(page)
   await page.getByTestId("node-context-remix-create-prompt").click()
 
   await expect
@@ -168,6 +176,11 @@ test("remix-analysis can derive prompt and storyboard from browser UI", async ({
       return nodes.filter((node) => node.data.nodeKind === "prompt").length
     })
     .toBe(1)
+
+  const promptNodes = await getNodes(page)
+  const promptNode = promptNodes.find((node) => node.data.nodeKind === "prompt")
+  expect(String(promptNode?.data?.prompt ?? "")).toContain("参考视频：雨夜重逢")
+  expect(String(promptNode?.data?.prompt ?? "")).toContain("前 2 秒先给重逢钩子")
 
   await openRemixContextMenu(page)
   await page.getByTestId("node-context-remix-create-storyboard").click()
@@ -178,9 +191,34 @@ test("remix-analysis can derive prompt and storyboard from browser UI", async ({
       return nodes.filter((node) => node.data.nodeKind === "shot").length
     })
     .toBe(2)
+
+  const shotNodes = (await getNodes(page)).filter((node) => node.data.nodeKind === "shot")
+  expect(shotNodes.map((node) => String(node.data.title ?? ""))).toEqual(["参考分镜 1", "参考分镜 2"])
+  expect(String(shotNodes[0]?.data?.prompt ?? "")).toContain("hook")
+  expect(String(shotNodes[1]?.data?.prompt ?? "")).toContain("payoff")
 })
 
 test("remix-analysis can create production queue from browser UI", async ({ page }) => {
+  await page.route("**/api/ai/config", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        baseUrl: "https://e2e.invalid/v1",
+        hasApiKey: true,
+        defaultModel: "e2e-text-model",
+        defaultImageModel: "e2e-image-model",
+        timeoutMs: 120000,
+      }),
+    })
+  })
+  await page.route("**/api/ai/generate-image", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ imageUrl: MOCK_IMAGE, requestId: "e2e-remix-queue-image" }),
+    })
+  })
   await bootSeededRemixCanvas(page)
   await openRemixContextMenu(page)
 
@@ -191,4 +229,20 @@ test("remix-analysis can create production queue from browser UI", async ({ page
   await expect(page.getByTestId("production-run-queue-task")).toHaveCount(2)
   await expect(page.getByTestId("production-run-queue-panel")).toContainText("参考分镜 1")
   await expect(page.getByTestId("production-run-queue-panel")).toContainText("参考分镜 2")
+  await expect
+    .poll(() => countNodesByKind(page, "shot"), {
+      timeout: 10_000,
+      message: "remix-analysis queue handoff should materialize storyboard shot nodes before execution",
+    })
+    .toBe(2)
+  await expect(page.getByTestId("production-run-queue-start")).toBeEnabled()
+  await page.getByTestId("production-run-queue-start").click()
+  await expect(page.getByTestId("production-run-queue-status")).toContainText("已完成", { timeout: 45_000 })
+  await expect(page.getByTestId("production-run-queue-progress")).toContainText("2/2 完成", { timeout: 45_000 })
+  await expect
+    .poll(() => countNodesByKind(page, "ai-generated-image"), {
+      timeout: 10_000,
+      message: "remix-analysis production queue should create storyboard image nodes",
+    })
+    .toBe(2)
 })

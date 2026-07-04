@@ -1725,6 +1725,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
       let sourceImageUrl: string | undefined
       let sourceImageAssetId: string | undefined
       let audioUrl: string | undefined
+      let audioAssetId: string | undefined
       const textInputs: string[] = []
 
       for (const edge of upstreamEdges) {
@@ -1742,8 +1743,14 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         }
 
         if (!audioUrl && (String(upstreamKind).includes("audio") || upstreamKind === "tts")) {
-          const audioData = ud as (CanvasNodeData & { voiceAudioUrl?: string; audioUrl?: string }) | undefined
+          const audioData = ud as (CanvasNodeData & {
+            voiceAudioUrl?: string
+            voiceAudioAssetId?: string
+            audioUrl?: string
+            audioAssetId?: string
+          }) | undefined
           audioUrl = audioData?.resultUrl || audioData?.assetUrl || audioData?.audioUrl || audioData?.voiceAudioUrl
+          audioAssetId = audioData?.audioAssetId || audioData?.voiceAudioAssetId || audioData?.assetId
         }
 
         const text = ud?.content || ud?.prompt || ud?.summary || ud?.text || ""
@@ -1780,6 +1787,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
           imageAssetId: sourceImageAssetId,
           text: talkingText || undefined,
           audioUrl,
+          audioAssetId,
           mode: "lip-sync",
           audioSource: audioUrl ? "upload" : "text-to-speech",
         })
@@ -2154,7 +2162,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     })
     return upstreamText
       })
-  }, [updateNodeData, setNodes, setEdges])
+  }, [getEdges, getNodes, updateNodeData, setNodes, setEdges])
 
   // ==========================================================================
   // RUN SINGLE NODE

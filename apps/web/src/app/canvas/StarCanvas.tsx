@@ -217,6 +217,8 @@ import {
   videoResultToNodeData,
   type VideoGenBackend,
 } from "./utils/videoGenerationService";
+import { resolveProviderReadableVideoSourceImage } from "./utils/videoSourceImage";
+import { imageUrlToBase64 } from "./utils/imagePromptReverser";
 import { shouldExposeStarCanvasE2EBridge } from "./utils/e2eBridge";
 import { composeStoryboardGrid } from "./utils/storyboardGridComposer";
 import { buildVideoWorkflowTemplate } from "./utils/videoWorkflowTemplate";
@@ -899,16 +901,19 @@ function StarCanvasInner({
       };
     };
 
-    e2eWindow.__starcanvasE2E = {
+    const bridge = {
       getAssets: () => useCanvasStore.getState().assetLibrary.assets,
       getEdges: () => edgesRef.current,
       getNodeData: (nodeId: string) =>
         nodesRef.current.find((node) => node.id === nodeId)?.data,
       getNodes: () => nodesRef.current,
     };
+    e2eWindow.__starcanvasE2E = bridge;
 
     return () => {
-      delete e2eWindow.__starcanvasE2E;
+      if (e2eWindow.__starcanvasE2E === bridge) {
+        delete e2eWindow.__starcanvasE2E;
+      }
     };
   }, []);
 
@@ -1670,15 +1675,18 @@ function StarCanvasInner({
           }
 
           case "generate-video-clip": {
-            const imageUrl =
-              shotNode.data.generatedImageUrl?.trim() ||
-              shotNode.data.shot?.generatedImageUrl?.trim() ||
-              shotNode.data.shot?.referenceImageUrl?.trim() ||
-              shotNode.data.imageUrl?.trim() ||
-              shotNode.data.resultUrl?.trim() ||
-              "";
+            const selected = await resolveProviderReadableVideoSourceImage(shotNode.data, {
+              bridgeLocalAssetToProviderUrl: async ({ assetId, imageUrl }) => {
+                return imageUrlToBase64(imageUrl, assetId)
+              },
+            });
+            const imageUrl = selected.url?.trim() || "";
             if (!imageUrl) {
-              throw new Error("缺少可用于视频生成的首帧图，请先生成分镜图");
+              throw new Error(
+                selected.blockedBlobUrl
+                  ? "首帧图只有本地预览地址，且未找到可桥接的原始图片资产。请重新上传该图片，或先生成分镜图后再试。"
+                  : "缺少可用于视频生成的首帧图，请先生成分镜图",
+              );
             }
 
             const motionPrompt =
