@@ -217,6 +217,7 @@ import {
   videoResultToNodeData,
   type VideoGenBackend,
 } from "./utils/videoGenerationService";
+import { shouldExposeStarCanvasE2EBridge } from "./utils/e2eBridge";
 import { composeStoryboardGrid } from "./utils/storyboardGridComposer";
 import { buildVideoWorkflowTemplate } from "./utils/videoWorkflowTemplate";
 import {
@@ -879,7 +880,13 @@ function StarCanvasInner({
   }, []);
 
   useEffect(() => {
-    if (process.env.NODE_ENV === "production" || typeof window === "undefined") {
+    if (
+      !shouldExposeStarCanvasE2EBridge({
+        nodeEnv: process.env.NODE_ENV,
+        hasWindow: typeof window !== "undefined",
+        webdriver: typeof navigator !== "undefined" ? navigator.webdriver : false,
+      })
+    ) {
       return;
     }
 

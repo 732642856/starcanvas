@@ -114,7 +114,29 @@ async function getNodes(page: Page) {
   })
 }
 
-test("remix-analysis can derive prompt, storyboard, and production queue from browser UI", async ({ page }) => {
+async function openRemixContextMenu(page: Page) {
+  const remixNode = page.locator("[data-id='e2e-remix-analysis']")
+  await expect(remixNode).toBeVisible({ timeout: 15_000 })
+  await expect(remixNode).toContainText("结构拆解：雨夜重逢")
+
+  await remixNode.evaluate((element) => {
+    const rect = element.getBoundingClientRect()
+    element.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        clientX: rect.left + 48,
+        clientY: rect.top + 48,
+      }),
+    )
+  })
+
+  await expect(page.getByTestId("node-context-remix-create-prompt")).toBeVisible({ timeout: 5_000 })
+  return remixNode
+}
+
+async function bootSeededRemixCanvas(page: Page) {
   const projectId = createTestProjectId("remix-analysis-derivation")
   await seedCanvas(page, projectId)
   await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
@@ -123,12 +145,21 @@ test("remix-analysis can derive prompt, storyboard, and production queue from br
   })
   await expect(page.locator(".react-flow").first()).toBeVisible({ timeout: 90_000 })
   await waitForE2EBridge(page)
+}
 
-  const remixNode = page.locator("[data-id='e2e-remix-analysis']")
-  await expect(remixNode).toBeVisible({ timeout: 15_000 })
-  await expect(remixNode).toContainText("结构拆解：雨夜重逢")
+test("remix-analysis context menu exposes derivation actions", async ({ page }) => {
+  await bootSeededRemixCanvas(page)
+  await openRemixContextMenu(page)
 
-  await remixNode.click({ button: "right", position: { x: 40, y: 40 } })
+  await expect(page.getByTestId("node-context-remix-create-prompt")).toBeVisible()
+  await expect(page.getByTestId("node-context-remix-create-storyboard")).toBeVisible()
+  await expect(page.getByTestId("node-context-remix-queue-production")).toBeVisible()
+})
+
+test("remix-analysis can derive prompt and storyboard from browser UI", async ({ page }) => {
+  await bootSeededRemixCanvas(page)
+
+  const remixNode = await openRemixContextMenu(page)
   await page.getByTestId("node-context-remix-create-prompt").click()
 
   await expect
@@ -138,7 +169,7 @@ test("remix-analysis can derive prompt, storyboard, and production queue from br
     })
     .toBe(1)
 
-  await remixNode.click({ button: "right", position: { x: 40, y: 40 } })
+  await openRemixContextMenu(page)
   await page.getByTestId("node-context-remix-create-storyboard").click()
 
   await expect
@@ -147,13 +178,17 @@ test("remix-analysis can derive prompt, storyboard, and production queue from br
       return nodes.filter((node) => node.data.nodeKind === "shot").length
     })
     .toBe(2)
+})
 
-  await remixNode.click({ button: "right", position: { x: 40, y: 40 } })
+test("remix-analysis can create production queue from browser UI", async ({ page }) => {
+  await bootSeededRemixCanvas(page)
+  await openRemixContextMenu(page)
+
   await page.getByTestId("node-context-remix-queue-production").click()
 
   await expect(page.getByTestId("production-run-queue-panel")).toBeVisible({ timeout: 10_000 })
   await expect(page.getByTestId("production-run-queue-status")).toContainText("生产队列")
-  await expect(page.getByTestId("production-run-queue-progress")).toContainText("0 / 2")
+  await expect(page.getByTestId("production-run-queue-task")).toHaveCount(2)
   await expect(page.getByTestId("production-run-queue-panel")).toContainText("参考分镜 1")
   await expect(page.getByTestId("production-run-queue-panel")).toContainText("参考分镜 2")
 })
