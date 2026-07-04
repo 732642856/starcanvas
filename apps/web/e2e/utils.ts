@@ -7,6 +7,77 @@ import { expect, type Page } from "@playwright/test"
 /** Key prefixes used by the app in localStorage. */
 const APP_KEY_PREFIXES = ["startrails_", "canvas_", "project_"]
 
+type E2EProbeResult = {
+  ok: boolean
+  url: string
+  status?: number
+  message?: string
+}
+
+export function buildE2EHealthProbeUrl(baseURL: string): string {
+  const url = new URL(baseURL)
+  url.pathname = "/"
+  url.search = ""
+  url.hash = ""
+  return url.toString()
+}
+
+export async function probeE2EBaseReadiness(params: {
+  baseURL: string
+  timeoutMs?: number
+  fetchImpl?: typeof fetch
+}): Promise<E2EProbeResult> {
+  const probeUrl = buildE2EHealthProbeUrl(params.baseURL)
+  const timeoutMs = params.timeoutMs ?? 5_000
+  const fetchImpl = params.fetchImpl ?? fetch
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetchImpl(probeUrl, {
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      if (response.ok) {
+        return { ok: true, url: probeUrl, status: response.status }
+      }
+      return {
+        ok: false,
+        url: probeUrl,
+        status: response.status,
+        message: `E2E preflight failed: ${probeUrl} returned HTTP ${response.status}`,
+      }
+    } catch (error) {
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+        continue
+      }
+      return {
+        ok: false,
+        url: probeUrl,
+        message: `E2E preflight failed: ${probeUrl} is not ready (${error instanceof Error ? error.message : String(error)})`,
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    url: probeUrl,
+    message: `E2E preflight failed: ${probeUrl} is not ready (unknown preflight state)`,
+  }
+}
+
+async function ensureE2EBaseReady(page: Page, timeoutMs = 5_000): Promise<void> {
+  const baseURL = page.context()._options.baseURL
+  if (!baseURL) return
+
+  const result = await probeE2EBaseReadiness({ baseURL, timeoutMs })
+  if (!result.ok) {
+    throw new Error(
+      result.message ??
+        `E2E preflight failed for ${result.url}${result.status ? ` (HTTP ${result.status})` : ""}`,
+    )
+  }
+}
+
 /** Clear app-specific storage via addInitScript (runs before page load). */
 export function clearAppStorageInitScript(prefixes: string[] = APP_KEY_PREFIXES): {
   content: string
@@ -40,6 +111,7 @@ export async function dismissOnboardingIfPresent(page: Page): Promise<void> {
  * Uses `domcontentloaded` to avoid hanging on non-critical resources.
  */
 export async function gotoCanvas(page: Page, projectId: string): Promise<void> {
+  await ensureE2EBaseReady(page)
   await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
     waitUntil: "domcontentloaded",
     timeout: 180_000,
@@ -63,6 +135,7 @@ export async function waitForCanvasReady(
   page: Page,
   timeout = 90_000
 ): Promise<void> {
+  await ensureE2EBaseReady(page)
   await expect(page.locator(".react-flow").first()).toBeVisible({ timeout })
   // Wait for at least one node or the empty-state indicator to appear
   await expect(
@@ -107,6 +180,9 @@ export function collectConsoleErrors(page: Page): {
     "hot-update",
     "_next/static",
     "Next.js HMR",
+    "Sentry Logger [error]: Transport disabled",
+    "Sentry Logger [warn]: No DSN provided",
+    "No DSN provided, client will not send events",
   ]
 
   page.on("console", (message) => {

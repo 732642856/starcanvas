@@ -43,6 +43,7 @@ function createStoredCanvas(): StoredCanvas {
           nodeKind: "image-result",
           content: "关键画面结果节点",
           imageUrl: MOCK_IMAGE_URL,
+          generatedImageUrl: MOCK_IMAGE_URL,
           resultUrl: MOCK_IMAGE_URL,
           status: "done",
           runMeta: { status: "succeeded", message: "图片已生成" },
@@ -121,10 +122,12 @@ test("full pipeline: image-result → video-generation → Vidu SSE → done", a
   // ── Inject canvas with localStorage cleanup ──
   await page.addInitScript((storedCanvas) => {
     window.localStorage.clear()
+    window.sessionStorage.clear()
     window.localStorage.setItem("startrails_canvas", JSON.stringify(storedCanvas))
+    window.sessionStorage.setItem("startrails_session_api_key", "sk-e2e-dashscope-session")
   }, createStoredCanvas())
 
-  await page.goto("/canvas")
+  await page.goto("/canvas", { waitUntil: "domcontentloaded", timeout: 180_000 })
 
   // ── 1) Canvas loads ──
   await expect(page.locator("[data-id='e2e-image-result']").getByText("关键画面结果节点")).toBeVisible({ timeout: 15_000 })
@@ -147,13 +150,16 @@ test("full pipeline: image-result → video-generation → Vidu SSE → done", a
   const req = videoRequests[0]
   expect(req.mode).toBe("i2v")
   expect(req.imageUrl).toBe(MOCK_IMAGE_URL)
+  expect(req.imageUrl.startsWith("blob:")).toBe(false)
   expect(req.prompt).toBeTruthy()
   expect(req.duration).toBe(5)
+  expect(req._providerOverrides?.sessionApiKey).toBe("sk-e2e-dashscope-session")
 
   // ── 6) Wait for completion and verify node data was updated ──
   // Node data update may take a few seconds
   await page.waitForTimeout(3000)
 
-  // Verify the node now shows completion status (vidu backend info)
-  await expect(page.locator("[data-id='e2e-video-generation']").getByText(/vidu|视频已生成|Mock/)).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText("Workflow Run")).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText(/成功/)).toBeVisible()
+  await expect(page.getByText("1/1 完成")).toBeVisible()
 })

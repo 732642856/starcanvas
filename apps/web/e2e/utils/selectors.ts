@@ -20,6 +20,7 @@ export const testIds = {
     reverseStoryboard: "reverse-storyboard-panel",
     colorGrade: "color-grade-panel",
     cinematicParams: "cinematic-param-panel",
+    referenceVideoEntry: "reference-video-entry-panel",
   },
   aiScript: {
     briefInput: "ai-script-brief",

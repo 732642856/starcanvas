@@ -12,6 +12,15 @@ import { createTestProjectId } from "./utils/project"
 import { clearBrowserStorage } from "./utils/storage"
 import { testIds } from "./utils/selectors"
 
+async function waitForCanvasInteractive(page: import("@playwright/test").Page) {
+  await page.waitForFunction(
+    () => Boolean((window as typeof window & { __starcanvasE2E?: unknown }).__starcanvasE2E),
+    undefined,
+    { timeout: 90_000 },
+  )
+  await page.waitForTimeout(1_200)
+}
+
 test.setTimeout(300_000)
 
 test.describe("Create flow smoke", () => {
@@ -28,6 +37,7 @@ test.describe("Create flow smoke", () => {
       timeout: 180_000,
     })
     await expect(page.locator(".react-flow").first()).toBeVisible({ timeout: 90_000 })
+    await waitForCanvasInteractive(page)
 
     // Step 2: Open AI Script panel
     await page.locator(`[data-testid='${testIds.toolbar.aiScript}']`).click()
@@ -90,8 +100,12 @@ test.describe("Create flow smoke", () => {
     })
     await expect(page.locator(".react-flow").first()).toBeVisible({ timeout: 90_000 })
 
-    // Step 2: Open reverse storyboard panel
-    await page.locator(`[data-testid='${testIds.toolbar.reverseStoryboard}']`).click()
+    // Step 2: Open reference video entry from the blank-canvas guide
+    await page.getByTestId("empty-guide-import-reference-video").click()
+    await expect(page.locator(`[data-testid='${testIds.panels.referenceVideoEntry}']`)).toBeVisible({
+      timeout: 10_000,
+    })
+    await page.locator("[data-testid='reference-video-entry-storyboard']").click()
     await expect(page.locator(`[data-testid='${testIds.panels.reverseStoryboard}']`)).toBeVisible({
       timeout: 10_000,
     })
@@ -103,6 +117,25 @@ test.describe("Create flow smoke", () => {
 
     // Close panel cleanly
     await page.locator(`[data-testid='${testIds.panels.reverseStoryboard}'] button svg.lucide-x`).click()
+  })
+
+  test("Reference video entry routes to structure analysis", async ({ page }) => {
+    const projectId = createTestProjectId("reference-video-structure")
+
+    await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 180_000,
+    })
+
+    await expect(page.locator(".react-flow").first()).toBeVisible({ timeout: 90_000 })
+    await waitForCanvasInteractive(page)
+    await page.getByTestId("empty-guide-import-reference-video").click()
+    await expect(page.locator(`[data-testid='${testIds.panels.referenceVideoEntry}']`)).toBeVisible({
+      timeout: 10_000,
+    })
+    await page.locator("[data-testid='reference-video-entry-structure']").click()
+    await expect(page.getByText("一键拉片")).toBeVisible({ timeout: 10_000 })
+    await page.locator("button[title='关闭']").last().click()
   })
 
   test("Color grade panel opens and closes cleanly", async ({ page }) => {
