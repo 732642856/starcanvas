@@ -68,6 +68,31 @@ describe("videoSourceImage", () => {
     assert.equal(selected.blockedBlobUrl, "blob:http://localhost/local-result");
   });
 
+  it("bridges shot generated blob images via generatedImageAssetId", async () => {
+    const selected = await resolveProviderReadableVideoSourceImage({
+      title: "storyboard shot",
+      nodeKind: "shot",
+      shot: {
+        id: "shot-1",
+        order: 1,
+        title: "Shot",
+        description: "desc",
+        visualPrompt: "prompt",
+        generatedImageUrl: "blob:http://localhost/shot-generated",
+        generatedImageAssetId: "shot-image-asset-1",
+      },
+    }, {
+      bridgeLocalAssetToProviderUrl: async ({ assetId, imageUrl }) => {
+        assert.equal(assetId, "shot-image-asset-1");
+        assert.equal(imageUrl, "blob:http://localhost/shot-generated");
+        return "data:image/png;base64,SHOT_IMAGE";
+      },
+    });
+
+    assert.equal(selected.url, "data:image/png;base64,SHOT_IMAGE");
+    assert.equal(selected.assetId, "shot-image-asset-1");
+  });
+
   it("keeps blob-only images blocked when no local asset id is available", async () => {
     const selected = await resolveProviderReadableVideoSourceImage({
       title: "local upload",

@@ -30,6 +30,14 @@ function firstBlobUrl(values: unknown[]): string | undefined {
   return undefined;
 }
 
+function firstAssetId(values: unknown[]): string | undefined {
+  for (const value of values) {
+    const text = cleanText(value);
+    if (text) return text;
+  }
+  return undefined;
+}
+
 export function selectVideoSourceImageUrl(data: CanvasNodeData | undefined): VideoSourceImageSelection {
   const shot = data?.shot;
   const candidates = [
@@ -45,7 +53,12 @@ export function selectVideoSourceImageUrl(data: CanvasNodeData | undefined): Vid
   return {
     url: firstNonBlobUrl(candidates),
     blockedBlobUrl: firstBlobUrl(candidates),
-    assetId: typeof data?.assetId === "string" && data.assetId.trim() ? data.assetId.trim() : undefined,
+    assetId: firstAssetId([
+      data?.assetId,
+      shot?.generatedImageAssetId,
+      data?.storyboardOutputAssetId,
+      data?.sourceImageAssetId,
+    ]),
   };
 }
 
