@@ -1143,7 +1143,7 @@ function StarCanvasInner({
     setNodes((nds) => [...nds, artifacts.promptNode]);
     setEdges((eds) => [...eds, artifacts.promptEdge]);
     showCanvasNotice("success", "已生成复刻提示词", "结构拆解已转成可继续编辑的提示词节点。");
-  }, [getRemixArtifacts, showCanvasNotice]);
+  }, [getRemixArtifacts, setEdges, setNodes, showCanvasNotice]);
 
   const handleCreateStoryboardFromRemix = useCallback((nodeId: string) => {
     const artifacts = getRemixArtifacts(nodeId);
@@ -1151,15 +1151,38 @@ function StarCanvasInner({
     setNodes((nds) => [...nds, ...artifacts.storyboardNodes]);
     setEdges((eds) => [...eds, ...artifacts.storyboardEdges]);
     showCanvasNotice("success", "已拆成参考分镜", `已生成 ${artifacts.storyboardNodes.length} 个参考分镜节点。`);
-  }, [getRemixArtifacts, showCanvasNotice]);
+  }, [getRemixArtifacts, setEdges, setNodes, showCanvasNotice]);
 
   const handleQueueProductionFromRemix = useCallback((nodeId: string) => {
     const artifacts = getRemixArtifacts(nodeId);
     if (!artifacts?.productionQueue) return;
+    const existingStoryboardShotIds = new Set(
+      nodesRef.current
+        .map((node) => (typeof node.data?.shot?.id === "string" ? node.data.shot.id : ""))
+        .filter(Boolean),
+    );
+    const storyboardNodesToInsert = artifacts.storyboardNodes.filter((node) => {
+      const shotId = typeof node.data?.shot?.id === "string" ? node.data.shot.id : "";
+      return !shotId || !existingStoryboardShotIds.has(shotId);
+    });
+    if (storyboardNodesToInsert.length > 0) {
+      const insertedNodeIds = new Set(storyboardNodesToInsert.map((node) => node.id));
+      const nextNodes = [...nodesRef.current, ...storyboardNodesToInsert];
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
+      setEdges((eds) => {
+        const nextEdges = [
+          ...eds,
+          ...artifacts.storyboardEdges.filter((edge) => insertedNodeIds.has(edge.target)),
+        ];
+        edgesRef.current = nextEdges;
+        return nextEdges;
+      });
+    }
     useShotPlanningRunQueueStore.getState().setQueue(artifacts.productionQueue);
     setShowProductionQueue(true);
     showCanvasNotice("success", "已生成生产队列", `已创建 ${artifacts.productionQueue.tasks.length} 个待生产任务。`);
-  }, [getRemixArtifacts, showCanvasNotice]);
+  }, [getRemixArtifacts, setEdges, setNodes, showCanvasNotice]);
 
   useEffect(() => {
     if (!canvasNotice) return;
@@ -4215,8 +4238,6 @@ function StarCanvasInner({
       finalizeStoryboardResult,
       createStoryboardBatchJob,
       syncStoryboardBatchJobToSource,
-      buildStoryboardImagePrompt,
-      generateImageFromPrompt,
       setNodes,
       setEdges,
       addWorkspaceHistoryEvent,
@@ -7032,7 +7053,7 @@ function StarCanvasInner({
 
       setNodes((nds) => [...nds, newNode]);
     },
-    [nodes, setNodes],
+    [setNodes],
   );
 
   const copyNode = useCallback(
@@ -7041,7 +7062,7 @@ function StarCanvasInner({
       if (!node) return;
       setClipboardNode(node);
     },
-    [nodes, setClipboardNode],
+    [setClipboardNode],
   );
 
   const cutNode = useCallback(
@@ -7051,7 +7072,7 @@ function StarCanvasInner({
       setClipboardNode(node);
       deleteNode(nodeId);
     },
-    [nodes, setClipboardNode, deleteNode],
+    [setClipboardNode, deleteNode],
   );
 
   const pasteNode = useCallback(() => {
@@ -8083,7 +8104,7 @@ function StarCanvasInner({
 
       addAsset(asset);
     },
-    [nodes, addAsset],
+    [addAsset],
   );
 
   // ========================================================================
