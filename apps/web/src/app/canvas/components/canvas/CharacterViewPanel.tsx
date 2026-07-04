@@ -11,7 +11,7 @@ import type { CharacterViewProgress } from "@/lib/services/characterViewService"
 // Types
 // ============================================================================
 
-interface CharacterViewPanelProps {
+interface CharacterViewPreviewCardProps {
   identity: CharacterIdentityAsset
   onUpdateViewUrls: (urls: {
     frontViewUrl?: string
@@ -120,10 +120,10 @@ function ProgressBar({ percent, message }: { percent: number; message: string })
 // Main Component
 // ============================================================================
 
-export const CharacterViewPanel = memo(function CharacterViewPanel({
+export const CharacterViewPreviewCard = memo(function CharacterViewPreviewCard({
   identity,
   onUpdateViewUrls,
-}: CharacterViewPanelProps) {
+}: CharacterViewPreviewCardProps) {
   const [status, setStatus] = useState<"idle" | "generating" | "failed">(
     identity.viewGenerationStatus === "generating" ? "generating" : "idle"
   )

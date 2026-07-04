@@ -1,11 +1,17 @@
 // ============================================================================
 // videoGenerationService — 图生视频 API 客户端
 //
-// 封装 Seedance / Kling / Runway 等图生视频 API。
-// 支持 mock 模式用于本地开发测试。
+// 默认走服务端 Vidu 路由；未接线后端必须显式报错。
+// 本地 mock 仅用于演示调试，需通过 NEXT_PUBLIC_ENABLE_MOCK_VIDEO=1 主动开启。
 // ============================================================================
 
 import * as Sentry from "@sentry/nextjs";
+import {
+  buildVideoProviderDryRunPlan,
+  formatVideoProviderDryRunIssues,
+} from "../../../lib/ai/video-provider-capabilities.ts";
+import { getRuntimeProviderState } from "@/lib/ai/client";
+import { resolveRuntimeProviderTaskContract } from "@/lib/ai/providerTaskRouting";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -15,6 +21,31 @@ export const VIDEO_GENERATION_TIMEOUT_MS = 300_000  // 5 minutes (video gen is s
 
 /** Supported video generation backends */
 export type VideoGenBackend = "seedance" | "kling" | "runway" | "vidu" | "mock"
+
+const SUPPORTED_VIDEO_BACKENDS = new Set<string>(["seedance", "kling", "runway", "vidu", "mock"])
+const MOCK_VIDEO_FLAG_VALUES = new Set(["1", "true", "yes", "on"])
+
+function isVideoGenBackend(value: string | undefined): value is VideoGenBackend {
+  return Boolean(value && SUPPORTED_VIDEO_BACKENDS.has(value))
+}
+
+function isMockVideoEnabled(): boolean {
+  const value = process.env.NEXT_PUBLIC_ENABLE_MOCK_VIDEO?.trim().toLowerCase()
+  if (value && MOCK_VIDEO_FLAG_VALUES.has(value)) return true
+  if (typeof window !== "undefined") {
+    return window.localStorage.getItem("startrails_use_mock") === "true"
+  }
+  return false
+}
+
+function throwBackendUnavailable(message: string, detail?: string): never {
+  throw new VideoGenerationError({
+    message,
+    code: "BACKEND_UNAVAILABLE",
+    retryable: false,
+    detail,
+  })
+}
 
 /** Video generation parameters */
 export interface VideoGenInput {
@@ -30,6 +61,23 @@ export interface VideoGenInput {
   aspectRatio?: "16:9" | "9:16" | "1:1" | "4:3"
   /** Resolution */
   resolution?: "720p" | "1080p"
+}
+
+export function buildVideoGenerationInput(
+  input: Pick<VideoGenInput, "imageUrl" | "motionPrompt" | "aspectRatio" | "resolution"> & {
+    durationSeconds?: number
+    backend?: VideoGenBackend
+    useMock?: boolean
+  },
+): VideoGenInput {
+  return {
+    imageUrl: input.imageUrl,
+    motionPrompt: input.motionPrompt,
+    aspectRatio: input.aspectRatio,
+    resolution: input.resolution,
+    durationSeconds: input.durationSeconds ?? 5,
+    backend: input.useMock ? "mock" : input.backend,
+  }
 }
 
 /** Video generation result */
@@ -68,6 +116,7 @@ export type VideoGenerationErrorCode =
   | "API_ERROR"
   | "INVALID_IMAGE"
   | "UNSUPPORTED_RESOLUTION"
+  | "UNSUPPORTED_PROVIDER_CAPABILITY"
   | "BACKEND_UNAVAILABLE"
   | "SAFETY_FILTER"
   | string
@@ -99,8 +148,7 @@ export class VideoGenerationError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * Mock video generator — produces placeholder output for development.
- * Generates a colored canvas animation as a data URL GIF.
+ * Mock video generator — produces placeholder output for explicitly enabled local demos.
  */
 async function mockGenerateVideo(
   input: VideoGenInput,
@@ -173,30 +221,21 @@ async function mockGenerateVideo(
 }
 
 /**
- * Seedance API client stub — ready for real API integration.
+ * Seedance API client placeholder.
  *
- * Seedance (ByteDance) image-to-video API:
- *   POST https://api.seedance.com/v1/image-to-video
- *   Headers: Authorization: Bearer <token>
+ * Keep this branch honest: do not fall back to mock unless the user explicitly
+ * selected mock mode. Silent placeholder success makes the canvas feel broken.
  */
 async function seedanceGenerateVideo(
   input: VideoGenInput,
   onProgress?: VideoGenProgressCallback,
 ): Promise<VideoGenResult> {
-  const apiKey = process.env.SEEDANCE_API_KEY
-
-  if (!apiKey) {
-    throw new VideoGenerationError({
-      message: "Seedance API key not configured",
-      code: "BACKEND_UNAVAILABLE",
-      retryable: false,
-      detail: "Set SEEDANCE_API_KEY environment variable.",
-    })
-  }
-
-  // TODO: Replace with real API call when API key is configured
-  // For now, fallback to mock
-  return mockGenerateVideo(input, onProgress)
+  void input
+  void onProgress
+  throwBackendUnavailable(
+    "Seedance 视频后端尚未接入真实请求，请先使用 Vidu 或开启本地演示 mock。",
+    "Seedance branch intentionally does not fall back to mock.",
+  )
 }
 
 /**
@@ -208,18 +247,27 @@ async function klingGenerateVideo(
   input: VideoGenInput,
   onProgress?: VideoGenProgressCallback,
 ): Promise<VideoGenResult> {
-  const apiKey = process.env.KLING_API_KEY
+  void input
+  void onProgress
+  throwBackendUnavailable(
+    "Kling 视频后端尚未接入真实请求，请先使用 Vidu 或开启本地演示 mock。",
+    "Kling branch intentionally does not fall back to mock.",
+  )
+}
 
-  if (!apiKey) {
-    throw new VideoGenerationError({
-      message: "Kling API key not configured",
-      code: "BACKEND_UNAVAILABLE",
-      retryable: false,
-      detail: "Set KLING_API_KEY environment variable.",
-    })
-  }
-
-  return mockGenerateVideo(input, onProgress)
+/**
+ * Runway API client placeholder.
+ */
+async function runwayGenerateVideo(
+  input: VideoGenInput,
+  onProgress?: VideoGenProgressCallback,
+): Promise<VideoGenResult> {
+  void input
+  void onProgress
+  throwBackendUnavailable(
+    "Runway 视频后端尚未接入真实请求，请先使用 Vidu 或开启本地演示 mock。",
+    "Runway branch intentionally does not fall back to mock.",
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +287,17 @@ async function viduGenerateVideo(
   return Sentry.startSpan(
     { op: "video.generate", name: "Vidu SSE Call", attributes: { mode: input.backend || "i2v" } },
     async (span) => {
+      const runtimeProvider = await getRuntimeProviderState()
+      const requestedModel = runtimeProvider.overrides?.videoModel || "vidu"
+      const taskContract = resolveRuntimeProviderTaskContract("video", runtimeProvider, requestedModel)
+      if (!taskContract.supported) {
+        throw new VideoGenerationError({
+          message: taskContract.reason || "当前视频模型与 Provider 路由不兼容。",
+          code: "UNSUPPORTED_PROVIDER_CAPABILITY",
+          retryable: false,
+          detail: `model=${requestedModel}, provider=${runtimeProvider.overrides?.providerId || runtimeProvider.usageProvider}`,
+        })
+      }
       const res = await fetch("/api/ai/generate-video-vidu", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -249,6 +308,7 @@ async function viduGenerateVideo(
       duration: input.durationSeconds ?? 5,
       resolution: input.resolution === "1080p" ? "1080P" : "720P",
       size: input.aspectRatio === "9:16" ? "720*1280" : input.aspectRatio === "1:1" ? "1024*1024" : "1280*720",
+      ...(runtimeProvider.overrides ? { _providerOverrides: runtimeProvider.overrides } : {}),
     }),
   })
 
@@ -352,25 +412,25 @@ const BACKENDS: Record<VideoGenBackend, (input: VideoGenInput, onProgress?: Vide
   mock: mockGenerateVideo,
   seedance: seedanceGenerateVideo,
   kling: klingGenerateVideo,
-  runway: mockGenerateVideo, // Runway stub
+  runway: runwayGenerateVideo,
   vidu: viduGenerateVideo,
 }
 
 /** Resolve which backend to use */
 function resolveBackend(input: VideoGenInput): VideoGenBackend {
-  if (input.backend) return input.backend
+  const requestedBackend = input.backend as string | undefined
+  if (requestedBackend) {
+    if (isVideoGenBackend(requestedBackend)) return requestedBackend
+    throwBackendUnavailable(`不支持的视频生成后端: ${requestedBackend}`)
+  }
 
-  // Auto-detect: prefer vidu if key exists, then seedance, then kling, fallback to mock
-  if (process.env.DASHSCOPE_API_KEY || process.env.HUIYAN_API_KEY) {
-    return "vidu"
+  const configuredBackend = process.env.NEXT_PUBLIC_VIDEO_BACKEND?.trim().toLowerCase()
+  if (configuredBackend) {
+    if (isVideoGenBackend(configuredBackend)) return configuredBackend
+    throwBackendUnavailable(`NEXT_PUBLIC_VIDEO_BACKEND 配置无效: ${configuredBackend}`)
   }
-  if (process.env.SEEDANCE_API_KEY) {
-    return "seedance"
-  }
-  if (process.env.KLING_API_KEY) {
-    return "kling"
-  }
-  return "mock"
+
+  return "vidu"
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +465,34 @@ export async function generateVideoFromImage(
       message: `不支持的视频生成后端: ${backend}`,
       code: "BACKEND_UNAVAILABLE",
       retryable: false,
+    })
+  }
+
+  if (backend === "mock" && !isMockVideoEnabled()) {
+    throwBackendUnavailable(
+      "本地演示视频后端未开启。正式使用请配置 Vidu；如只想调试占位结果，请设置 NEXT_PUBLIC_ENABLE_MOCK_VIDEO=1。",
+      "Mock backend is opt-in to avoid presenting placeholder output as a real generation result.",
+    )
+  }
+
+  const dryRunPlan = buildVideoProviderDryRunPlan({
+    providerId: backend,
+    mode: "image-to-video",
+    prompt: input.motionPrompt || "Generate a cinematic video from the image",
+    imageUrl: input.imageUrl,
+    durationSeconds: input.durationSeconds ?? 5,
+    aspectRatio: input.aspectRatio ?? "16:9",
+    resolution: input.resolution ?? "720p",
+    allowMock: backend === "mock" && isMockVideoEnabled(),
+  })
+  if (!dryRunPlan.ok) {
+    throw new VideoGenerationError({
+      message: formatVideoProviderDryRunIssues(
+        dryRunPlan.issues.filter((issue) => issue.severity === "blocking"),
+      ),
+      code: "UNSUPPORTED_PROVIDER_CAPABILITY",
+      retryable: false,
+      detail: formatVideoProviderDryRunIssues(dryRunPlan.issues),
     })
   }
 
@@ -447,8 +535,10 @@ export function videoResultToNodeData(result: VideoGenResult): {
   return {
     resultUrl: result.videoUrl,
     duration: `${result.durationSeconds}s`,
-    model: result.backend === "mock" ? "Mock (Dev)" : result.backend,
+    model: result.backend === "mock" ? "本地演示 Mock" : result.backend,
     status: "done",
-    summary: `视频已生成 (${result.durationSeconds}s, ${result.backend})`,
+    summary: result.backend === "mock"
+      ? `本地演示视频已生成 (${result.durationSeconds}s, mock)`
+      : `视频已生成 (${result.durationSeconds}s, ${result.backend})`,
   }
 }

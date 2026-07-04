@@ -203,6 +203,86 @@ describe("sanitizePersistedCanvas", () => {
     assert.deepEqual(clean.generationOutput.layout, { columns: 2, rows: 2 });
   });
 
+  it("removes runtime video urls from real frame extraction output", () => {
+    const clean = sanitizePersistedNodeData({
+      nodeKind: "video-sample-frames",
+      generationOutput: {
+        mode: "real-browser-extraction",
+        sourceVideo: {
+          nodeId: "uploaded-video-1",
+          url: "blob:http://localhost/video-source",
+          name: "clip.webm",
+        },
+        frames: [
+          {
+            sourceVideoId: "uploaded-video-1",
+            sourceVideoUrl: "blob:http://localhost/video-source",
+            timestampMs: 500,
+            frameIndex: 0,
+            imageUrl: "data:image/jpeg;base64,FRAME",
+          },
+        ],
+      },
+    } as CanvasNodeData);
+
+    assert.equal(clean.generationOutput.sourceVideo.url, undefined);
+    assert.equal(clean.generationOutput.frames[0].sourceVideoUrl, undefined);
+    assert.equal(clean.generationOutput.frames[0].imageUrl, undefined);
+    assert.equal(clean.generationOutput.frames[0].sourceVideoId, "uploaded-video-1");
+    assert.equal(clean.generationOutput.frames[0].timestampMs, 500);
+    assert.deepEqual(findRuntimeUrlLeaks(clean), []);
+  });
+
+  it("removes reference frame runtime urls from imported storyboard shots", () => {
+    const clean = sanitizePersistedNodeData({
+      nodeKind: "shot",
+      thumbnailUrl: "data:image/jpeg;base64,THUMB",
+      shot: {
+        id: "shot-ref-1",
+        order: 1,
+        title: "Reference shot",
+        description: "desc",
+        visualPrompt: "prompt",
+        referenceImageUrl: "data:image/jpeg;base64,REFERENCE",
+        sourceType: "reference-video",
+        sourceMeta: {
+          sourceVideoId: "video-1",
+          timestampMs: 12500,
+          timeSec: 12.5,
+        },
+      },
+    } as CanvasNodeData);
+
+    assert.equal(clean.thumbnailUrl, undefined);
+    assert.equal(clean.shot?.referenceImageUrl, undefined);
+    assert.equal(clean.shot?.sourceType, "reference-video");
+    assert.equal(clean.shot?.sourceMeta?.sourceVideoId, "video-1");
+    assert.equal(clean.shot?.sourceMeta?.timestampMs, 12500);
+    assert.equal(clean.shot?.sourceMeta?.timeSec, 12.5);
+    assert.deepEqual(findRuntimeUrlLeaks(clean), []);
+  });
+
+  it("removes reverse-prompt sourceImageUrl runtime urls while keeping source identity metadata", () => {
+    const clean = sanitizePersistedNodeData({
+      nodeKind: "prompt",
+      sourcePromptId: "image-node-1",
+      generationOutput: {
+        type: "reverse-prompt",
+        prompt: "cinematic portrait, soft rim light",
+        sourceNodeId: "image-node-1",
+        sourceAssetId: "asset-source-1",
+        sourceImageUrl: "blob:http://localhost/reverse-prompt-source",
+      },
+    } as CanvasNodeData);
+
+    assert.equal(clean.sourcePromptId, "image-node-1");
+    assert.equal(clean.generationOutput.type, "reverse-prompt");
+    assert.equal(clean.generationOutput.sourceNodeId, "image-node-1");
+    assert.equal(clean.generationOutput.sourceAssetId, "asset-source-1");
+    assert.equal(clean.generationOutput.sourceImageUrl, undefined);
+    assert.deepEqual(findRuntimeUrlLeaks(clean), []);
+  });
+
   it("sanitizes nodes and reports no remaining runtime leaks", () => {
     const nodes: Node<CanvasNodeData>[] = [
       {

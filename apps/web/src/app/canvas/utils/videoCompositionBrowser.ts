@@ -6,6 +6,7 @@
 
 import { FFmpeg } from "@ffmpeg/ffmpeg"
 import { fetchFile, toBlobURL } from "@ffmpeg/util"
+import { buildFinalCompositionArgs } from "./videoCompositionPlan"
 
 // ── 单例 ────────────────────────────────────────────────────────────────────
 const BASE_URL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm"
@@ -161,81 +162,47 @@ export async function composeVideo(input: CompositionInput): Promise<Composition
 
   const inputFiles = [concatOutput]
 
-  // ---- 4. 叠加音频 ----
-  const audioInputs: string[] = []
-  const audioFilterParts: string[] = []
-  const audioMixInputs: string[] = []
+  // ---- 4. 准备音频输入 ----
+  const audioInputs: Array<{ filename: string; volume?: number; delay?: number }> = []
 
   if (input.narration) {
     const name = "narration_audio"
     const data = await resolveFile(input.narration.data)
     await ff.writeFile(`${name}.wav`, await fetchFile(data))
-    audioInputs.push(`${name}.wav`)
-    const idx = audioInputs.length
-    const vol = input.narration.volume ?? 1
-    audioMixInputs.push(`[${idx}:a]volume=${vol}[n${idx}]`)
-    audioFilterParts.push(`[n${idx}]`)
+    audioInputs.push({
+      filename: `${name}.wav`,
+      volume: input.narration.volume ?? 1,
+      delay: input.narration.delay ?? 0,
+    })
   }
 
   if (input.bgm) {
     const name = "bgm_audio"
     const data = await resolveFile(input.bgm.data)
     await ff.writeFile(`${name}.wav`, await fetchFile(data))
-    audioInputs.push(`${name}.wav`)
-    const idx = audioInputs.length
-    const vol = input.bgm.volume ?? 0.3 // BGM 默认 30% 音量
-    audioMixInputs.push(`[${idx}:a]volume=${vol}[b${idx}]`)
-    audioFilterParts.push(`[b${idx}]`)
+    audioInputs.push({
+      filename: `${name}.wav`,
+      volume: input.bgm.volume ?? 0.3,
+      delay: input.bgm.delay ?? 0,
+    })
   }
 
-  // 构建音频混合命令
-  const hasAudio = audioInputs.length > 0
-  let audioArgs: string[] = []
-
-  if (hasAudio) {
-    // 将所有音频输入合并到视频
-    const audioMap = audioInputs.map((_, i) => `-map [${i + 1}]:a`).join(" ")
-    const mixInputs = audioMixInputs.join(";")
-    const mixOutputs = audioFilterParts.join("")
-    const mixFilter = `${mixInputs};${mixOutputs}amix=inputs=${audioInputs.length}:duration=first:dropout_transition=2`
-    audioArgs = [
-      "-i", concatOutput,
-      ...audioInputs.flatMap((a) => ["-i", a]),
-      "-filter_complex", mixFilter,
-      "-map", "[outa]",
-    ]
-  } else {
-    audioArgs = ["-i", concatOutput]
-  }
-
-  // ---- 5. 叠加字幕（SRT） ----
-  let subtitleArgs: string[] = []
+  // ---- 5. 写入字幕（SRT） ----
+  const srtName = "subtitles.srt"
   if (input.subtitle) {
-    const srtName = "subtitles.srt"
     await ff.writeFile(srtName, new TextEncoder().encode(input.subtitle.srtContent))
-
-    const style = input.subtitle.style
-    const fontSize = style?.fontSize ?? 24
-    const fontColor = style?.fontColor ?? "white"
-    const alignment = style?.alignment === "top" ? 8 : style?.alignment === "middle" ? 4 : 2
-
-    subtitleArgs = [
-      "-vf", `subtitles=${srtName}:force_style='FontSize=${fontSize}&FontColor=${fontColor}&Alignment=${alignment}'`,
-    ]
   }
 
   // ---- 6. 最终输出 ----
-  const allArgs: string[] = [
-    ...audioArgs,
-    ...subtitleArgs,
-    "-c:v", "libx264",
-    "-preset", "fast",
-    "-crf", "23",
-    ...(hasAudio ? ["-c:a", "aac", "-b:a", "192k"] : []),
-    "-r", String(fps),
-    "-y",
+  const allArgs = buildFinalCompositionArgs({
+    concatOutput,
     outputFile,
-  ]
+    audioInputs,
+    subtitle: input.subtitle ? { filename: srtName, style: input.subtitle.style } : undefined,
+    width: w,
+    height: h,
+    fps,
+  })
 
   await ff.exec(allArgs)
 
@@ -245,8 +212,11 @@ export async function composeVideo(input: CompositionInput): Promise<Composition
   const url = URL.createObjectURL(blob)
 
   // 清理临时文件
-  for (const f of [...clipFiles, "concat_list.txt", concatOutput, ...audioInputs]) {
+  for (const f of [...clipFiles, "concat_list.txt", concatOutput, ...audioInputs.map((audio) => audio.filename)]) {
     try { await ff.deleteFile(f) } catch {}
+  }
+  if (input.subtitle) {
+    try { await ff.deleteFile(srtName) } catch {}
   }
   try { await ff.deleteFile(outputFile) } catch {}
 

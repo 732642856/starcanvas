@@ -3,19 +3,23 @@
 import { memo, useRef, useCallback, useState } from "react"
 import { MaskEditor } from "react-canvas-masker"
 import "react-canvas-masker/dist/style.css"
-import { Sparkles, RotateCcw, ZoomIn, ZoomOut } from "lucide-react"
+import { Loader2, Sparkles, RotateCcw, ZoomIn, ZoomOut } from "lucide-react"
 import { DESIGN_TOKENS } from "../../styles/designSystem"
 
 interface FocusEditPanelProps {
   imageUrl: string
-  onApplyEdit: (originalUrl: string, maskDataUrl: string, prompt: string) => void
+  onApplyEdit: (originalUrl: string, maskDataUrl: string, prompt: string) => void | Promise<void>
   onClose?: () => void
+  isApplying?: boolean
+  errorMessage?: string
 }
 
 export const FocusEditPanel = memo(function FocusEditPanel({
   imageUrl,
   onApplyEdit,
   onClose,
+  isApplying = false,
+  errorMessage,
 }: FocusEditPanelProps) {
   const editorRef = useRef<any>(null)
   const [prompt, setPrompt] = useState("")
@@ -35,7 +39,7 @@ export const FocusEditPanel = memo(function FocusEditPanel({
     const canvas = editorRef.current.maskCanvas
     if (!canvas) return
     const maskDataUrl = canvas.toDataURL()
-    onApplyEdit(imageUrl, maskDataUrl, prompt)
+    void onApplyEdit(imageUrl, maskDataUrl, prompt)
   }, [imageUrl, prompt, onApplyEdit])
 
   const handleClear = useCallback(() => {
@@ -101,16 +105,22 @@ export const FocusEditPanel = memo(function FocusEditPanel({
         style={{ borderColor: DESIGN_TOKENS.border }}
       />
 
+      {errorMessage && (
+        <div className="rounded-lg border border-red-400/20 bg-red-500/10 px-2 py-1 text-[10px] leading-relaxed text-red-200/80">
+          {errorMessage}
+        </div>
+      )}
+
       {/* Action Buttons */}
       <div className="flex gap-2">
         <button
           onClick={handleApply}
-          disabled={!prompt.trim() || isDrawing}
+          disabled={!prompt.trim() || isDrawing || isApplying}
           className="nodrag flex-1 flex items-center justify-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition-colors hover:bg-white/5 disabled:opacity-40"
           style={{ borderColor: DESIGN_TOKENS.accentHover, color: DESIGN_TOKENS.accentHover, backgroundColor: "rgba(99,102,241,0.06)" }}
         >
-          <Sparkles size={11} />
-          应用修改
+          {isApplying ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+          {isApplying ? "精修中..." : "应用修改"}
         </button>
         {onClose && (
           <button onClick={onClose} className="nodrag rounded-lg border px-2 py-1.5 text-[11px]" style={{ borderColor: DESIGN_TOKENS.border, color: DESIGN_TOKENS.textMuted }}>

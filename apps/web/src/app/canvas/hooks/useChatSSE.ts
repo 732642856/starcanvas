@@ -10,6 +10,7 @@ import { useCallback, useRef, useState } from "react"
 // ============================================================================
 
 import type { AiProviderOverrides } from "@/lib/ai/provider-config"
+import { readUseMockPreference } from "@/lib/ai/user-settings"
 
 /**
  * 从 browser storage 读取当前 BYOK 配置（不持久化的 API Key + localStorage 的 baseUrl/model/mock）。
@@ -48,7 +49,7 @@ function getRuntimeProviderOverrides(): AiProviderOverrides {
     if (timeoutRaw) overrides.timeoutMs = Number(timeoutRaw)
 
     // Mock toggle
-    const useMock = localStorage.getItem("startrails_use_mock") !== "false"
+    const useMock = readUseMockPreference()
     if (useMock) overrides.useMock = true
   } catch { /* storage 不可用时忽略 */ }
 

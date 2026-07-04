@@ -2,9 +2,11 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useState } from "react";
+import { ImageIcon, Sparkles } from "lucide-react";
 import type { CharacterAssetLibraryItem, CharacterAssetLibraryPatch } from "@/lib/storyboard/characterAssetLibrary";
 import { formatCharacterIdentityListInput, parseCharacterIdentityListInput } from "@/lib/storyboard/characterIdentitySummary";
-import { CharacterViewPanel } from "./CharacterViewPanel";
+import { applyFocusEdit } from "../../utils/focusEditService";
+import { CharacterViewPanel as CharacterViewModal } from "./CharacterViewModal";
 import { PoseReferenceEditor } from "./PoseReferenceEditor";
 
 // FocusEditPanel uses react-canvas-masker which references browser "self" — load client-side only
@@ -58,6 +60,8 @@ export function CharacterAssetLibraryPanel({
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [poseEditorKey, setPoseEditorKey] = useState<string | null>(null);
   const [focusEditKey, setFocusEditKey] = useState<string | null>(null);
+  const [characterViewKey, setCharacterViewKey] = useState<string | null>(null);
+  const [focusEditStateByKey, setFocusEditStateByKey] = useState<Record<string, { status: "applying" | "error"; message?: string }>>({});
   const [draftByKey, setDraftByKey] = useState<Record<string, CharacterAssetDraft>>({});
   const totalReferences = items.reduce((sum, item) => sum + item.shotCount, 0);
 
@@ -89,6 +93,70 @@ export function CharacterAssetLibraryPanel({
     });
     setEditingKey(null);
   }, [draftByKey, onApplyAssetPatch]);
+
+  const applyFocusEditToAsset = useCallback(async (
+    item: CharacterAssetLibraryItem,
+    key: string,
+    imgUrl: string,
+    maskDataUrl: string,
+    prompt: string,
+  ) => {
+    setFocusEditStateByKey((state) => ({
+      ...state,
+      [key]: { status: "applying", message: "正在局部精修..." },
+    }));
+
+    try {
+      const result = await applyFocusEdit({
+        imageUrl: imgUrl,
+        maskDataUrl,
+        prompt,
+        sourceAssetId: item.frontViewAssetId,
+        requestId: `focus-edit-${key}-${Date.now()}`,
+      });
+      onApplyAssetPatch?.(key, {
+        frontViewUrl: result.imageUrl,
+        frontViewAssetId: result.assetId,
+      });
+      setFocusEditStateByKey((state) => {
+        const next = { ...state };
+        delete next[key];
+        return next;
+      });
+      setFocusEditKey(null);
+    } catch (error: any) {
+      setFocusEditStateByKey((state) => ({
+        ...state,
+        [key]: {
+          status: "error",
+          message: error?.message || "局部精修失败，请重试。",
+        },
+      }));
+    }
+  }, [onApplyAssetPatch]);
+
+  const activeCharacterViewItem = characterViewKey
+    ? items.find((item) => getAssetKey(item) === characterViewKey) ?? null
+    : null;
+
+  const handleCharacterViewGenerated = useCallback((
+    imageUrl: string,
+    perspective: "front" | "side" | "back" | "all",
+  ) => {
+    if (!characterViewKey) return;
+    const patch: CharacterAssetLibraryPatch =
+      perspective === "front"
+        ? { frontViewUrl: imageUrl }
+        : perspective === "side"
+          ? { sideViewUrl: imageUrl }
+          : perspective === "back"
+            ? { backViewUrl: imageUrl }
+            : {};
+
+    if (Object.keys(patch).length > 0) {
+      onApplyAssetPatch?.(characterViewKey, patch);
+    }
+  }, [characterViewKey, onApplyAssetPatch]);
 
   return (
     <aside
@@ -224,15 +292,49 @@ export function CharacterAssetLibraryPanel({
                       ))}
                     </div>
 
-                    {/* CharacterViewPanel — 三视图 */}
-                    <div className="mt-2">
-                      <CharacterViewPanel
-                        identity={item as any}
-                        onUpdateViewUrls={(urls) => {
-                          onApplyAssetPatch?.(key, urls as any);
-                        }}
-                      />
+                    <div className="mt-2 grid grid-cols-3 gap-2">
+                      {[
+                        { label: "正面", imageUrl: item.frontViewUrl },
+                        { label: "侧面", imageUrl: item.sideViewUrl },
+                        { label: "背面", imageUrl: item.backViewUrl },
+                      ].map((view) => (
+                        <div
+                          key={view.label}
+                          className="overflow-hidden rounded-lg border"
+                          style={{ borderColor: "rgba(148,163,184,0.18)", backgroundColor: "rgba(15,23,42,0.68)" }}
+                        >
+                          <div className="flex aspect-square items-center justify-center overflow-hidden">
+                            {view.imageUrl ? (
+                              <img
+                                src={view.imageUrl}
+                                alt={`${item.name}${view.label}视图`}
+                                className="h-full w-full object-cover"
+                                draggable={false}
+                              />
+                            ) : (
+                              <div className="flex flex-col items-center gap-1 text-[10px] text-slate-500">
+                                <ImageIcon size={14} />
+                                <span>待生成</span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="border-t px-1.5 py-1 text-center text-[10px] text-slate-400" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
+                            {view.label}
+                          </div>
+                        </div>
+                      ))}
                     </div>
+
+                    <button
+                      type="button"
+                      className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-[11px] text-purple-100 transition hover:bg-purple-200/10"
+                      style={{ borderColor: "rgba(196,181,253,0.28)" }}
+                      data-testid="character-asset-library-open-character-view"
+                      onClick={() => setCharacterViewKey(key)}
+                    >
+                      <Sparkles size={12} />
+                      打开真实三视图生成
+                    </button>
 
                     {/* PoseReferenceEditor — 姿势参考 */}
                     {poseEditorKey === key && (
@@ -249,11 +351,10 @@ export function CharacterAssetLibraryPanel({
                       <div className="mt-2">
                         <FocusEditPanel
                           imageUrl={item.frontViewUrl}
-                          onApplyEdit={(imgUrl, mask, prompt) => {
-                            console.log("[FocusEdit] Apply:", { imgUrl, mask: mask.slice(0, 40) + "...", prompt })
-                            setFocusEditKey(null)
-                          }}
+                          onApplyEdit={(imgUrl, mask, prompt) => applyFocusEditToAsset(item, key, imgUrl, mask, prompt)}
                           onClose={() => setFocusEditKey(null)}
+                          isApplying={focusEditStateByKey[key]?.status === "applying"}
+                          errorMessage={focusEditStateByKey[key]?.status === "error" ? focusEditStateByKey[key]?.message : undefined}
                         />
                       </div>
                     )}
@@ -289,6 +390,21 @@ export function CharacterAssetLibraryPanel({
           })}
         </div>
       )}
+      {activeCharacterViewItem ? (
+        <CharacterViewModal
+          isOpen={true}
+          onClose={() => setCharacterViewKey(null)}
+          characterName={activeCharacterViewItem.name}
+          characterDescription={[
+            activeCharacterViewItem.role,
+            activeCharacterViewItem.visualSignature,
+            activeCharacterViewItem.costume,
+            activeCharacterViewItem.props?.length ? `道具：${activeCharacterViewItem.props.join("、")}` : "",
+          ].filter(Boolean).join("，")}
+          referenceImageUrl={activeCharacterViewItem.frontViewUrl}
+          onImageGenerated={handleCharacterViewGenerated}
+        />
+      ) : null}
     </aside>
   );
 }

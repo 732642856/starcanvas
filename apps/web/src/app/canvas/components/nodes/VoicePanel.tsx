@@ -15,7 +15,7 @@ import {
   invalidateProfileCache,
   VOICE_QUICK_TAGS,
   type VoiceQuickTag,
-} from "../../utils/ttsService"
+} from "../../utils/ttsPanelUtils"
 
 // ---------------------------------------------------------------------------
 // Props

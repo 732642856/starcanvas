@@ -20,6 +20,8 @@ export type VideoWorkflowNodeKind =
   | "tts"
   | "bgm"
   | "upscale"
+  | "focus-edit"
+  | "reverse-prompt"
   | "poster"
   | "talking-photo"
   | "remix-analysis"
@@ -264,6 +266,9 @@ export type CharacterIdentityAsset = {
   frontViewUrl?: string
   sideViewUrl?: string
   backViewUrl?: string
+  frontViewAssetId?: string
+  sideViewAssetId?: string
+  backViewAssetId?: string
   viewGenerationStatus?: "idle" | "generating" | "done" | "failed"
 }
 
@@ -289,6 +294,9 @@ export type StoryboardShotData = {
   generatedImageNodeId?: string
   generatedImageUrl?: string
   generatedImageAssetId?: string
+  referenceImageUrl?: string
+  sourceType?: string
+  sourceMeta?: Record<string, unknown>
   generationStatus?: "idle" | "queued" | "generating" | "retrying" | "succeeded" | "failed"
   generationError?: string
   generationStartedAt?: number
@@ -434,6 +442,7 @@ export type CanvasNodeData = {
   displayWidth?: number
   displayHeight?: number
   aspectRatio?: number
+  characterFacingAngle?: number
   sketchStrokes?: SketchStroke[]
   sketchImageDataUrl?: string
   createdAt?: number
@@ -463,6 +472,7 @@ export type CanvasNodeData = {
   sourcePromptId?: string
   sourceGenerationJobId?: string
   sourceType?: "shot" | "storyboard" | "prompt" | "image" | string
+  sourceMeta?: Record<string, unknown>
   sourceStoryboardNodeId?: string
   sourceShotId?: string
   sourceShotOrder?: number
@@ -471,6 +481,16 @@ export type CanvasNodeData = {
   generatedAt?: string
   generationId?: string
   generationOutput?: any
+  syncToAssetLibrary?: boolean
+  assetLibraryType?: AssetType
+  assetLibraryFolder?: string
+  assetLibraryTags?: string[]
+  characterAssetSeeds?: Array<{
+    id: string
+    name: string
+    role: string
+    notes?: string
+  }>
   compositeSettings?: StoryboardCompositeSettings
   storyboardAssistantStage?: StoryboardAssistantStage
   projectScenes?: ProjectSceneBibleData[]
@@ -509,6 +529,13 @@ export type CanvasNodeData = {
 
   // --- Image asset persistence (IndexedDB / remote) ---
   assetId?: string
+  sourceImageAssetId?: string
+  /** Provider-readable image URL/data URL. Prefer this over blob preview URLs when calling AI services. */
+  generatedImageUrl?: string
+  /** Mask data used by focus-edit nodes. */
+  focusEditMaskDataUrl?: string
+  /** @deprecated Use focusEditMaskDataUrl for focus-edit nodes. */
+  maskDataUrl?: string
   /** @internal Where the image data lives: "indexeddb" | "remote" | "missing" */
   persistence?: "indexeddb" | "remote" | "missing"
   /** @internal Source of the image: "upload" | "generated" | "remote" */
@@ -835,6 +862,13 @@ export const nodeToneStyles: Record<CanvasNodeKind, {
     border: "1px solid rgba(148, 163, 184, 0.2)",
     background: "rgba(100, 116, 139, 0.1)",
   },
+  "reverse-prompt": {
+    eyebrow: "text-violet-200",
+    body: "text-violet-100/80",
+    meta: "text-violet-200/60",
+    border: "1px solid rgba(167, 139, 250, 0.24)",
+    background: "rgba(139, 92, 246, 0.14)",
+  },
   image: {
     eyebrow: "text-slate-300",
     body: "text-slate-200/75",
@@ -1058,6 +1092,13 @@ export const nodeToneStyles: Record<CanvasNodeKind, {
     meta: "text-cyan-300/60",
     border: "1px solid rgba(6, 182, 212, 0.25)",
     background: "rgba(6, 182, 212, 0.1)",
+  },
+  "focus-edit": {
+    eyebrow: "text-violet-300",
+    body: "text-violet-200/75",
+    meta: "text-violet-300/60",
+    border: "1px solid rgba(139, 92, 246, 0.25)",
+    background: "rgba(139, 92, 246, 0.1)",
   },
   poster: {
     eyebrow: "text-rose-300",

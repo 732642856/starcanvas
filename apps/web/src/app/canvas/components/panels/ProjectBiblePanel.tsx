@@ -2,9 +2,10 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { BookOpen, Clapperboard, Palette, Save, Sparkles, UserRound, X } from "lucide-react";
+import { BookOpen, Clapperboard, Palette, Save, Sparkles, UserRound, X, ImageIcon } from "lucide-react";
 import type { CharacterAssetLibraryItem, CharacterAssetLibraryPatch } from "@/lib/storyboard/characterAssetLibrary";
 import { formatCharacterIdentityListInput, parseCharacterIdentityListInput } from "@/lib/storyboard/characterIdentitySummary";
+import { CharacterViewPanel as CharacterViewModal } from "../canvas/CharacterViewModal";
 import { DESIGN_TOKENS } from "../../styles/designSystem";
 
 export type ProjectSceneBibleItem = {
@@ -153,6 +154,7 @@ export function ProjectBiblePanel({
   const [tab, setTab] = useState<BibleTab>("characters");
   const [editingCharacterKey, setEditingCharacterKey] = useState<string | null>(null);
   const [characterDrafts, setCharacterDrafts] = useState<Record<string, CharacterDraft>>({});
+  const [characterViewKey, setCharacterViewKey] = useState<string | null>(null);
   const [editingSceneId, setEditingSceneId] = useState<string | null>(null);
   const [sceneDrafts, setSceneDrafts] = useState<Record<string, SceneDraft>>({});
   const [visualDraft, setVisualDraft] = useState<VisualDraft>(() => createVisualDraft(visualBible));
@@ -181,6 +183,30 @@ export function ProjectBiblePanel({
     });
     setEditingCharacterKey(null);
   }, [characterDrafts, onApplyCharacterPatch]);
+
+  const activeCharacterViewItem = characterViewKey
+    ? characterItems.find((item) => getCharacterKey(item) === characterViewKey) ?? null
+    : null;
+
+  const handleCharacterViewGenerated = useCallback((
+    imageUrl: string,
+    perspective: "front" | "side" | "back" | "all",
+  ) => {
+    if (!characterViewKey) return;
+
+    const patch: CharacterAssetLibraryPatch =
+      perspective === "front"
+        ? { frontViewUrl: imageUrl }
+        : perspective === "side"
+          ? { sideViewUrl: imageUrl }
+          : perspective === "back"
+            ? { backViewUrl: imageUrl }
+            : {};
+
+    if (Object.keys(patch).length > 0) {
+      onApplyCharacterPatch(characterViewKey, patch);
+    }
+  }, [characterViewKey, onApplyCharacterPatch]);
 
   const startEditScene = useCallback((item: ProjectSceneBibleItem) => {
     setEditingSceneId(item.id);
@@ -304,11 +330,48 @@ export function ProjectBiblePanel({
                     </div>
                   ) : (
                     <div className="mt-2 space-y-2">
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { label: "正面", imageUrl: item.frontViewUrl },
+                          { label: "侧面", imageUrl: item.sideViewUrl },
+                          { label: "背面", imageUrl: item.backViewUrl },
+                        ].map((view) => (
+                          <div key={view.label} className="overflow-hidden rounded-xl border border-slate-800/90 bg-slate-950/70">
+                            <div className="flex aspect-square items-center justify-center overflow-hidden">
+                              {view.imageUrl ? (
+                                <img
+                                  src={view.imageUrl}
+                                  alt={`${item.name || "角色"}${view.label}视图`}
+                                  className="h-full w-full object-cover"
+                                  draggable={false}
+                                />
+                              ) : (
+                                <div className="flex flex-col items-center gap-1 text-[10px] text-slate-500">
+                                  <ImageIcon size={14} />
+                                  <span>待生成</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className="border-t border-slate-800/90 px-1.5 py-1 text-center text-[10px] text-slate-400">
+                              {view.label}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                       <div className="flex flex-wrap gap-1.5">
                         {[item.role, item.visualSignature, item.costume, ...(item.props ?? []).slice(0, 3)].filter(Boolean).map((detail) => (
                           <span key={detail} className="rounded-md bg-purple-400/10 px-1.5 py-0.5 text-[10px] text-purple-100/85">{detail}</span>
                         ))}
                       </div>
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-purple-200/20 px-2 py-1.5 text-[11px] text-purple-100 transition hover:bg-purple-200/10"
+                        data-testid="project-bible-open-character-view"
+                        onClick={() => setCharacterViewKey(key)}
+                      >
+                        <Sparkles size={12} />
+                        打开真实三视图生成
+                      </button>
                       <p className="line-clamp-2 text-[11px] text-slate-500">镜头：{item.shotTitles.slice(0, 5).join("、")}</p>
                     </div>
                   )}
@@ -395,6 +458,21 @@ export function ProjectBiblePanel({
           </div>
         ) : null}
       </div>
+      {activeCharacterViewItem ? (
+        <CharacterViewModal
+          isOpen={true}
+          onClose={() => setCharacterViewKey(null)}
+          characterName={activeCharacterViewItem.name}
+          characterDescription={[
+            activeCharacterViewItem.role,
+            activeCharacterViewItem.visualSignature,
+            activeCharacterViewItem.costume,
+            activeCharacterViewItem.props?.length ? `道具：${activeCharacterViewItem.props.join("、")}` : "",
+          ].filter(Boolean).join("，")}
+          referenceImageUrl={activeCharacterViewItem.frontViewUrl}
+          onImageGenerated={handleCharacterViewGenerated}
+        />
+      ) : null}
     </aside>,
     document.body,
   );

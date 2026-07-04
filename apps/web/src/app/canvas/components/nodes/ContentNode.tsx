@@ -227,7 +227,8 @@ const STORYBOARD_RUN_STATUS_LABELS: Record<NodeRunStatus, string> = {
 }
 
 export const ContentNode = memo(function ContentNode({ id, data, selected, width, height }: ContentNodeProps) {
-  const [editContent, setEditContent] = useState(data.content || data.prompt || "")
+  const initialContent = data.content || data.prompt || data.text || ""
+  const [editContent, setEditContent] = useState(initialContent)
   const [aiInput, setAiInput] = useState("")
   const [aiMode, setAiMode] = useState<ContentAiMode>("chat")
   const [selectedModel, setSelectedModel] = useState(DEFAULT_CHAT_MODEL)
@@ -243,7 +244,7 @@ export const ContentNode = memo(function ContentNode({ id, data, selected, width
   const { setNodes, getNodes, getEdges, setEdges } = useReactFlow()
   const { runNode } = useWorkflowRunner()
 
-  const content = data.content || data.prompt || ""
+  const content = data.content || data.prompt || data.text || ""
   const isStoryboardNode = data.nodeKind === "storyboard"
   const isDocumentNode = data.nodeKind === "document"
   const isSubtitleSrtNode = data.nodeKind === "subtitle-srt"
@@ -303,8 +304,8 @@ export const ContentNode = memo(function ContentNode({ id, data, selected, width
   const mainTextMaxHeight = hasFixedNodeHeight ? Math.max(260, nodeHeight - 220) : isStoryboardNode ? 960 : 560
 
   useEffect(() => {
-    setEditContent(data.content || data.prompt || "")
-  }, [data.content, data.prompt])
+    setEditContent(data.content || data.prompt || data.text || "")
+  }, [data.content, data.prompt, data.text])
 
   const autoResize = useCallback((el: HTMLTextAreaElement | null, maxHeight: number) => {
     if (!el) return

@@ -4,21 +4,41 @@
  */
 "use client"
 
-import { useState, useEffect, type ChangeEvent } from "react"
+import { useState, useEffect, useMemo, type ChangeEvent, type FocusEvent } from "react"
 import { createPortal } from "react-dom"
 import { X, Save, Plus, Trash2, BarChart3, Wifi, Loader2, CheckCircle2, AlertCircle, Server, Monitor } from "lucide-react"
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
 import type { ModelOption } from "../chat/ChatInput"
 import { useAIUsageStore } from "../../features/canvas/usage/useAIUsageStore"
-import { formatCostUsd } from "../../features/canvas/usage/estimateCost"
 import {
-  saveLocalProviderOverrides,
-  getLocalProviderOverrides,
   clearLocalProviderOverrides,
-  hasLocalProviderOverrides,
   checkAiHealth,
+  checkProviderSmoke,
+  runProviderSmoke,
 } from "../../../../lib/ai/client"
 import type { AiHealthResponse } from "../../../../lib/ai/client"
+import type {
+  ProviderRealSmokeTarget,
+  ProviderSmokeReport,
+} from "../../../../lib/ai/providerSmoke"
+import { getProviderRealSmokeConfirmationText } from "../../../../lib/ai/providerSmoke"
+import {
+  summarizeProviderSmokeResult,
+  type ProviderSmokeRunResultLike,
+} from "../../../../lib/ai/providerSmokeResult"
+import {
+  buildProviderHealthSummary,
+  type ProviderHealthProvider,
+  type ProviderHealthStatus,
+} from "../../../../lib/ai/provider-health-summary"
+import {
+  buildTaskReadinessSummary,
+  getTaskReadinessPrimaryFixHint,
+} from "../../../../lib/ai/taskReadiness"
+import {
+  loadProviderSettings,
+  saveProviderSettings,
+} from "../../../../lib/ai/user-settings"
 
 // ── Token Aliases ──────────────────────────────────────
 const T = DESIGN_TOKENS
@@ -26,11 +46,58 @@ const T = DESIGN_TOKENS
 interface SettingsPanelProps {
   isOpen: boolean
   onClose: () => void
+  onImportProviderSmokeArtifact?: (payload: {
+    target: ProviderRealSmokeTarget
+    artifact: NonNullable<ProviderSmokeRunResultLike["artifact"]>
+    result: RealSmokeDisplayResult
+  }) => void | Promise<void>
 }
 
-export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
+type SettingsServerConfig = AiHealthResponse["config"] & {
+  providers?: ProviderHealthProvider[]
+}
+
+interface RealSmokeConfirmationState {
+  target: ProviderRealSmokeTarget
+  title: string
+  description: string
+  confirmLabel: string
+  requiredText: string | null
+}
+
+interface RealSmokeDisplayResult extends ProviderSmokeRunResultLike {
+  summaryTitle: string
+  hints: string[]
+}
+
+const HEALTH_STATUS_STYLE: Record<ProviderHealthStatus, { color: string; backgroundColor: string; borderColor: string; label: string }> = {
+  ready: {
+    color: "#86efac",
+    backgroundColor: "rgba(16,185,129,0.08)",
+    borderColor: "rgba(16,185,129,0.30)",
+    label: "可用",
+  },
+  warning: {
+    color: "#fbbf24",
+    backgroundColor: "rgba(245,158,11,0.08)",
+    borderColor: "rgba(245,158,11,0.30)",
+    label: "注意",
+  },
+  blocked: {
+    color: "#fca5a5",
+    backgroundColor: "rgba(239,68,68,0.08)",
+    borderColor: "rgba(239,68,68,0.32)",
+    label: "阻塞",
+  },
+}
+
+function summarizeFixHint(reason: string | undefined): string | null {
+  return reason?.trim() || null
+}
+
+export function SettingsPanel({ isOpen, onClose, onImportProviderSmokeArtifact }: SettingsPanelProps) {
   // ── Existing state ──────────────────────────────────
-  const [apiBaseUrl, setApiBaseUrl] = useState("https://copse.top/v1")
+  const [apiBaseUrl, setApiBaseUrl] = useState("")
   const [useMock, setUseMock] = useState(false) // P0: default off, useEffect corrects per env
   const [models, setModels] = useState<ModelOption[]>([])
   const [allowAIAutoRun, setAllowAIAutoRun] = useState(false)
@@ -58,57 +125,83 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   // ── P2-5B: Test connection state ────────────────────
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle")
   const [testMessage, setTestMessage] = useState("")
-  const [serverConfig, setServerConfig] = useState<AiHealthResponse["config"] | null>(null)
+  const [serverConfig, setServerConfig] = useState<SettingsServerConfig | null>(null)
+  const [providerSmoke, setProviderSmoke] = useState<ProviderSmokeReport | null>(null)
+  const [providerSmokeStatus, setProviderSmokeStatus] = useState<"idle" | "checking" | "done" | "fail">("idle")
+  const [providerSmokeMessage, setProviderSmokeMessage] = useState("")
+  const [runningRealSmokeTarget, setRunningRealSmokeTarget] = useState<ProviderRealSmokeTarget | null>(null)
+  const [importingRealSmokeTarget, setImportingRealSmokeTarget] = useState<ProviderRealSmokeTarget | null>(null)
+  const [realSmokeResults, setRealSmokeResults] = useState<Record<string, RealSmokeDisplayResult>>({})
+  const [pendingRealSmokeConfirmation, setPendingRealSmokeConfirmation] = useState<RealSmokeConfirmationState | null>(null)
+  const [realSmokeConfirmationInput, setRealSmokeConfirmationInput] = useState("")
 
   // AI Usage stats — use cached `stats` for React 19 ref stability
   const usageStats = useAIUsageStore((s) => s.stats)
   const usageRecords = useAIUsageStore((s) => s.usageRecords)
+  const providerHealthSummary = useMemo(
+    () =>
+      buildProviderHealthSummary({
+        serverConfig: serverConfig
+          ? {
+              ...serverConfig,
+              baseUrl: useLocalOverride && apiBaseUrl ? apiBaseUrl : serverConfig.baseUrl,
+              hasApiKey: Boolean(serverConfig.hasApiKey || sessionApiKey.trim()),
+            }
+          : null,
+        sessionApiKey,
+        useLocalOverride,
+        useMock,
+        defaultModel,
+        imageModel,
+        videoModel,
+        timeoutMs,
+        providers: serverConfig?.providers ?? [],
+        voiceCloneBaseUrl: process.env.NEXT_PUBLIC_VOICE_CLONE_BASE_URL,
+        voxcpmBaseUrlConfigured: Boolean(process.env.NEXT_PUBLIC_VOXCPM_URL),
+      }),
+    [
+      apiBaseUrl,
+      defaultModel,
+      imageModel,
+      serverConfig,
+      sessionApiKey,
+      timeoutMs,
+      useLocalOverride,
+      useMock,
+      videoModel,
+    ],
+  )
+
+  const taskReadinessSummary = useMemo(
+    () => buildTaskReadinessSummary({
+      providerHealthSummary,
+      providerSmokeReport: providerSmoke,
+    }),
+    [providerHealthSummary, providerSmoke],
+  )
 
   // ── Load from localStorage ──────────────────────────
   useEffect(() => {
     if (typeof window === "undefined") return
     try {
-      // Existing settings
-      setApiBaseUrl(localStorage.getItem("startrails_api_base_url") || "https://copse.top/v1")
-      localStorage.removeItem("startrails_api_key")
-      // P0 fix: default mock to false in production, respect stored preference
-      const storedMock = localStorage.getItem("startrails_use_mock")
-      const defaultMock = process.env.NODE_ENV !== "production"
-      setUseMock(storedMock !== null ? storedMock !== "false" : defaultMock)
-      setAllowAIAutoRun(localStorage.getItem("startrails_ai_auto_run") === "true")
-      const stored = localStorage.getItem("startrails_models")
-      if (stored) {
-        setModels(JSON.parse(stored))
-      } else {
-        // First-time: seed with default model presets
-        setModels([
-          { value: "gpt-5.5", label: "GPT-5.5（文本）", provider: "default", desc: "默认对话模型", type: "text" as const },
-          { value: "gpt-image-2", label: "GPT-Image-2（图片）", provider: "default", desc: "默认生图模型", type: "image" as const },
-          { value: "vidu", label: "Vidu（视频）", provider: "dashscope", desc: "阿里云百炼视频生成", type: "video" as const },
-          { value: "kling-v1", label: "Kling V1（视频）", provider: "kling", desc: "Kling AI 视频生成", type: "video" as const },
-        ])
-      }
-
-      // Restore saved API Key
-      const sessionKey = window.sessionStorage.getItem("startrails_session_api_key")
-      const localKey = window.localStorage.getItem("startrails_ui_api_key")
-      if (localKey) {
-        setSessionApiKey(localKey)
-        setKeyStorageMode("local")
-      } else if (sessionKey) {
-        setSessionApiKey(sessionKey)
-        setKeyStorageMode("session")
-      }
-
-      // P2-5B: Provider overrides
-      const overrides = getLocalProviderOverrides()
-      if (overrides) {
-        setUseLocalOverride(true)
-        if (overrides.defaultModel) setDefaultModel(overrides.defaultModel)
-        if (overrides.imageModel) setImageModel(overrides.imageModel)
-        if (overrides.videoModel) setVideoModel(overrides.videoModel)
-        if (overrides.timeoutMs) setTimeoutMs(String(overrides.timeoutMs))
-      }
+      const defaults: ModelOption[] = [
+        { value: "gpt-5.5", label: "GPT-5.5（文本）", provider: "default", desc: "默认对话模型", type: "text" as const },
+        { value: "gpt-image-2", label: "GPT-Image-2（图片）", provider: "default", desc: "默认生图模型", type: "image" as const },
+        { value: "vidu", label: "Vidu（视频）", provider: "dashscope", desc: "阿里云百炼视频生成", type: "video" as const },
+        { value: "kling-v1", label: "Kling V1（视频）", provider: "kling", desc: "Kling AI 视频生成", type: "video" as const },
+      ]
+      const settings = loadProviderSettings(defaults)
+      setApiBaseUrl(settings.apiBaseUrl)
+      setUseMock(settings.useMock)
+      setAllowAIAutoRun(settings.allowAIAutoRun)
+      setModels(settings.models)
+      setSessionApiKey(settings.sessionApiKey)
+      setKeyStorageMode(settings.keyStorageMode)
+      setUseLocalOverride(settings.useLocalOverride)
+      setDefaultModel(settings.defaultModel)
+      setImageModel(settings.imageModel)
+      setVideoModel(settings.videoModel)
+      setTimeoutMs(settings.timeoutMs)
     } catch { /* ignore */ }
   }, [isOpen])
 
@@ -159,45 +252,178 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     }
   }
 
+  const handleCheckProviderSmoke = async () => {
+    setProviderSmokeStatus("checking")
+    setProviderSmokeMessage("")
+    try {
+      const overrides = useLocalOverride
+        ? {
+            baseUrl: apiBaseUrl || undefined,
+            defaultModel: defaultModel || undefined,
+            imageModel: imageModel || undefined,
+            videoModel: videoModel || undefined,
+            timeoutMs: timeoutMs ? Number(timeoutMs) : undefined,
+            sessionApiKey: sessionApiKey || undefined,
+          }
+        : sessionApiKey
+          ? { sessionApiKey }
+          : undefined
+
+      const report = await checkProviderSmoke(overrides)
+      setProviderSmoke(report)
+      setProviderSmokeStatus("done")
+      setProviderSmokeMessage("这份报告只做就绪度预检，不会真实消耗图片 / 视频 / TTS 额度。")
+    } catch (err: any) {
+      setProviderSmokeStatus("fail")
+      setProviderSmokeMessage(err.message || "Provider smoke 检查失败")
+    }
+  }
+
+  const executeRealSmoke = async (
+    target: ProviderRealSmokeTarget,
+    confirmationText?: string,
+  ) => {
+    setRunningRealSmokeTarget(target)
+    try {
+      const overrides = useLocalOverride
+        ? {
+            baseUrl: apiBaseUrl || undefined,
+            defaultModel: defaultModel || undefined,
+            imageModel: imageModel || undefined,
+            videoModel: videoModel || undefined,
+            timeoutMs: timeoutMs ? Number(timeoutMs) : undefined,
+            sessionApiKey: sessionApiKey || undefined,
+          }
+        : sessionApiKey
+          ? { sessionApiKey }
+          : undefined
+
+      const result = await runProviderSmoke(target, {
+        confirmCost: true,
+        confirmationText,
+        waitForResult: target === "video",
+        overrides,
+      })
+      const summary = summarizeProviderSmokeResult(result)
+
+      setRealSmokeResults((prev) => ({
+        ...prev,
+        [target]: {
+          status: result.status,
+          message: result.message,
+          details: result.details,
+          artifact: result.artifact,
+          summaryTitle: summary.title,
+          hints: summary.hints,
+        },
+      }))
+    } finally {
+      setRunningRealSmokeTarget(null)
+    }
+  }
+
+  const buildRealSmokeConfirmationState = (
+    target: ProviderRealSmokeTarget,
+  ): RealSmokeConfirmationState => {
+    const requiredText = getProviderRealSmokeConfirmationText(target)
+    switch (target) {
+      case "image":
+        return {
+          target,
+          title: "确认真实生图 smoke",
+          description: "这会发起一次单张最小规格真实生图请求，可能消耗图片额度。请输入指定短语后继续。",
+          confirmLabel: "确认试跑",
+          requiredText,
+        }
+      case "video":
+        return {
+          target,
+          title: "确认真实生视频 smoke",
+          description: "这会发起一次最小时长真实 Vidu 视频请求，并等待最终视频结果返回，可能消耗视频额度。请输入指定短语后继续。",
+          confirmLabel: "确认试跑",
+          requiredText,
+        }
+      case "tts-server":
+        return {
+          target,
+          title: "确认服务端 TTS smoke",
+          description: "这会发起一次真实服务端 TTS 请求，可能消耗少量服务资源。",
+          confirmLabel: "继续试跑",
+          requiredText: null,
+        }
+      case "text":
+      default:
+        return {
+          target,
+          title: "确认真实文本 smoke",
+          description: "这会发起一次最小真实文本请求，可能消耗极少量 token。",
+          confirmLabel: "继续试跑",
+          requiredText: null,
+        }
+    }
+  }
+
+  const handleRunRealSmoke = (target: ProviderRealSmokeTarget) => {
+    setRealSmokeConfirmationInput("")
+    setPendingRealSmokeConfirmation(buildRealSmokeConfirmationState(target))
+  }
+
+  const handleCancelRealSmokeConfirmation = () => {
+    if (runningRealSmokeTarget) return
+    setPendingRealSmokeConfirmation(null)
+    setRealSmokeConfirmationInput("")
+  }
+
+  const handleConfirmRealSmoke = async () => {
+    if (!pendingRealSmokeConfirmation) return
+    const confirmationText = pendingRealSmokeConfirmation.requiredText
+      ? realSmokeConfirmationInput.trim()
+      : undefined
+    if (
+      pendingRealSmokeConfirmation.requiredText
+      && confirmationText !== pendingRealSmokeConfirmation.requiredText
+    ) {
+      return
+    }
+
+    const target = pendingRealSmokeConfirmation.target
+    setPendingRealSmokeConfirmation(null)
+    setRealSmokeConfirmationInput("")
+    await executeRealSmoke(target, confirmationText)
+  }
+
+  const handleImportRealSmokeArtifact = async (target: ProviderRealSmokeTarget) => {
+    const result = realSmokeResults[target]
+    if (!result?.artifact || !onImportProviderSmokeArtifact) return
+
+    setImportingRealSmokeTarget(target)
+    try {
+      await onImportProviderSmokeArtifact({
+        target,
+        artifact: result.artifact,
+        result,
+      })
+    } finally {
+      setImportingRealSmokeTarget(null)
+    }
+  }
+
   // ── Save ────────────────────────────────────────────
   const handleSave = () => {
     if (typeof window === "undefined") return
-
-    // Existing settings
-    localStorage.setItem("startrails_api_base_url", apiBaseUrl)
-    localStorage.removeItem("startrails_api_key")
-    localStorage.setItem("startrails_use_mock", String(useMock))
-    localStorage.setItem("startrails_ai_auto_run", String(allowAIAutoRun))
-    localStorage.setItem("startrails_models", JSON.stringify(models))
-
-    // P2-5B: Provider overrides
-    if (useLocalOverride) {
-      saveLocalProviderOverrides({
-        baseUrl: apiBaseUrl || undefined,
-        defaultModel: defaultModel || undefined,
-        imageModel: imageModel || undefined,
-        videoModel: videoModel || undefined,
-        timeoutMs: timeoutMs ? Number(timeoutMs) : undefined,
-      })
-    } else {
-      clearLocalProviderOverrides()
-    }
-
-    // API Key 存储
-    window.sessionStorage.removeItem("startrails_session_api_key")
-    window.localStorage.removeItem("startrails_ui_api_key")
-    if (sessionApiKey) {
-      if (keyStorageMode === "local") {
-        window.localStorage.setItem("startrails_ui_api_key", sessionApiKey)
-      } else {
-        window.sessionStorage.setItem("startrails_session_api_key", sessionApiKey)
-      }
-    }
-
-    // Notify other components
-    window.dispatchEvent(new CustomEvent("startrails-models-updated"))
-    window.dispatchEvent(new CustomEvent("startrails-settings-updated", { detail: { allowAIAutoRun, useMock } }))
-    window.dispatchEvent(new CustomEvent("startrails-provider-updated"))
+    saveProviderSettings({
+      apiBaseUrl,
+      useMock,
+      allowAIAutoRun,
+      models,
+      sessionApiKey,
+      keyStorageMode,
+      useLocalOverride,
+      defaultModel,
+      imageModel,
+      videoModel,
+      timeoutMs,
+    })
 
     onClose()
   }
@@ -233,27 +459,32 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
   // ── Style helpers ────────────────────────────────────
   const inputClass = "w-full rounded-lg border bg-black/40 px-3 py-1.5 text-sm text-white outline-none"
-  const inputStyle = (e: any) => {
+  const handleDialogInputFocus = (e: FocusEvent<HTMLInputElement>) => {
+    e.target.style.borderColor = T.accent
+  }
+  const handleDialogInputBlur = (e: FocusEvent<HTMLInputElement>) => {
     e.target.style.borderColor = T.border
-    e.target.onfocus = () => (e.target.style.borderColor = T.accent)
-    e.target.onblur = () => (e.target.style.borderColor = T.border)
   }
   const labelStyle = { color: T.textMuted, fontSize: "11px", display: "block", marginBottom: "2px" } as const
+  const realSmokeConfirmationMatches = pendingRealSmokeConfirmation?.requiredText
+    ? realSmokeConfirmationInput.trim() === pendingRealSmokeConfirmation.requiredText
+    : true
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0"
-        style={{ backgroundColor: "rgba(0,0,0,0.6)" }}
-        onClick={onClose}
-      />
+    <>
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        {/* Backdrop */}
+        <div
+          className="absolute inset-0"
+          style={{ backgroundColor: "rgba(0,0,0,0.6)" }}
+          onClick={onClose}
+        />
 
-      {/* Panel */}
-      <div
-        className="relative z-10 w-[480px] max-h-[85vh] overflow-y-auto rounded-2xl border p-6"
-        style={{ backgroundColor: T.panelSolid, borderColor: T.border }}
-      >
+        {/* Panel */}
+        <div
+          className="relative z-10 w-[480px] max-h-[85vh] overflow-y-auto rounded-2xl border p-6"
+          style={{ backgroundColor: T.panelSolid, borderColor: T.border }}
+        >
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-medium" style={{ color: T.text }}>设置</h3>
@@ -314,6 +545,12 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
         {/* ── 中转站配置 ────────────────────────────────── */}
         <div className="mb-5">
           <h4 className="mb-2 text-xs font-medium" style={{ color: T.textSecondary }}>中转站地址 & 模型</h4>
+          <div className="mb-3 rounded-lg border px-3 py-2 text-[11px] leading-5" style={{ borderColor: T.border, backgroundColor: "rgba(255,255,255,0.03)", color: T.textSecondary }}>
+            不确定怎么填时，可以直接去右侧对话里说：
+            <div style={{ color: T.text, marginTop: 4 }}>
+              帮我把 OpenRouter 的 key xxx 配到星轨画布，文本模型用 openai/gpt-4.1-mini，图片模型用 flux-dev
+            </div>
+          </div>
           <div className="space-y-2">
             {/* Base URL */}
             <div>
@@ -322,7 +559,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 type="text"
                 value={apiBaseUrl}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setApiBaseUrl(e.target.value)}
-                placeholder={serverConfig?.baseUrl || "https://copse.top/v1"}
+                placeholder={serverConfig?.baseUrl || "https://your-relay.example.com/v1"}
                 className={inputClass}
                 style={{ borderColor: T.border }}
                 onFocus={(e) => (e.target.style.borderColor = T.accent)}
@@ -467,7 +704,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 className="rounded"
               />
               <label htmlFor="use-mock" className="text-[11px]" style={{ color: T.textMuted }}>
-                模拟模式（不调用真实 API）
+                调试模式（仅用于本地演示，不调用真实 API）
               </label>
             </div>
 
@@ -524,6 +761,290 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               {testMessage}
             </p>
           )}
+        </div>
+
+        <div className="mb-5">
+          <h4 className="mb-2 text-xs font-medium" style={{ color: T.textSecondary }}>生产能力预检</h4>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCheckProviderSmoke}
+              disabled={providerSmokeStatus === "checking"}
+              className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors hover:bg-white/10 disabled:opacity-50"
+              style={{ borderColor: T.border, color: T.textSecondary }}
+            >
+              {providerSmokeStatus === "checking"
+                ? <Loader2 size={13} strokeWidth={1.5} className="animate-spin" />
+                : <Server size={13} strokeWidth={1.5} />
+              }
+              检查生产能力
+            </button>
+            <span className="text-[10px]" style={{ color: T.textMuted }}>
+              不消耗额度，只告诉你 text / image / video / TTS 哪里还没配好
+            </span>
+          </div>
+          {providerSmokeMessage && (
+            <p
+              className="mt-1.5 text-[10px]"
+              style={{ color: providerSmokeStatus === "fail" ? "#ef4444" : T.textMuted }}
+            >
+              {providerSmokeMessage}
+            </p>
+          )}
+          {providerSmoke && (
+            <div className="mt-3 space-y-2">
+              {providerSmoke.items.map((item) => {
+                const statusColor =
+                  item.status === "ready" ? "#10b981" : item.status === "warning" ? "#f59e0b" : "#ef4444"
+                return (
+                  <div
+                    key={item.target}
+                    data-testid={`provider-smoke-item-${item.target}`}
+                    className="rounded-xl border p-3"
+                    style={{ borderColor: T.border, backgroundColor: "rgba(255,255,255,0.03)" }}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-medium" style={{ color: T.text }}>
+                          {item.label}
+                        </div>
+                        <div className="mt-0.5 text-[10px]" style={{ color: T.textMuted }}>
+                          {item.summary}
+                        </div>
+                      </div>
+                      <span
+                        className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                        style={{ backgroundColor: `${statusColor}22`, color: statusColor }}
+                      >
+                        {item.status === "ready" ? "就绪" : item.status === "warning" ? "警告" : "阻塞"}
+                      </span>
+                    </div>
+                    <ul className="mt-2 space-y-1 text-[10px]" style={{ color: T.textMuted }}>
+                      {item.details.map((detail, index) => (
+                        <li key={index}>- {detail}</li>
+                      ))}
+                      {item.realSmokeSupported && (
+                        <li>
+                          - 真实 smoke {item.realSmokeRequiresConsent ? "需要用户显式授权" : "可直接执行"}
+                          {item.mayConsumeQuota ? "，且可能消耗额度。" : "。"}
+                        </li>
+                      )}
+                    </ul>
+                    {item.realSmokeSupported && (
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleRunRealSmoke(item.target as ProviderRealSmokeTarget)}
+                          disabled={runningRealSmokeTarget === item.target}
+                          data-testid={`provider-smoke-run-${item.target}`}
+                          className="rounded-lg border px-2.5 py-1 text-[10px] transition-colors hover:bg-white/10 disabled:opacity-50"
+                          style={{ borderColor: T.border, color: T.textSecondary }}
+                        >
+                          {runningRealSmokeTarget === item.target ? "试跑中…" : "真实试跑"}
+                        </button>
+                        {realSmokeResults[item.target] && (
+                          <div
+                            className="flex-1 rounded-lg border px-2.5 py-2"
+                            data-testid={`provider-smoke-result-${item.target}`}
+                            style={{
+                              borderColor:
+                                realSmokeResults[item.target]?.status === "passed"
+                                  ? "rgba(16,185,129,0.28)"
+                                  : realSmokeResults[item.target]?.status === "blocked"
+                                    ? "rgba(245,158,11,0.28)"
+                                    : "rgba(239,68,68,0.28)",
+                              backgroundColor:
+                                realSmokeResults[item.target]?.status === "passed"
+                                  ? "rgba(16,185,129,0.08)"
+                                  : realSmokeResults[item.target]?.status === "blocked"
+                                    ? "rgba(245,158,11,0.08)"
+                                    : "rgba(239,68,68,0.08)",
+                            }}
+                          >
+                            <div
+                              className="text-[10px] font-medium"
+                              style={{
+                                color:
+                                  realSmokeResults[item.target]?.status === "passed"
+                                    ? "#86efac"
+                                    : realSmokeResults[item.target]?.status === "blocked"
+                                      ? "#fcd34d"
+                                      : "#fca5a5",
+                              }}
+                            >
+                              {realSmokeResults[item.target]?.summaryTitle}
+                            </div>
+                            <div className="mt-1 text-[10px]" style={{ color: T.textMuted }}>
+                              {realSmokeResults[item.target]?.message}
+                            </div>
+                            {realSmokeResults[item.target]?.hints?.length ? (
+                              <ul className="mt-1.5 space-y-1 text-[10px]" style={{ color: T.textMuted }}>
+                                {realSmokeResults[item.target]?.hints.map((hint, index) => (
+                                  <li key={index}>- {hint}</li>
+                                ))}
+                              </ul>
+                            ) : null}
+                            {realSmokeResults[item.target]?.details?.length ? (
+                              <div className="mt-1.5 text-[10px]" style={{ color: T.textMuted, opacity: 0.78 }}>
+                                细节：{realSmokeResults[item.target]?.details?.join(" / ")}
+                              </div>
+                            ) : null}
+                            {realSmokeResults[item.target]?.artifact?.type === "image" ? (
+                              <div className="mt-2">
+                                <img
+                                  src={realSmokeResults[item.target]?.artifact?.url}
+                                  alt="provider smoke preview"
+                                  data-testid={`provider-smoke-artifact-${item.target}`}
+                                  className="max-h-28 rounded-lg border object-cover"
+                                  style={{ borderColor: T.border }}
+                                />
+                              </div>
+                            ) : null}
+                            {realSmokeResults[item.target]?.artifact?.type === "video" ? (
+                              <div className="mt-2 text-[10px]" style={{ color: T.textMuted }}>
+                                最终结果：
+                                {" "}
+                                <a
+                                  href={realSmokeResults[item.target]?.artifact?.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  data-testid={`provider-smoke-artifact-${item.target}`}
+                                  style={{ color: "#93c5fd" }}
+                                >
+                                  {realSmokeResults[item.target]?.artifact?.url}
+                                </a>
+                              </div>
+                            ) : null}
+                            {realSmokeResults[item.target]?.status === "passed"
+                              && realSmokeResults[item.target]?.artifact
+                              && onImportProviderSmokeArtifact ? (
+                                <div className="mt-2 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleImportRealSmokeArtifact(item.target as ProviderRealSmokeTarget)}
+                                    disabled={importingRealSmokeTarget === item.target}
+                                    data-testid={`provider-smoke-import-${item.target}`}
+                                    className="rounded-lg border px-2.5 py-1 text-[10px] transition-colors hover:bg-white/10 disabled:opacity-50"
+                                    style={{ borderColor: T.border, color: T.textSecondary }}
+                                  >
+                                    {importingRealSmokeTarget === item.target ? "导入中…" : "导入到画布与资产库"}
+                                  </button>
+                                </div>
+                              ) : null}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* ── Provider Health Summary ─────────────────── */}
+        <div className="mb-5" data-testid="provider-health-summary">
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="text-xs font-medium" style={{ color: T.textSecondary }}>运行前健康摘要</h4>
+            <span className="text-[10px]" style={{ color: providerHealthSummary.blockingCount > 0 ? "#fca5a5" : T.textMuted }}>
+              {providerHealthSummary.blockingCount > 0
+                ? `${providerHealthSummary.blockingCount} 项阻塞`
+                : providerHealthSummary.warningCount > 0
+                  ? `${providerHealthSummary.warningCount} 项注意`
+                  : "全部可用"}
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {providerHealthSummary.items.map((item) => {
+              const statusStyle = HEALTH_STATUS_STYLE[item.status]
+              return (
+                <div
+                  key={item.id}
+                  className="rounded-lg border px-3 py-2"
+                  style={{
+                    borderColor: statusStyle.borderColor,
+                    backgroundColor: statusStyle.backgroundColor,
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-medium" style={{ color: T.text }}>
+                      {item.label}
+                    </span>
+                    <span className="rounded-full px-2 py-0.5 text-[10px]" style={{ color: statusStyle.color, backgroundColor: "rgba(0,0,0,0.18)" }}>
+                      {statusStyle.label}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[10px] leading-4" style={{ color: T.textMuted }}>
+                    {item.message}
+                  </p>
+                  {item.details?.length ? (
+                    <p className="mt-1 text-[10px] leading-4" style={{ color: T.textMuted }}>
+                      原因：{item.details[0]}
+                    </p>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="mb-5" data-testid="task-readiness-summary">
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="text-xs font-medium" style={{ color: T.textSecondary }}>正式开工判定</h4>
+            <span
+              className="text-[10px]"
+              style={{ color: taskReadinessSummary.blockingCount > 0 ? "#fca5a5" : T.textMuted }}
+            >
+              {taskReadinessSummary.blockingCount > 0
+                ? `${taskReadinessSummary.blockingCount} 项阻塞`
+                : taskReadinessSummary.warningCount > 0
+                  ? `${taskReadinessSummary.warningCount} 项注意`
+                  : "可正式开工"}
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {taskReadinessSummary.items.map((item) => {
+              const statusStyle = HEALTH_STATUS_STYLE[item.status]
+              const firstFixHint = summarizeFixHint(getTaskReadinessPrimaryFixHint(item))
+              return (
+                <div
+                  key={item.taskId}
+                  data-testid={`task-readiness-item-${item.taskId}`}
+                  className="rounded-lg border px-3 py-2"
+                  style={{
+                    borderColor: statusStyle.borderColor,
+                    backgroundColor: statusStyle.backgroundColor,
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-medium" style={{ color: T.text }}>
+                      {item.label}
+                    </span>
+                    <span className="rounded-full px-2 py-0.5 text-[10px]" style={{ color: statusStyle.color, backgroundColor: "rgba(0,0,0,0.18)" }}>
+                      {statusStyle.label}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[10px] leading-4" style={{ color: T.textMuted }}>
+                    {item.summary}
+                  </p>
+                  {firstFixHint ? (
+                    <p
+                      className="mt-1 text-[10px] leading-4"
+                      data-testid={`task-readiness-fix-hint-${item.taskId}`}
+                      title={getTaskReadinessPrimaryFixHint(item)}
+                      style={{ color: item.status === "blocked" ? "#fca5a5" : "#fbbf24" }}
+                    >
+                      先修：{firstFixHint}
+                    </p>
+                  ) : null}
+                  {item.recommendedFixes.length > 0 ? (
+                    <p className="mt-1 text-[10px] leading-4" style={{ color: T.textMuted }}>
+                      建议：{item.recommendedFixes[0]}
+                    </p>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
         </div>
 
         {/* ── 模型管理区 ──────────────────────────────── */}
@@ -604,26 +1125,26 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
           <div className="mb-5">
             <h4 className="mb-2 flex items-center gap-1.5 text-xs font-medium" style={{ color: T.textSecondary }}>
               <BarChart3 size={13} strokeWidth={1.5} />
-              AI 使用统计
+              AI 用量提醒
             </h4>
 
             <div className="mb-3 grid grid-cols-3 gap-2">
               <div className="rounded-lg border px-2.5 py-2" style={{ borderColor: T.border, backgroundColor: "rgba(255,255,255,0.03)" }}>
-                <p className="text-[10px] opacity-50" style={{ color: T.textMuted }}>今日</p>
+                <p className="text-[10px] opacity-50" style={{ color: T.textMuted }}>今日请求</p>
                 <p className="text-xs font-medium" style={{ color: T.text }}>
-                  {formatCostUsd(usageStats.todayCostUsd)}
+                  {usageStats.todayRuns}
                 </p>
               </div>
               <div className="rounded-lg border px-2.5 py-2" style={{ borderColor: T.border, backgroundColor: "rgba(255,255,255,0.03)" }}>
-                <p className="text-[10px] opacity-50" style={{ color: T.textMuted }}>本月</p>
+                <p className="text-[10px] opacity-50" style={{ color: T.textMuted }}>本月请求</p>
                 <p className="text-xs font-medium" style={{ color: T.text }}>
-                  {formatCostUsd(usageStats.thisMonthCostUsd)}
+                  {usageStats.thisMonthRuns}
                 </p>
               </div>
               <div className="rounded-lg border px-2.5 py-2" style={{ borderColor: T.border, backgroundColor: "rgba(255,255,255,0.03)" }}>
-                <p className="text-[10px] opacity-50" style={{ color: T.textMuted }}>累计</p>
+                <p className="text-[10px] opacity-50" style={{ color: T.textMuted }}>累计 tokens</p>
                 <p className="text-xs font-medium" style={{ color: T.text }}>
-                  {formatCostUsd(usageStats.totalCostUsd)}
+                  {usageStats.totalTokens.toLocaleString()}
                 </p>
               </div>
             </div>
@@ -638,6 +1159,8 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 失败 {usageStats.failedRuns}
               </span>
               <span>总计 {usageStats.totalRuns} 次</span>
+              <span>图片 {usageStats.totalImages} 张</span>
+              <span>视频 {usageStats.totalVideoSeconds.toFixed(1)} 秒</span>
             </div>
 
             {Object.keys(usageStats.byModel).length > 0 && (
@@ -645,11 +1168,11 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 <p className="mb-1 text-[10px] opacity-50" style={{ color: T.textMuted }}>按模型</p>
                 <div className="space-y-0.5">
                   {Object.entries(usageStats.byModel)
-                    .sort(([, a], [, b]) => b.costUsd - a.costUsd)
+                    .sort(([, a], [, b]) => b.runs - a.runs)
                     .map(([model, stat]) => (
                       <div key={model} className="flex items-center justify-between rounded px-2 py-1 text-[10px]" style={{ backgroundColor: "rgba(255,255,255,0.04)" }}>
                         <span style={{ color: T.textSecondary }}>{model}</span>
-                        <span style={{ color: T.accent }}>{formatCostUsd(stat.costUsd)}</span>
+                        <span style={{ color: T.accent }}>{stat.runs} 次</span>
                       </div>
                     ))}
                 </div>
@@ -663,7 +1186,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                   {Object.entries(usageStats.byTaskType).map(([type, stat]) => (
                     <div key={type} className="rounded-full border px-2 py-0.5 text-[10px]" style={{ borderColor: T.border }}>
                       <span style={{ color: T.textMuted }}>{type}: </span>
-                      <span style={{ color: T.accent }}>{formatCostUsd(stat.costUsd)}</span>
+                      <span style={{ color: T.accent }}>{stat.runs} 次</span>
                     </div>
                   ))}
                 </div>
@@ -689,8 +1212,90 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
             <Save size={12} strokeWidth={1.5} /> 保存
           </button>
         </div>
+        </div>
       </div>
-    </div>,
+
+      {pendingRealSmokeConfirmation && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center">
+          <div
+            className="absolute inset-0"
+            style={{ backgroundColor: "rgba(0,0,0,0.72)" }}
+            onClick={handleCancelRealSmokeConfirmation}
+          />
+          <div
+            data-testid="provider-real-smoke-confirm-dialog"
+            className="relative z-10 flex w-[380px] flex-col gap-4 rounded-2xl border p-5 shadow-2xl"
+            style={{ backgroundColor: T.panelSolid, borderColor: T.border }}
+          >
+            <div>
+              <h4 className="text-sm font-medium" style={{ color: T.text }}>
+                {pendingRealSmokeConfirmation.title}
+              </h4>
+              <p className="mt-2 text-xs leading-5" style={{ color: T.textMuted }}>
+                {pendingRealSmokeConfirmation.description}
+              </p>
+            </div>
+
+            {pendingRealSmokeConfirmation.requiredText && (
+              <div className="space-y-2">
+                <div
+                  className="rounded-lg border px-3 py-2 text-xs"
+                  style={{
+                    borderColor: "rgba(245,158,11,0.32)",
+                    backgroundColor: "rgba(245,158,11,0.08)",
+                    color: "#fcd34d",
+                  }}
+                >
+                  输入确认短语后才能继续：
+                  <div className="mt-1 font-mono text-[11px]" style={{ color: "#fde68a" }}>
+                    {pendingRealSmokeConfirmation.requiredText}
+                  </div>
+                </div>
+                <input
+                  data-testid="provider-real-smoke-confirm-input"
+                  type="text"
+                  value={realSmokeConfirmationInput}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setRealSmokeConfirmationInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && realSmokeConfirmationMatches) {
+                      void handleConfirmRealSmoke()
+                    }
+                  }}
+                  placeholder="请输入确认短语"
+                  className={inputClass}
+                  style={{ borderColor: T.border }}
+                  onFocus={handleDialogInputFocus}
+                  onBlur={handleDialogInputBlur}
+                  autoFocus
+                />
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                data-testid="provider-real-smoke-confirm-cancel"
+                onClick={handleCancelRealSmokeConfirmation}
+                className="rounded-lg px-3 py-1.5 text-xs transition-colors hover:bg-white/10"
+                style={{ color: T.textMuted }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                data-testid="provider-real-smoke-confirm-submit"
+                onClick={() => void handleConfirmRealSmoke()}
+                disabled={!realSmokeConfirmationMatches}
+                className="rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                style={{ backgroundColor: T.accent }}
+              >
+                {pendingRealSmokeConfirmation.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>,
     document.body,
   )
 }

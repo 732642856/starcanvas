@@ -1,5 +1,8 @@
 /**
- * AngleControlPanel — 运镜参数化控制面板
+ * @deprecated Legacy prototype kept only for reference.
+ * Current runtime path uses `components/panels/CinematicParamPanel.tsx`.
+ *
+ * AngleControlPanel — 早期运镜参数化控制面板原型
  * 独立于节点，提供运镜参数调节、Prompt 自动组合、应用到选中节点
  */
 "use client"

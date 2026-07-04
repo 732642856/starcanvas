@@ -89,6 +89,35 @@ describe("generateImageFromPrompt", () => {
     assert.deepEqual(requestBody?.sourceImage, sourceImages)
     globalThis.fetch = originalFetch
   })
+
+  it("fails before fetch when requested model is not compatible with image generation contract", async () => {
+    const requestedUrls: string[] = []
+    globalThis.fetch = async (url) => {
+      requestedUrls.push(String(url))
+      if (String(url).includes("/api/ai/config")) {
+        return new Response(JSON.stringify({ baseUrl: "", hasApiKey: false, defaultModel: "gpt-5.5", defaultImageModel: "gpt-image-2", timeoutMs: 120000 }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ imageUrl: "blob:should-not-happen" }), { status: 200 })
+    }
+
+    try {
+      await generateImageFromPrompt({
+        prompt: "a frame",
+        model: "vidu",
+      })
+      assert.fail("Expected generateImageFromPrompt to throw")
+    } catch (error) {
+      assert.ok(error instanceof ImageGenerationError)
+      assert.equal(error.code, "UNSUPPORTED_PROVIDER_CAPABILITY")
+      assert.match(error.message, /Vidu|模型|路由/)
+      assert.equal(
+        requestedUrls.some((url) => url.includes("/api/ai/generate-image")),
+        false,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })
 
 describe("retryWithBackoff", () => {

@@ -24,7 +24,6 @@ import {
   Maximize2,
   Megaphone,
   Camera,
-  Repeat,
   Layers,
   MessageSquareText,
   FolderOpen,
@@ -38,9 +37,12 @@ import {
   BookOpen,
   ShieldCheck,
   PenLine,
+  TrendingUp,
+  Paintbrush,
 } from "lucide-react"
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
 import type { CanvasNodeKind } from "../canvas/types"
+import type { ProjectEntryMode } from "../../stores/useProjectStore"
 
 // ============================================================================
 // Types
@@ -51,7 +53,8 @@ type AddNodeAction =
   | { type: "upload-image" }
   | { type: "upload-document" }
   | { type: "import-script" }
-  | { type: "import-video-remix" }
+  | { type: "import-reference-video" }
+  | { type: "open-video-remix" }
   | { type: "create-workflow" }
   | { type: "open-project-bible" }
   | { type: "open-asset-library" }
@@ -73,11 +76,13 @@ interface AddNodeCategory {
 interface AddNodePanelProps {
   isOpen: boolean
   onClose: () => void
+  entryMode?: ProjectEntryMode
   onAddNode: (nodeType: "content" | "image" | "workflow" | "agent" | "sketch", nodeKind: CanvasNodeKind) => void
   onUploadImage: () => void
   onUploadDocument?: () => void
   onImportScript?: () => void
-  onImportVideoRemix?: () => void
+  onImportReferenceVideo?: () => void
+  onOpenVideoRemix?: () => void
   onCreateVideoWorkflow?: () => void
   onOpenProjectBible?: () => void
   onOpenAssetLibrary?: () => void
@@ -175,15 +180,27 @@ const CATEGORIES: AddNodeCategory[] = [
       },
       {
         icon: Megaphone,
-        title: "AI 海报",
-        description: "整合角色、片名、卖点和风格，生成海报提示词",
+        title: "海报提示词",
+        description: "整合角色、片名、卖点和风格，沉淀可复用海报提示词",
         action: { type: "add-node", nodeType: "workflow", nodeKind: "poster" },
       },
       {
         icon: Maximize2,
-        title: "高清放大",
-        description: "参考 Real-ESRGAN 记录 2x/4x 放大和保细节要求",
+        title: "放大方案记录",
+        description: "记录 2x/4x 放大、降噪和保细节要求，供外部超分或后续服务使用",
         action: { type: "add-node", nodeType: "workflow", nodeKind: "upscale" },
+      },
+      {
+        icon: Paintbrush,
+        title: "局部精修",
+        description: "连接图片并用蒙版描述局部修改，保留主体和构图一致性",
+        action: { type: "add-node", nodeType: "workflow", nodeKind: "focus-edit" },
+      },
+      {
+        icon: Wand2,
+        title: "反推提示词",
+        description: "连接参考图，生成英文生图提示词、负面提示词和质量评分",
+        action: { type: "add-node", nodeType: "workflow", nodeKind: "reverse-prompt" },
       },
     ],
   },
@@ -192,6 +209,12 @@ const CATEGORIES: AddNodeCategory[] = [
     icon: Film,
     label: "视频",
     items: [
+      {
+        icon: Upload,
+        title: "上传视频素材",
+        description: "导入本地 MP4/WebM/MOV，并自动创建抽帧与分析链路",
+        action: { type: "upload-document" },
+      },
       {
         icon: Video,
         title: "动效预演",
@@ -205,22 +228,10 @@ const CATEGORIES: AddNodeCategory[] = [
         action: { type: "add-node", nodeType: "workflow", nodeKind: "camera-control" },
       },
       {
-        icon: Repeat,
-        title: "爆款拆解/复刻",
-        description: "拆节奏、钩子、镜头结构和可复刻模板",
-        action: { type: "add-node", nodeType: "workflow", nodeKind: "remix-analysis" },
-      },
-      {
-        icon: Film,
-        title: "一键拉片",
-        description: "上传视频，AI自动拆解为分镜结构，可导入画布编辑",
-        action: { type: "import-video-remix" },
-      },
-      {
-        icon: MessageSquareText,
-        title: "照片说话/数字人",
-        description: "记录头像、台词、声线和口型同步生成要求",
-        action: { type: "add-node", nodeType: "workflow", nodeKind: "talking-photo" },
+        icon: TrendingUp,
+        title: "参考视频分析",
+        description: "导入参考视频后，选择生成分镜草稿或做结构拆解",
+        action: { type: "open-video-remix" },
       },
       {
         icon: Layers,
@@ -301,11 +312,13 @@ const CATEGORIES: AddNodeCategory[] = [
 export function AddNodePanel({
   isOpen,
   onClose,
+  entryMode: _entryMode,
   onAddNode,
   onUploadImage,
   onUploadDocument,
   onImportScript,
-  onImportVideoRemix,
+  onImportReferenceVideo,
+  onOpenVideoRemix,
   onCreateVideoWorkflow,
   onOpenProjectBible,
   onOpenAssetLibrary,
@@ -342,8 +355,11 @@ export function AddNodePanel({
         case "import-script":
           onImportScript?.()
           break
-        case "import-video-remix":
-          onImportVideoRemix?.()
+        case "import-reference-video":
+          onImportReferenceVideo?.()
+          break
+        case "open-video-remix":
+          onOpenVideoRemix?.()
           break
         case "create-workflow":
           onCreateVideoWorkflow?.()
@@ -357,7 +373,7 @@ export function AddNodePanel({
       }
       onClose()
     },
-    [onAddNode, onUploadImage, onUploadDocument, onImportScript, onImportVideoRemix, onCreateVideoWorkflow, onOpenProjectBible, onOpenAssetLibrary, onClose]
+    [onAddNode, onUploadImage, onUploadDocument, onImportScript, onImportReferenceVideo, onOpenVideoRemix, onCreateVideoWorkflow, onOpenProjectBible, onOpenAssetLibrary, onClose]
   )
 
   if (!isOpen) return null
@@ -373,6 +389,7 @@ export function AddNodePanel({
       />
 
       <div
+        data-testid="add-node-panel"
         className="fixed left-16 top-1/2 z-30 flex overflow-hidden rounded-2xl border"
         style={{
           transform: "translateY(-50%)",

@@ -24,6 +24,8 @@ export interface ProjectMeta {
   createdAt: string
 }
 
+export type ProjectEntryMode = NonNullable<ProjectMeta["template"]>
+
 interface ProjectStoreState {
   projects: ProjectMeta[]
   currentProjectId: string | null

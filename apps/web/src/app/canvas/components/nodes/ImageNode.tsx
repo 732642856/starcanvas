@@ -15,6 +15,7 @@ import {
   X,
   Sparkles,
   Maximize2,
+  Wand2,
 } from "lucide-react";
 import { Handle, Position, type NodeProps, useReactFlow } from "@xyflow/react";
 import { pushUndo } from "../../StarCanvas";
@@ -38,6 +39,8 @@ import {
 import { createImageGenerationSnapshot } from "@/lib/ai/createGenerationSnapshot";
 import { getCachedDefaultImageModel } from "@/lib/ai/client";
 import { getModelOptions } from "@/lib/ai/imageProviderCapabilities";
+import { runReversePromptNodeAction } from "../../utils/reversePromptNodeAction";
+import { useCanvasStore } from "../../stores/canvasStore";
 
 // Global registry for hover events
 const imageHoverRegistry: Record<
@@ -101,10 +104,12 @@ export const ImageNode = memo(function ImageNode({
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showRatioDropdown, setShowRatioDropdown] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isReversingPrompt, setIsReversingPrompt] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const aiInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { setNodes, getNodes, setEdges } = useReactFlow();
+  const addAsset = useCanvasStore((state) => state.addAsset);
 
   const imageUrl = data.imageUrl || data.assetUrl || "";
   const fileName = data.fileName || data.title || "图片";
@@ -464,6 +469,32 @@ export const ImageNode = memo(function ImageNode({
     imageUrl,
     data.assetId,
   ]);
+
+  const handleReversePrompt = useCallback(async () => {
+    if (!imageUrl) {
+      setAiError("请先上传或生成一张图片。");
+      return;
+    }
+
+    setIsReversingPrompt(true);
+    setAiError(null);
+
+    try {
+      const result = await runReversePromptNodeAction({
+        nodeId: id,
+        getNodes,
+        setNodes,
+        setEdges,
+        addAsset,
+      });
+      setAiInput(result.prompt);
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : "反推提示词失败");
+    } finally {
+      setIsReversingPrompt(false);
+    }
+  }, [addAsset, getNodes, id, imageUrl, setEdges, setNodes]);
+
   const handleAiInputKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -780,6 +811,27 @@ export const ImageNode = memo(function ImageNode({
 
             {/* Right: Send */}
             <div className="flex items-center gap-1">
+              <button
+                type="button"
+                title="反推提示词"
+                aria-label="反推提示词"
+                data-testid="image-node-reverse-prompt"
+                onClick={handleReversePrompt}
+                disabled={isReversingPrompt || !imageUrl}
+                className="nodrag nopan flex h-7 w-7 items-center justify-center rounded-full transition-all disabled:cursor-not-allowed disabled:opacity-30"
+                style={{
+                  backgroundColor: imageUrl
+                    ? "rgba(148, 163, 184, 0.16)"
+                    : "rgba(255,255,255,0.08)",
+                  color: DESIGN_TOKENS.textSecondary,
+                }}
+              >
+                {isReversingPrompt ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Wand2 size={14} strokeWidth={1.7} />
+                )}
+              </button>
               <button
                 onClick={handleAiGenerate}
                 disabled={isGenerating || !aiInput.trim()}

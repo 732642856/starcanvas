@@ -23,14 +23,47 @@ import { ChatInput, type ChatTaskMode } from "./ChatInput"
 import type { AiModel } from "./ChatInput"
 import { AgentModeSwitcher } from "./AgentModeSwitcher"
 import { useChatSSE, parseCanvasActions, stripCanvasActions } from "../../hooks/useChatSSE"
-import type { ChatCanvasAction, ApplyActionsReport, ApplyActionResult } from "../../features/canvas/actions/chatActions"
-import { getActionLabel, getStatusIcon, formatActionsSummary, formatActionSummary, getPendingActionSummaries } from "../../features/canvas/actions/chatActions"
+import type {
+  ChatCanvasAction,
+  ApplyActionsReport,
+  ApplyActionResult,
+  AskClarificationAction,
+  PendingClarificationSnapshot,
+} from "../../features/canvas/actions/chatActions"
+import {
+  buildClarificationAnswerContext,
+  buildClarificationResumePayload,
+  buildPendingClarificationSnapshot,
+  getActionLabel,
+  getStatusIcon,
+  formatActionsSummary,
+  formatActionSummary,
+  getPendingActionSummaries,
+  isAskClarificationAction,
+  normalizeAskClarificationAction,
+  shouldClearPendingClarificationAfterAnswer,
+} from "../../features/canvas/actions/chatActions"
 import { generateImageFromPrompt } from "../../utils/imageGeneration"
 import { generateId } from "../../utils/generateId"
+import { parseProviderSetupIntent } from "../../../../lib/ai/provider-setup-intent"
+import {
+  applyProviderSetup,
+  getStoredModelOptions,
+  openProviderSettings,
+  readUseMockPreference,
+  type StoredModelOption,
+} from "../../../../lib/ai/user-settings"
 import type { Node } from "@xyflow/react"
 import type { AssetItem } from "../canvas/types"
 import type { CanvasNodeData } from "../canvas/types"
 import { AssetPreviewPopover, type ReferenceInfo } from "./AssetPreviewPopover"
+import { useAIUsageStore } from "../../features/canvas/usage/useAIUsageStore"
+import { estimateCostUsd } from "../../features/canvas/usage/estimateCost"
+import { buildAutoAgentClarificationResponseActions, processWithAutoAgent } from "../../utils/autoAgentService"
+import {
+  shouldAutoApplyAutoAgentActions,
+  shouldAutoApplyClarificationSelection,
+} from "./chatAutoAgentFlow"
 
 // ── @引用解析 ──────────────────────────────────────────
 function parseReferences(
@@ -253,6 +286,98 @@ interface Message {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } // Token 消耗
 }
 
+const DEFAULT_MODEL_OPTIONS: StoredModelOption[] = [
+  { value: "gpt-5.5", label: "GPT-5.5", provider: "default", desc: "最强推理+创作", type: "text" },
+  { value: "gpt-5.4", label: "GPT-5.4", provider: "default", desc: "高性能多模态", type: "text" },
+  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", provider: "default", desc: "快速响应", type: "text" },
+  { value: "gpt-image-2", label: "gpt-image-2", provider: "default", desc: "高质量图像生成", type: "image" },
+]
+
+function getPendingClarificationStorageKey(conversationId: string): string {
+  return `starcanvas:pending-clarification:${conversationId}`
+}
+
+function getCurrentConversationStorageKey(): string {
+  if (typeof window === "undefined") return "starcanvas:chat-current-conversation:server"
+  const projectId = new URLSearchParams(window.location.search).get("projectId")
+  const scope = projectId || window.location.pathname || "default"
+  return `starcanvas:chat-current-conversation:${encodeURIComponent(scope)}`
+}
+
+function readCurrentConversationId(): string | null {
+  if (typeof window === "undefined") return null
+  try {
+    const value = window.sessionStorage.getItem(getCurrentConversationStorageKey())
+    return value?.trim() || null
+  } catch {
+    return null
+  }
+}
+
+function saveCurrentConversationId(conversationId: string): void {
+  if (typeof window === "undefined") return
+  try {
+    window.sessionStorage.setItem(getCurrentConversationStorageKey(), conversationId)
+  } catch {
+    // Ignore unavailable sessionStorage.
+  }
+}
+
+function readPendingClarificationSnapshot(
+  conversationId: string,
+): PendingClarificationSnapshot | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = window.sessionStorage.getItem(getPendingClarificationStorageKey(conversationId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PendingClarificationSnapshot>
+    if (
+      typeof parsed.clarificationId !== "string" ||
+      typeof parsed.messageId !== "string" ||
+      typeof parsed.question !== "string" ||
+      typeof parsed.createdAt !== "number"
+    ) {
+      return null
+    }
+    return {
+      clarificationId: parsed.clarificationId,
+      threadId: typeof parsed.threadId === "string" ? parsed.threadId : undefined,
+      messageId: parsed.messageId,
+      question: parsed.question,
+      options: Array.isArray(parsed.options)
+        ? parsed.options.filter((option): option is string => typeof option === "string")
+        : undefined,
+      createdAt: parsed.createdAt,
+    }
+  } catch {
+    return null
+  }
+}
+
+function savePendingClarificationSnapshot(
+  conversationId: string,
+  snapshot: PendingClarificationSnapshot,
+): void {
+  if (typeof window === "undefined") return
+  try {
+    window.sessionStorage.setItem(
+      getPendingClarificationStorageKey(conversationId),
+      JSON.stringify(snapshot),
+    )
+  } catch {
+    // Ignore unavailable sessionStorage.
+  }
+}
+
+function clearPendingClarificationSnapshot(conversationId: string): void {
+  if (typeof window === "undefined") return
+  try {
+    window.sessionStorage.removeItem(getPendingClarificationStorageKey(conversationId))
+  } catch {
+    // Ignore unavailable sessionStorage.
+  }
+}
+
 interface ChatPanelProps {
   isOpen: boolean
   onClose: () => void
@@ -285,10 +410,20 @@ export function ChatPanel({
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<Message[]>([])
   const [conversationTitle, setConversationTitle] = useState("新对话")
+  const [conversationId, setConversationId] = useState(() => readCurrentConversationId() ?? generateId())
   const [selectedModel, setSelectedModel] = useState<string>("gpt-5.5")
   const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const thinkingStartRef = useRef<number | null>(null)
+  const pendingClarificationRef = useRef<PendingClarificationSnapshot | null>(null)
+  const [pendingClarification, setPendingClarification] = useState<PendingClarificationSnapshot | null>(null)
+
+  useEffect(() => {
+    saveCurrentConversationId(conversationId)
+    const snapshot = readPendingClarificationSnapshot(conversationId)
+    pendingClarificationRef.current = snapshot
+    setPendingClarification(snapshot)
+  }, [conversationId])
 
   // 生成画布节点摘要
   const nodeSummary = useMemo(() => {
@@ -360,6 +495,7 @@ export function ChatPanel({
       })
     },
     onUsage: (usage) => {
+      const finishedAt = new Date()
       // Store token usage on the latest assistant message
       setMessages((prev) => {
         const lastIdx = prev.length - 1
@@ -376,6 +512,26 @@ export function ChatPanel({
           return updated
         }
         return prev
+      })
+      useAIUsageStore.getState().addUsageRecord({
+        id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        provider: "chat",
+        model: selectedModel,
+        taskType: "text",
+        inputTokens: usage.prompt_tokens,
+        outputTokens: usage.completion_tokens,
+        totalTokens: usage.total_tokens,
+        estimatedCostUsd: estimateCostUsd({
+          provider: "chat",
+          model: selectedModel,
+          taskType: "text",
+          inputTokens: usage.prompt_tokens,
+          outputTokens: usage.completion_tokens,
+        }),
+        currency: "USD",
+        startedAt: finishedAt.toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        status: "success",
       })
     },
     onComplete: (fullContent) => {
@@ -445,10 +601,12 @@ export function ChatPanel({
   const handleSend = useCallback(async (model: string, mode: ChatTaskMode = "chat") => {
     if (!input.trim() && attachmentsState.attachments.length === 0) return
 
+    const rawUserContent = input.trim()
+    const setupIntent = parseProviderSetupIntent(rawUserContent)
     const userMessage: Message = {
       id: generateId(),
       role: "user",
-      content: input.trim(),
+      content: setupIntent.redactedMessage,
       attachments: [...attachmentsState.attachments],
     }
 
@@ -497,15 +655,105 @@ export function ChatPanel({
               : message,
           ),
         )
+        useAIUsageStore.getState().addUsageRecord({
+          id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          runId: assistantMessageId,
+          provider: "chat",
+          model: result.model || model,
+          taskType: "image",
+          imageCount: 1,
+          estimatedCostUsd: estimateCostUsd({
+            provider: "chat",
+            model: result.model || model,
+            taskType: "image",
+            imageCount: 1,
+          }),
+          currency: "USD",
+          startedAt: new Date(startedAt).toISOString(),
+          finishedAt: new Date().toISOString(),
+          status: "success",
+        })
         return
       }
 
-      const canvasContext = canvasNodes.slice(0, 30).map(toCanvasNodeContext)
-      const mentionedNodes = getMentionedNodes(userMessage.content, canvasNodes)
-      // 展开 @[title](node:id) 引用为详细上下文，再发送给 AI
-      const expandedContent = expandMentionsInMessage(userMessage.content, canvasNodes)
+      if (mode === "chat" && setupIntent.shouldHandleLocally) {
+        if (Object.keys(setupIntent.updates).length > 0) {
+          const result = applyProviderSetup(
+            {
+              ...setupIntent.updates,
+              openSettings: setupIntent.openSettings,
+            },
+            getStoredModelOptions(DEFAULT_MODEL_OPTIONS),
+          )
 
-      await sendMessage(expandedContent, {
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    content: [
+                      result.summary,
+                      setupIntent.detectedProviderLabel
+                        ? `- 已按 ${setupIntent.detectedProviderLabel} 的常见中转站地址帮你预填。`
+                        : null,
+                    ].filter(Boolean).join("\n"),
+                    thinkingTime: Math.max(1, Math.round((Date.now() - (thinkingStartRef.current ?? Date.now())) / 1000)),
+                  }
+                : message,
+            ),
+          )
+
+          if (result.selectedModel) {
+            setSelectedModel(result.selectedModel)
+          }
+          thinkingStartRef.current = null
+          return
+        }
+
+        if (setupIntent.openSettings) {
+          openProviderSettings()
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    content: "已为你打开模型设置面板。你可以继续直接对我说“帮我把 OpenRouter 的 key xxx 配到星轨画布，文本模型用 xxx，图片模型用 xxx”，我会继续帮你填好。",
+                    thinkingTime: Math.max(1, Math.round((Date.now() - (thinkingStartRef.current ?? Date.now())) / 1000)),
+                  }
+                : message,
+            ),
+          )
+          thinkingStartRef.current = null
+          return
+        }
+      }
+
+      const canvasContext = canvasNodes.slice(0, 30).map(toCanvasNodeContext)
+      const mentionedNodes = getMentionedNodes(rawUserContent, canvasNodes)
+      const answeredClarificationSnapshot = pendingClarificationRef.current && rawUserContent
+        ? pendingClarificationRef.current
+        : null
+      const clarificationAnswerContext = answeredClarificationSnapshot
+        ? buildClarificationAnswerContext({
+            clarificationId: answeredClarificationSnapshot.clarificationId,
+            threadId: answeredClarificationSnapshot.threadId,
+            question: answeredClarificationSnapshot.question,
+            options: answeredClarificationSnapshot.options,
+            answer: setupIntent.redactedMessage,
+          })
+        : undefined
+      const clarificationResumePayload = answeredClarificationSnapshot
+        ? buildClarificationResumePayload({
+            snapshot: answeredClarificationSnapshot,
+            answer: setupIntent.redactedMessage,
+          })
+        : undefined
+      // 展开 @[title](node:id) 引用为详细上下文，再发送给 AI
+      const expandedContent = [
+        clarificationAnswerContext,
+        expandMentionsInMessage(setupIntent.redactedMessage, canvasNodes),
+      ].filter(Boolean).join("\n\n")
+      const sendFallbackChat = () => sendMessage(expandedContent, {
         selectedNodeId,
         selectedNode: selectedNode ? toCanvasNodeContext(selectedNode) : undefined,
         nodes: canvasContext,
@@ -529,9 +777,122 @@ export function ChatPanel({
           height: a.height,
           textContent: a.textContent,
         })),
+        pendingClarificationAnswer: clarificationResumePayload,
         model,
         mode,
       })
+
+      if (mode === "chat") {
+        const startedAt = Date.now()
+        let handledByAutoAgent = false
+        let fallbackChatSent = false
+
+        await processWithAutoAgent(expandedContent, {
+          canvasContext: {
+            selectedNode: selectedNode ? toCanvasNodeContext(selectedNode) : undefined,
+            nodes: canvasContext,
+            mentionedNodes,
+            canvasStats: {
+              total: canvasNodes.length,
+              byKind: canvasNodes.reduce<Record<string, number>>((acc, node) => {
+                const data = node.data as Record<string, any> | undefined
+                const kind = String(data?.nodeKind || node.type || "node")
+                acc[kind] = (acc[kind] || 0) + 1
+                return acc
+              }, {}),
+            },
+            pendingClarificationAnswer: clarificationResumePayload,
+          },
+          imageModel: model,
+          onProgress: (status) => {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, content: status }
+                  : message,
+              ),
+            )
+          },
+          onText: (text) => {
+            handledByAutoAgent = true
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      content: text,
+                      thinkingTime: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                    }
+                  : message,
+              ),
+            )
+          },
+          onImageGenerated: (data) => {
+            handledByAutoAgent = true
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      content: "✅ 图片生成完成。点击下方按钮可添加到画布。",
+                      thinkingTime: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                      generatedImage: {
+                        imageUrl: data.imageUrl,
+                        prompt: data.prompt,
+                        model: data.model,
+                        revisedPrompt: data.revisedPrompt,
+                      },
+                    }
+                  : message,
+              ),
+            )
+          },
+          onActions: (actions) => {
+            handledByAutoAgent = true
+            const shouldAutoApply = shouldAutoApplyAutoAgentActions(agentMode, actions)
+            let report: ApplyActionsReport | undefined
+            if (shouldAutoApply && onApplyChatActions) {
+              report = onApplyChatActions(actions)
+            }
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      actions,
+                      actionsApplied: Boolean(report),
+                      actionsReport: report,
+                      thinkingTime: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+                    }
+                  : message,
+              ),
+            )
+            return report
+          },
+          onFallbackChat: async () => {
+            fallbackChatSent = true
+            await sendFallbackChat()
+          },
+          onComplete: () => {
+            thinkingStartRef.current = null
+          },
+        })
+
+        if (
+          shouldClearPendingClarificationAfterAnswer({
+            answeredClarificationId: answeredClarificationSnapshot?.clarificationId,
+            currentPendingClarificationId: pendingClarificationRef.current?.clarificationId ?? null,
+          })
+        ) {
+          pendingClarificationRef.current = null
+          setPendingClarification(null)
+          clearPendingClarificationSnapshot(conversationId)
+        }
+
+        if (handledByAutoAgent || fallbackChatSent) return
+      }
+
+      await sendFallbackChat()
     } catch (error: any) {
       console.error("[Chat] Send error:", error)
       setMessages((prev) =>
@@ -552,6 +913,8 @@ export function ChatPanel({
     selectedNode,
     canvasNodes,
     sendMessage,
+    agentMode,
+    onApplyChatActions,
   ])
 
   // 停止生成
@@ -573,8 +936,7 @@ export function ChatPanel({
   // P0-3: sync mock state from localStorage, listen for SettingsPanel changes
   useEffect(() => {
     const readMock = () => {
-      if (typeof window === "undefined") return false
-      return localStorage.getItem("startrails_use_mock") !== "false"
+      return readUseMockPreference()
     }
     setIsMockMode(readMock())
     const handler = () => setIsMockMode(readMock())
@@ -586,23 +948,79 @@ export function ChatPanel({
   const handleApplyActions = useCallback(
     (msgId: string, actions: ChatCanvasAction[]) => {
       if (!onApplyChatActions) return
-      const report = onApplyChatActions(actions)
+      const normalizedActions = actions.map((action, actionIndex) =>
+        isAskClarificationAction(action)
+          ? normalizeAskClarificationAction(action, {
+              messageId: msgId,
+              conversationId,
+              actionIndex,
+            })
+          : action,
+      )
+      const report = onApplyChatActions(normalizedActions)
+      const clarification = normalizedActions.find(isAskClarificationAction)
+      if (clarification) {
+        const snapshot = buildPendingClarificationSnapshot({
+          action: clarification as AskClarificationAction,
+          messageId: msgId,
+          conversationId,
+          createdAt: Date.now(),
+        })
+        pendingClarificationRef.current = snapshot
+        setPendingClarification(snapshot)
+        savePendingClarificationSnapshot(conversationId, snapshot)
+      }
       // 标记为已应用，并保存报告
       setMessages((prev) =>
-        prev.map((m) => (m.id === msgId ? { ...m, actionsApplied: true, actionsReport: report } : m))
+        prev.map((m) => (m.id === msgId ? { ...m, actions: normalizedActions, actionsApplied: true, actionsReport: report } : m))
       )
     },
-    [onApplyChatActions]
+    [conversationId, onApplyChatActions]
+  )
+
+  const handleClarificationOption = useCallback(
+    (msgId: string, clarification: ChatCanvasAction, answer: string) => {
+      const nextActions = buildAutoAgentClarificationResponseActions(clarification, answer)
+      let report: ApplyActionsReport | undefined
+      const shouldAutoApply = shouldAutoApplyClarificationSelection(agentMode, nextActions)
+      if (shouldAutoApply && onApplyChatActions) {
+        report = onApplyChatActions(nextActions)
+      }
+
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === msgId
+            ? {
+                ...m,
+                content: `已选择：${answer}`,
+                actions: nextActions,
+                actionsApplied: Boolean(report),
+                actionsCancelled: false,
+                actionsReport: report,
+              }
+            : m,
+        ),
+      )
+      pendingClarificationRef.current = null
+      setPendingClarification(null)
+      clearPendingClarificationSnapshot(conversationId)
+    },
+    [agentMode, conversationId, onApplyChatActions],
   )
 
   // 取消 AI actions
   const handleCancelActions = useCallback(
     (msgId: string) => {
+      if (pendingClarificationRef.current?.messageId === msgId) {
+        pendingClarificationRef.current = null
+        setPendingClarification(null)
+        clearPendingClarificationSnapshot(conversationId)
+      }
       setMessages((prev) =>
         prev.map((m) => (m.id === msgId ? { ...m, actionsCancelled: true } : m))
       )
     },
-    []
+    [conversationId]
   )
 
   // 将附件添加到画布
@@ -620,6 +1038,7 @@ export function ChatPanel({
 
   return createPortal(
     <div
+      data-testid="chat-panel"
       className="fixed bottom-0 right-0 top-0 flex flex-col border-l"
       style={{
         width: "400px",
@@ -671,9 +1090,14 @@ export function ChatPanel({
                 ])
               }
               // 开始新会话
+              const nextConversationId = generateId()
               setMessages([])
               setConversationTitle("新对话")
               setInput("")
+              setConversationId(nextConversationId)
+              pendingClarificationRef.current = null
+              setPendingClarification(null)
+              clearPendingClarificationSnapshot(conversationId)
             }}
             className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-white/5"
             style={{ color: ICON_CONFIG.color }}
@@ -789,10 +1213,6 @@ export function ChatPanel({
           <div className="flex h-full flex-col justify-end pb-4">
             {/* TapNow 风格欢迎语 - AI 感知画布节点 */}
             <div className="flex flex-col gap-3">
-              <h3 className="text-xl font-medium" style={{ color: DESIGN_TOKENS.text }}>
-                Greeting
-              </h3>
-
               {/* 节点读取状态 */}
               {nodeSummary && nodeSummary.length > 0 && (
                 <div className="flex flex-col gap-2">
@@ -824,18 +1244,25 @@ export function ChatPanel({
               {/* 空画布时的默认欢迎 */}
               {(!nodeSummary || nodeSummary.length === 0) && (
                 <>
+                  <h3 className="text-xl font-medium" style={{ color: DESIGN_TOKENS.text }}>
+                    先连接你的模型，或直接开始创作
+                  </h3>
                   <p className="text-sm" style={{ color: DESIGN_TOKENS.textSecondary }}>
-                    你好！我是星轨Ai，你的创作助手。
+                    你可以让我直接帮你配置中转站，也可以让我一起写脚本、拆分镜、生成图片和视频。
                   </p>
-                  <p className="text-sm" style={{ color: DESIGN_TOKENS.textSecondary }}>
-                    有什么我可以帮你的吗？比如：
-                  </p>
+                  <div className="rounded-xl border px-3 py-3 text-sm leading-6" style={{ borderColor: DESIGN_TOKENS.border, color: DESIGN_TOKENS.textSecondary }}>
+                    <div>可以直接这样说：</div>
+                    <div style={{ color: DESIGN_TOKENS.text }}>
+                      帮我把 OpenRouter 的 key sk-xxxx 配到星轨画布，文本模型用 openai/gpt-4.1-mini，图片模型用 flux-dev
+                    </div>
+                    <div style={{ color: DESIGN_TOKENS.text }}>
+                      帮我打开模型设置，我要配置自己的中转站
+                    </div>
+                  </div>
                   <ul className="flex flex-col gap-1.5 text-sm" style={{ color: DESIGN_TOKENS.textSecondary }}>
-                    <li>构思故事或剧本</li>
-                    <li>设计角色</li>
-                    <li>生成图片或视频</li>
-                    <li>规划分镜</li>
-                    <li>其他创意项目</li>
+                    <li>帮我把一段口播脚本拆成分镜</li>
+                    <li>根据参考图设计角色和场景</li>
+                    <li>规划一条完整的视频创作工作流</li>
                   </ul>
                 </>
               )}
@@ -872,8 +1299,6 @@ export function ChatPanel({
                     <div className="flex items-center gap-1 px-1">
                       <span className="text-[10px]" style={{ color: DESIGN_TOKENS.textMuted, opacity: 0.5 }}>
                         {msg.usage.total_tokens.toLocaleString()} tokens
-                        {" · "}
-                        ¥{(msg.usage.total_tokens * 0.000015).toFixed(4)}
                       </span>
                     </div>
                   )}
@@ -1035,6 +1460,27 @@ export function ChatPanel({
                                       <span>{item._summary}</span>
                                     </div>
                                   ))}
+                                  {msg.actions.map((action, actionIndex) => (
+                                    action.action === "ask_clarification" && action.options?.length ? (
+                                      <div key={`clarification-${actionIndex}`} className="mt-2 flex flex-wrap gap-1.5">
+                                        {action.options.map((option) => (
+                                          <button
+                                            key={option}
+                                            type="button"
+                                            onClick={() => handleClarificationOption(msg.id, action, option)}
+                                            className="rounded-lg border px-2.5 py-1 text-[11px] font-medium transition hover:bg-white/10"
+                                            style={{
+                                              borderColor: DESIGN_TOKENS.borderAccent,
+                                              color: DESIGN_TOKENS.accent,
+                                              backgroundColor: "rgba(100,116,139,0.08)",
+                                            }}
+                                          >
+                                            {option}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    ) : null
+                                  ))}
                                 </div>
 
                                 {/* 操作按钮 */}
@@ -1101,6 +1547,46 @@ export function ChatPanel({
 
       {/* Input */}
       <div className="border-t p-5" style={{ borderColor: DESIGN_TOKENS.border }}>
+        {pendingClarification && (
+          <div
+            data-testid="pending-clarification-banner"
+            className="mb-3 rounded-lg border px-3 py-2"
+            style={{
+              borderColor: DESIGN_TOKENS.borderAccent,
+              backgroundColor: DESIGN_TOKENS.accentSoft,
+            }}
+          >
+            <div className="mb-1.5 flex items-start gap-2">
+              <Wand2 size={14} strokeWidth={1.7} className="mt-0.5 shrink-0" style={{ color: DESIGN_TOKENS.accent }} />
+              <div className="min-w-0">
+                <p className="text-xs font-medium" style={{ color: DESIGN_TOKENS.accent }}>
+                  等待你的确认
+                </p>
+                <p className="mt-0.5 text-xs leading-relaxed" style={{ color: DESIGN_TOKENS.text }}>
+                  {pendingClarification.question}
+                </p>
+              </div>
+            </div>
+            {pendingClarification.options?.length ? (
+              <div className="flex flex-wrap gap-1.5 pl-6">
+                {pendingClarification.options.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setInput(option)}
+                    className="rounded-md border px-2 py-1 text-[11px] font-medium transition-colors hover:bg-white/10"
+                    style={{
+                      borderColor: DESIGN_TOKENS.border,
+                      color: DESIGN_TOKENS.textSecondary,
+                    }}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
         <ChatInput
           value={input}
           onChange={setInput}

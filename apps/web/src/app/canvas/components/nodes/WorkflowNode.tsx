@@ -4,7 +4,7 @@
 // ============================================================================
 "use client"
 
-import { memo } from "react"
+import { memo, useMemo } from "react"
 import {
   AudioLines,
   Captions,
@@ -20,14 +20,12 @@ import {
   ScanEye,
   Sparkles,
   Video,
-  DollarSign,
 } from "lucide-react"
 import { Handle, Position, NodeResizer, type NodeProps } from "@xyflow/react"
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
 import type { CanvasNodeData, CanvasNodeKind, NodeRunStatus, NodeRunSource } from "../canvas/types"
 import { nodeToneStyles } from "../canvas/types"
 import { useAIUsageStore } from "../../features/canvas/usage/useAIUsageStore"
-import { formatCostUsd } from "../../features/canvas/usage/estimateCost"
 import { getCompatibleRunMeta, isNodeBusy, isNodeFinished } from "../../utils/nodeRunMeta"
 
 interface WorkflowNodeProps extends NodeProps {
@@ -152,9 +150,15 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: W
     data.fileSize ? `${Math.round(data.fileSize / 1024)} KB` : undefined,
   ].filter(Boolean)
 
-  // ── AI Usage Cost ─────────────────────────────────────
-  const nodeCost = useAIUsageStore((s) => s.getNodeCostUsd(id))
-  const lastCost = useAIUsageStore((s) => s.getNodeLastCostUsd(id))
+  // ── AI Usage Summary ──────────────────────────────────
+  const usageRecords = useAIUsageStore((s) => s.usageRecords)
+  const nodeUsageSummary = useMemo(() => {
+    const records = usageRecords.filter((record) => record.nodeId === id)
+    const totalTokens = records.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0)
+    const totalImages = records.reduce((sum, record) => sum + (record.imageCount ?? 0), 0)
+    const totalVideoSeconds = records.reduce((sum, record) => sum + (record.videoSeconds ?? 0), 0)
+    return { runs: records.length, totalTokens, totalImages, totalVideoSeconds }
+  }, [id, usageRecords])
 
   const isBusy = isNodeBusy(runStatus)
   const isFinished = isNodeFinished(runStatus)
@@ -255,16 +259,13 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: W
               <p className="text-[10px] text-emerald-200/50">{runMeta.message}</p>
             )}
 
-            {/* ── AI 使用成本 ───────────────────────── */}
-            {nodeCost > 0 && (
+            {/* ── AI 用量摘要 ───────────────────────── */}
+            {nodeUsageSummary.runs > 0 && (
               <div className="flex items-center gap-2 border-t border-white/10 pt-2.5 text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
-                <div className="flex items-center gap-1" title={`本节点累计成本: ${formatCostUsd(nodeCost)}`}>
-                  <DollarSign size={10} strokeWidth={1.5} />
-                  <span>{formatCostUsd(nodeCost)}</span>
-                  {lastCost !== undefined && lastCost !== nodeCost && (
-                    <span className="opacity-60">（{formatCostUsd(lastCost)} 本次）</span>
-                  )}
-                </div>
+                <span>运行 {nodeUsageSummary.runs} 次</span>
+                {nodeUsageSummary.totalTokens > 0 && <span>{nodeUsageSummary.totalTokens.toLocaleString()} tokens</span>}
+                {nodeUsageSummary.totalImages > 0 && <span>{nodeUsageSummary.totalImages} 张图</span>}
+                {nodeUsageSummary.totalVideoSeconds > 0 && <span>{nodeUsageSummary.totalVideoSeconds.toFixed(1)} 秒视频</span>}
               </div>
             )}
 
@@ -288,6 +289,7 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: W
                   ⚠ AI 建议运行此节点
                 </p>
                 <button
+                  onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation()
                     // 清除 pending，触发运行
@@ -296,7 +298,7 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: W
                       window.dispatchEvent(new CustomEvent("startrails-run-node", { detail: { nodeId: id } }))
                     }
                   }}
-                  className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-400/40 bg-amber-400/15 py-2 text-xs font-medium text-amber-200/90 transition-colors hover:bg-amber-400/25 hover:text-amber-100"
+                  className="nodrag nowheel flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-400/40 bg-amber-400/15 py-2 text-xs font-medium text-amber-200/90 transition-colors hover:bg-amber-400/25 hover:text-amber-100"
                 >
                   <Sparkles size={12} />
                   确认运行
@@ -307,13 +309,14 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: W
             {/* ── Run / Re-run Button ─────────────────── */}
             {(isTextModelStep(kind) || isImageModelStep(kind) || isVideoStep(kind)) && !isBusy && runStatus !== "pending" && (
               <button
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation()
                   if (typeof window !== "undefined") {
                     window.dispatchEvent(new CustomEvent("startrails-run-node", { detail: { nodeId: id } }))
                   }
                 }}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/5 py-2 text-xs text-white/60 transition-colors hover:bg-white/10 hover:text-white/80"
+                className="nodrag nowheel flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/5 py-2 text-xs text-white/60 transition-colors hover:bg-white/10 hover:text-white/80"
               >
                 <Sparkles size={12} />
                 {isFinished ? "重新运行" : "运行此节点"}
@@ -322,13 +325,14 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: W
 
             {kind === "script" && !isBusy && runStatus !== "pending" && (
               <button
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation()
                   if (typeof window !== "undefined") {
                     window.dispatchEvent(new CustomEvent("starcanvas:create-storyboard-assistant", { detail: { nodeId: id } }))
                   }
                 }}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-sky-300/20 bg-sky-400/10 py-2 text-xs text-sky-100/70 transition-colors hover:bg-sky-400/15 hover:text-sky-50"
+                className="nodrag nowheel flex w-full items-center justify-center gap-1.5 rounded-lg border border-sky-300/20 bg-sky-400/10 py-2 text-xs text-sky-100/70 transition-colors hover:bg-sky-400/15 hover:text-sky-50"
               >
                 <Clapperboard size={12} />
                 用故事种子继续分镜

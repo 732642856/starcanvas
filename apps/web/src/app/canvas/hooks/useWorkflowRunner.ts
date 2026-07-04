@@ -19,6 +19,15 @@ import {
 } from "../utils/nodeRunMeta"
 import { createRunHistoryItem } from "../utils/node-run-history"
 
+function appendAIUsageRecord(record: Omit<AIUsageRecord, "id" | "currency" | "finishedAt">) {
+  useAIUsageStore.getState().addUsageRecord({
+    ...record,
+    id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    currency: "USD",
+    finishedAt: new Date().toISOString(),
+  })
+}
+
 // ---- 内部类型：用于上游数据解析 ----
 interface ParsedSceneEntry {
   sceneId?: string
@@ -63,20 +72,31 @@ import { useRunHistoryStore } from "../stores/useRunHistoryStore"
 import type { NodeRunHistoryInput } from "../types/node-run-history"
 import { buildRestorePromptPatch, sanitizeHistoryRawOutput } from "../utils/history-safety"
 import { VIDEO_ANALYSIS_RAW_KIND, VIDEO_ANALYSIS_RAW_VERSION } from "../types/video-analysis"
+import type { VideoKeyframeRef } from "../types/video-analysis"
 import type { ExecutionPlan } from "../utils/execution-plan"
-import { generateMockFrameUrls, runMockVideoAnalyze } from "../utils/mock-video-analyzer"
+import { analyzeVideoKeyframes } from "../utils/real-video-analyzer"
+import { collectWorkflowVideoSources, extractWorkflowVideoFrames } from "../utils/real-video-frame-extractor"
 import { quickLayout } from "../utils/dagre-layout"
 import type { WorkflowRunEvent } from "../types/workflow-run"
 import { enhancePromptWithCinematicContext } from "@/lib/cinematic/context"
-import { getDefaultModel, getDefaultImageModel, getLocalProviderOverrides } from "@/lib/ai/client"
+import { getDefaultModel, getDefaultImageModel, getRuntimeProviderState } from "@/lib/ai/client"
 import { buildRunRequest } from "@/lib/ai/run-request"
 import { normalizeGenerationError, formatGenerationErrorForDisplay } from "@/lib/ai/normalizeGenerationError"
 import { persistImageDataUrl } from "@/lib/assets/localImageStore"
-import { generateVideoFromImage, VideoGenerationError, videoResultToNodeData, type VideoGenBackend } from "../utils/videoGenerationService"
+import { buildVideoGenerationInput, generateVideoFromImage, VideoGenerationError, videoResultToNodeData, type VideoGenBackend } from "../utils/videoGenerationService"
+import { resolveProviderReadableVideoSourceImage } from "../utils/videoSourceImage"
 import { generateImageFromPrompt } from "../utils/imageGeneration"
-import { generateTts, ttsResultToNodeData, TtsError, type TtsInput, type TtsProgressCallback } from "../utils/ttsService"
+import { requestImageUpscale } from "../utils/upscaleService"
+import { applyFocusEdit } from "../utils/focusEditService"
+import { requestTalkingPhoto } from "../utils/talkingPhotoService"
+import { reverseImagePrompt } from "../utils/reversePromptService"
+import { createReversePromptCanvasArtifacts } from "../utils/reversePromptCanvasArtifacts"
+import { analyzeRemix, generateCameraControl, generatePoster } from "../utils/newWorkflowServices"
 import { composeVideo } from "../utils/videoCompositionBrowser"
 import type { VideoClipInput, AudioTrackInput, SubtitleInput } from "../utils/videoCompositionBrowser"
+import { importStoryboardDraftToCanvas } from "@/features/storyboard/importDraftToCanvas"
+import { buildStoryboardDraftFromVideoAnalysis } from "@/features/storyboard/videoAnalysisToStoryboardDraft"
+import { imageUrlToBase64 } from "../utils/imagePromptReverser"
 
 interface RunContext {
   runId: string
@@ -99,8 +119,13 @@ const WORKFLOW_ORDER: CanvasNodeKind[] = [
   "storyboard",
   "image-generation",
   "image-result",
+  "focus-edit",
+  "reverse-prompt",
+  "poster",
   "video-sample-frames",
   "video-analyze",
+  "camera-control",
+  "remix-analysis",
   "video-generation",
   "audio",
   "subtitle",
@@ -163,6 +188,18 @@ function isImageModelStep(kind: CanvasNodeKind): boolean {
   return ["image-generation", "image-result"].includes(kind)
 }
 
+function isFocusEditStep(kind: CanvasNodeKind): boolean {
+  return kind === "focus-edit"
+}
+
+function isPosterStep(kind: CanvasNodeKind): boolean {
+  return kind === "poster"
+}
+
+function isReversePromptStep(kind: CanvasNodeKind): boolean {
+  return kind === "reverse-prompt"
+}
+
 function isVideoSampleFramesStep(kind: CanvasNodeKind): boolean {
   return kind === "video-sample-frames"
 }
@@ -175,8 +212,24 @@ function isVideoGenerationStep(kind: CanvasNodeKind): boolean {
   return kind === "video-generation"
 }
 
+function isCameraControlStep(kind: CanvasNodeKind): boolean {
+  return kind === "camera-control"
+}
+
+function isRemixAnalysisStep(kind: CanvasNodeKind): boolean {
+  return kind === "remix-analysis"
+}
+
 function isTtsStep(kind: CanvasNodeKind): boolean {
-  return kind === "audio"
+  return kind === "audio" || kind === "tts"
+}
+
+function isTalkingPhotoStep(kind: CanvasNodeKind): boolean {
+  return kind === "talking-photo"
+}
+
+function isUpscaleStep(kind: CanvasNodeKind): boolean {
+  return kind === "upscale"
 }
 
 function isPassThroughStep(kind: CanvasNodeKind): boolean {
@@ -332,8 +385,7 @@ async function readSSEStream(
   return { text: result, usage }
 }
 
-function resolveLocalModelOverrides(): { textModel?: string; imageModel?: string } {
-  const overrides = getLocalProviderOverrides()
+function resolveLocalModelOverrides(overrides?: { defaultModel?: string; imageModel?: string }): { textModel?: string; imageModel?: string } {
   return {
     textModel: overrides?.defaultModel,
     imageModel: overrides?.imageModel,
@@ -404,20 +456,20 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     const currentContent = overridePrompt ?? (node.data.content || node.data.prompt || "")
 
     // Resolve model names from config (respects .env.local + Local Override)
-    const localModels = resolveLocalModelOverrides()
+    const runtimeProvider = await getRuntimeProviderState()
+    const localModels = resolveLocalModelOverrides(runtimeProvider.overrides ?? undefined)
     const [resolvedTextModel, resolvedImageModel] = await Promise.all([
       localModels.textModel ? Promise.resolve(localModels.textModel) : getDefaultModel(),
       localModels.imageModel ? Promise.resolve(localModels.imageModel) : getDefaultImageModel(),
     ])
-    // 'provider' is only used for usage-tracking labels; not an API credential
-    const provider = "copse"
+    const provider = runtimeProvider.usageProvider
 
     // ------------------------------------------------------------------
     // TEXT MODEL STEP
     // ------------------------------------------------------------------
     if (isTextModelStep(kind)) {
       const startedAt = new Date().toISOString()
-      const providerOverrides = getLocalProviderOverrides()
+      const providerOverrides = runtimeProvider.overrides
 
       const runRequest = buildRunRequest({
         nodeKind: kind,
@@ -471,8 +523,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         outputTokens: usage?.completionTokens,
       })
 
-      const usageRecord: AIUsageRecord = {
-        id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      appendAIUsageRecord({
         nodeId: node.id,
         runId: runContext?.runId,
         provider,
@@ -482,12 +533,9 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         outputTokens: usage?.completionTokens,
         totalTokens: usage?.totalTokens,
         estimatedCostUsd: costUsd,
-        currency: "USD",
         startedAt,
-        finishedAt: new Date().toISOString(),
         status: "success",
-      }
-      useAIUsageStore.getState().addUsageRecord(usageRecord)
+      })
 
       updateNodeData(node.id, {
         content: finalResult.trim(),
@@ -593,7 +641,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     // ------------------------------------------------------------------
     if (isImageModelStep(kind)) {
       const startedAt = new Date().toISOString()
-      const providerOverrides = getLocalProviderOverrides()
+      const providerOverrides = runtimeProvider.overrides
 
       // Cinematic enhancement (still needed as async call for upstream node walk)
       const baseImagePrompt = upstreamText || currentContent || "A cinematic scene"
@@ -653,8 +701,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         imageCount: 1,
       })
 
-      const usageRecord: AIUsageRecord = {
-        id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      appendAIUsageRecord({
         nodeId: node.id,
         runId: runContext?.runId,
         provider,
@@ -662,12 +709,9 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         taskType: "image",
         imageCount: 1,
         estimatedCostUsd: costUsd,
-        currency: "USD",
         startedAt,
-        finishedAt: new Date().toISOString(),
         status: "success",
-      }
-      useAIUsageStore.getState().addUsageRecord(usageRecord)
+      })
 
       // For image-generation node, create/update the image-result node
       if (kind === "image-generation") {
@@ -677,6 +721,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         if (resultNodeId) {
           updateNodeData(resultNodeId, {
             imageUrl: displayUrl,
+            generatedImageUrl: imageUrl,
             assetId,
             nodeKind: "ai-generated-image" as CanvasNodeKind,
             source: "generated" as const,
@@ -695,6 +740,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
             data: {
               title: "生成结果",
               imageUrl: displayUrl,
+              generatedImageUrl: imageUrl,
               assetId,
               nodeKind: "ai-generated-image" as CanvasNodeKind,
               source: "generated" as const,
@@ -727,37 +773,309 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     }
 
     // ------------------------------------------------------------------
-    // VIDEO SAMPLE FRAMES (V1-4 Mock)
+    // POSTER STEP (brief to generated poster image)
     // ------------------------------------------------------------------
-    if (isVideoSampleFramesStep(kind)) {
-      const sourceVideoId = node.id
-      const hasUpstreamImage = upstreamContent.some(c => c.length > 0)
-
-      if (!hasUpstreamImage) {
+    if (isPosterStep(kind)) {
+      const subject = (node.data.content || node.data.prompt || node.data.instruction || upstreamText || "").trim()
+      if (!subject) {
+        const message = "AI 海报缺少主题，请在节点或上游文本中填写角色、片名、卖点或风格。"
         updateNodeData(node.id, {
-          runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "无上游视频，跳过" }),
-          summary: "请先连接视频素材节点。",
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
         })
-        return "无上游视频输入"
+        throw new Error(message)
       }
 
-      const frames = generateMockFrameUrls(sourceVideoId, 4)
+      updateNodeData(node.id, {
+        status: "running",
+        runMeta: createRunningRunMeta({ runId: runContext?.runId, source: runContext?.source, message: "正在生成 AI 海报..." }),
+        summary: "正在生成 AI 海报...",
+      })
+
+      const result = await generatePoster({
+        subject,
+        posterType: (node.data as any).posterType,
+        style: (node.data as any).style || node.data.model || "cinematic",
+        extras: upstreamText,
+      })
+      const imageDataUrl = result.image.startsWith("data:image")
+        ? result.image
+        : `data:image/png;base64,${result.image}`
+      let displayUrl = imageDataUrl
+      let assetId: string | undefined
+      try {
+        const persisted = await persistImageDataUrl(imageDataUrl, { fileName: `poster-${Date.now()}.png` })
+        displayUrl = persisted.objectUrl
+        assetId = persisted.assetId
+      } catch (err) {
+        Sentry.captureException(err)
+      }
 
       updateNodeData(node.id, {
-        runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: `已抽取 ${frames.length} 帧（Mock）` }),
-        summary: `已抽取 ${frames.length} 个关键帧（Mock 模式）`,
+        status: "done",
+        imageUrl: displayUrl,
+        resultUrl: displayUrl,
+        assetId,
+        source: "generated",
+        persistence: assetId ? "indexeddb" : "remote",
+        outputs: [{ label: "海报图", type: "image", url: displayUrl }],
+        generationOutput: {
+          status: "ready",
+          imageUrl: displayUrl,
+          assetId,
+          posterType: result.posterType,
+          prompt: result.prompt,
+          revisedPrompt: result.revisedPrompt,
+          aspectRatio: result.aspectRatio,
+          size: result.size,
+        },
+        runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "AI 海报生成完成" }),
+        summary: "AI 海报生成完成",
+      })
+      return displayUrl
+    }
+
+    if (isReversePromptStep(kind)) {
+      let sourceImageUrl: string | undefined
+      let sourceImageAssetId: string | undefined
+
+      for (const edge of upstreamEdges) {
+        if (sourceImageUrl) break
+        const upstreamNode = allNodes.find((n) => n.id === edge.source)
+        if (!upstreamNode) continue
+        const ud = upstreamNode.data as CanvasNodeData | undefined
+        const upstreamKind = String(ud?.nodeKind || upstreamNode.type || "")
+        if (upstreamKind.includes("video") || upstreamKind.includes("audio")) continue
+
+        const candidate =
+          ud?.imageUrl ||
+          ud?.resultUrl ||
+          ud?.assetUrl ||
+          ud?.thumbnailUrl
+        if (candidate) {
+          sourceImageUrl = candidate
+          sourceImageAssetId = ud?.assetId
+        }
+      }
+
+      if (!sourceImageUrl) {
+        const message = "反推提示词缺少源图片，请连接上传图片、生成图片或视频抽帧节点。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      updateNodeData(node.id, {
+        status: "running",
+        runMeta: createRunningRunMeta({
+          runId: runContext?.runId,
+          source: runContext?.source,
+          message: "正在分析参考图并反推提示词...",
+        }),
+        summary: "正在从图片反推生图提示词...",
+      })
+
+      try {
+        const result = await reverseImagePrompt({
+          imageUrl: sourceImageUrl,
+          assetId: sourceImageAssetId,
+        })
+        const summary = [
+          result.prompt,
+          result.negativePrompt ? `Negative prompt: ${result.negativePrompt}` : "",
+          typeof result.qualityScore === "number"
+            ? `Quality score: ${result.qualityScore.toFixed(2)}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+
+        updateNodeData(node.id, {
+          status: "done",
+          nodeKind: "reverse-prompt",
+          content: result.prompt,
+          prompt: result.prompt,
+          text: result.prompt,
+          negativePrompt: result.negativePrompt,
+          syncToAssetLibrary: true,
+          assetLibraryType: "prompt",
+          assetLibraryFolder: "Others",
+          assetLibraryTags: ["reverse-prompt", "image-to-prompt", "prompt"],
+          outputs: [{ label: "反推提示词", type: "prompt" }],
+          generationOutput: {
+            status: "ready",
+            type: "reverse-prompt",
+            prompt: result.prompt,
+            negativePrompt: result.negativePrompt,
+            qualityScore: result.qualityScore,
+            language: result.language,
+            sourceImageUrl,
+            sourceNodeId: node.id,
+            sourceImageAssetId,
+          },
+          runMeta: createSucceededRunMeta({
+            runId: runContext?.runId,
+            message: "反推提示词完成",
+          }),
+          summary,
+        })
+        return result.prompt
+      } catch (error: any) {
+        const message = error?.message || "反推提示词失败"
+        updateNodeData(node.id, {
+          status: "error",
+          errorMessage: message,
+          runMeta: createFailedRunMeta({
+            runId: runContext?.runId,
+            error: message,
+            message,
+          }),
+          summary: message,
+        })
+        Sentry.captureException(error)
+        throw error
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // CAMERA CONTROL STEP (scene text to camera movement plan)
+    // ------------------------------------------------------------------
+    if (isCameraControlStep(kind)) {
+      const sceneDescription = (node.data.content || node.data.prompt || node.data.instruction || upstreamText || "").trim()
+      if (!sceneDescription) {
+        const message = "摄影机控制缺少场景描述，请在节点或上游文本中填写画面、动作和情绪。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      updateNodeData(node.id, {
+        status: "running",
+        runMeta: createRunningRunMeta({ runId: runContext?.runId, source: runContext?.source, message: "正在规划摄影机运动..." }),
+        summary: "正在规划摄影机运动...",
+      })
+
+      const result = await generateCameraControl(sceneDescription, {
+        preset: (node.data as any).preset,
+        useLLM: Boolean((node.data as any).useLLM),
+      })
+      const movements = result.plan.movements
+        .map((movement) => `${movement.name}｜${movement.duration}｜${movement.description}`)
+        .join("\n")
+      const summary = `${result.plan.sceneMood}\n${movements}\n${result.plan.notes || ""}`.trim()
+
+      updateNodeData(node.id, {
+        status: "done",
+        content: summary,
+        summary,
+        generationOutput: {
+          status: "ready",
+          plan: result.plan,
+          source: result.source,
+        },
+        runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "摄影机控制规划完成" }),
+      })
+      return summary
+    }
+
+    // ------------------------------------------------------------------
+    // REMIX ANALYSIS STEP (reference description to reusable structure)
+    // ------------------------------------------------------------------
+    if (isRemixAnalysisStep(kind)) {
+      const videoDescription = (node.data.content || node.data.prompt || node.data.instruction || upstreamText || "").trim()
+      if (!videoDescription) {
+        const message = "参考视频结构分析缺少视频描述、链接或关键帧摘要。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      updateNodeData(node.id, {
+        status: "running",
+        runMeta: createRunningRunMeta({ runId: runContext?.runId, source: runContext?.source, message: "正在拆解参考视频结构..." }),
+        summary: "正在拆解参考视频结构...",
+      })
+
+      const result = await analyzeRemix(videoDescription, {
+        templateId: (node.data as any).templateId,
+        category: (node.data as any).category,
+        useLLM: Boolean((node.data as any).useLLM),
+      })
+      const structure = result.template.structure
+        .map((step) => `${step.timestamp} ${step.type}: ${step.description}`)
+        .join("\n")
+      const summary = `${result.template.name}\n${result.template.hookPattern}\n${structure}`.trim()
+
+      updateNodeData(node.id, {
+        status: "done",
+        content: summary,
+        summary,
+        generationOutput: {
+          status: "ready",
+          result,
+        },
+        runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "参考视频结构拆解完成" }),
+      })
+      return summary
+    }
+
+    // ------------------------------------------------------------------
+    // VIDEO SAMPLE FRAMES (real browser extraction)
+    // ------------------------------------------------------------------
+    if (isVideoSampleFramesStep(kind)) {
+      const videoSources = collectWorkflowVideoSources(node, allNodes, edges)
+      const sourceVideo = videoSources[0]
+
+      if (!sourceVideo) {
+        const message = "未找到真实视频素材，请先连接上传视频或视频生成结果。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({
+            runId: runContext?.runId,
+            error: "未找到真实视频素材",
+            message: "请先连接上传视频或视频生成结果",
+          }),
+          summary: "请先连接视频素材节点，再运行真实抽帧。",
+        })
+        throw new Error(message)
+      }
+
+      updateNodeData(node.id, {
+        runMeta: createRunningRunMeta({
+          runId: runContext?.runId,
+          source: runContext?.source,
+          message: "正在读取视频并抽取关键帧...",
+        }),
+      })
+
+      const frames = await extractWorkflowVideoFrames(sourceVideo, {
+        count: 4,
+        maxFrames: 6,
+        sceneDetection: true,
+      })
+
+      updateNodeData(node.id, {
+        runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: `已抽取 ${frames.length} 帧` }),
+        summary: `已从「${sourceVideo.name ?? "视频素材"}」抽取 ${frames.length} 个真实关键帧`,
         generationOutput: {
           frames,
           images: frames.map(f => f.imageUrl),
+          sourceVideo,
+          mode: "real-browser-extraction",
         },
         outputs: [{ label: "抽帧结果", type: "image" }],
       })
 
-      return `抽取了 ${frames.length} 个帧`
+      return `已从真实视频抽取 ${frames.length} 个关键帧`
     }
 
     // ------------------------------------------------------------------
-    // VIDEO ANALYZE (V1-5 Mock)
+    // VIDEO ANALYZE (real local frame analysis)
     // ------------------------------------------------------------------
     if (isVideoAnalyzeStep(kind)) {
       // 从上一步的 generationOutput 中提取关键帧
@@ -765,7 +1083,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         upstreamEdges.some(e => e.source === n.id),
       )
 
-      let keyframes: Array<{ sourceVideoId: string; timestampMs: number; frameIndex: number; imageUrl: string }> = []
+      let keyframes: VideoKeyframeRef[] = []
 
       for (const upNode of upstreamNodes) {
         const genOut = upNode.data.generationOutput as any
@@ -775,17 +1093,99 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         }
       }
 
-      const hasFrames = keyframes.length > 0
-      const result = runMockVideoAnalyze(hasFrames ? keyframes : [])
+      if (keyframes.length === 0) {
+        const sourceVideo = collectWorkflowVideoSources(node, allNodes, edges)[0]
+        if (sourceVideo) {
+          updateNodeData(node.id, {
+            runMeta: createRunningRunMeta({
+              runId: runContext?.runId,
+              source: runContext?.source,
+              message: "未找到上游关键帧，正在从视频素材抽帧...",
+            }),
+          })
+          keyframes = await extractWorkflowVideoFrames(sourceVideo, {
+            count: 4,
+            maxFrames: 6,
+            sceneDetection: true,
+          })
+        }
+      }
+
+      if (keyframes.length === 0) {
+        const message = "未检测到关键帧，请先连接视频抽帧节点或视频素材。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({
+            runId: runContext?.runId,
+            error: "未检测到关键帧",
+            message,
+          }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      const result = await analyzeVideoKeyframes(keyframes)
 
       updateNodeData(node.id, {
-        runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "分析完成（Mock）" }),
+        runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "本地视频分析完成" }),
         content: result.summary,
         prompt: result.summary,
         summary: result.summary.slice(0, 200),
         generationOutput: result,
         outputs: [{ label: "分析结果", type: "text" }],
       })
+
+      const existingStoryboardDrafts = allNodes.filter(
+        (candidate) =>
+          candidate.data?.sourceType === "reference-video" &&
+          candidate.data?.sourceMeta?.videoAnalysisNodeId === node.id,
+      )
+      const draftShots = buildStoryboardDraftFromVideoAnalysis(result, {
+        videoAnalysisNodeId: node.id,
+        sourceTitle: node.data.title || "视频分析",
+        maxShots: 8,
+      })
+
+      if (draftShots.length > 0 && existingStoryboardDrafts.length === 0) {
+        const draftNodes = importStoryboardDraftToCanvas(draftShots, {
+          columns: 4,
+          baseX: node.position.x,
+          baseY: node.position.y + 260,
+          existingNodeCount: 0,
+        }).map((draftNode) => ({
+          ...draftNode,
+          selected: true as const,
+          data: {
+            ...draftNode.data,
+            title: draftNode.data.title || "参考视频镜头",
+            role: "video-analysis-storyboard-draft",
+            isStoryboardProcessNode: true,
+            sourceType: "reference-video",
+            sourceMeta: {
+              ...(draftNode.data.sourceMeta ?? {}),
+              videoAnalysisNodeId: node.id,
+              runId: runContext?.runId,
+            },
+          },
+        }))
+        const draftEdges = draftNodes.map((draftNode) => ({
+          id: `edge-${node.id}-${draftNode.id}`,
+          source: node.id,
+          target: draftNode.id,
+          type: "creative",
+          animated: false,
+          data: { relation: "video-analysis-storyboard-draft" },
+        }))
+
+        setNodes((nds) => [
+          ...nds.map((existing) => ({ ...existing, selected: false })),
+          ...draftNodes,
+        ])
+        setEdges((eds) => [
+          ...eds,
+          ...draftEdges.filter((edge) => !eds.some((existing) => existing.id === edge.id)),
+        ])
+      }
 
       return result.summary
     }
@@ -804,7 +1204,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         return ""
       }
 
-      const _providerOverrides = getLocalProviderOverrides()
+      const _providerOverrides = runtimeProvider.overrides
 
       // ── P2-7: Multi-Agent Film Crew Pipeline ──
       // 使用 7 角色 Agent 系统（DEV PLAN.md 设计）替代单一 DirectorAgent
@@ -1008,20 +1408,16 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
 
       // ── Record AI usage ──
       const agentEndedAt = new Date().toISOString()
-      const usageRecord: AIUsageRecord = {
-        id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      appendAIUsageRecord({
         nodeId: node.id,
         runId: runContext?.runId,
         provider,
         model: "agent-model",
         taskType: "text",
         estimatedCostUsd: estimateCostUsd({ provider, model: "agent-model", taskType: "text" }),
-        currency: "USD",
         startedAt: agentEndedAt,
-        finishedAt: agentEndedAt,
         status: "success",
-      }
-      useAIUsageStore.getState().addUsageRecord(usageRecord)
+      })
 
       // ── Phase 2: auto-orchestrate — parse Agent JSON → create node chain ──
       try {
@@ -1159,18 +1555,26 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
 
       // Find upstream image node for the source image
       let sourceImageUrl: string | undefined
+      let blockedBlobUrl: string | undefined
       for (const edge of upstreamEdges) {
         const upstreamNode = allNodes.find((n) => n.id === edge.source)
         if (upstreamNode) {
           const ud = upstreamNode.data as CanvasNodeData | undefined
-          const imgUrl = ud?.imageUrl || ud?.resultUrl
-          if (imgUrl) { sourceImageUrl = imgUrl; break }
+          const selected = await resolveProviderReadableVideoSourceImage(ud, {
+            bridgeLocalAssetToProviderUrl: async ({ assetId, imageUrl }) => {
+              return imageUrlToBase64(imageUrl, assetId)
+            },
+          })
+          if (selected.url) { sourceImageUrl = selected.url; break }
+          if (!blockedBlobUrl) blockedBlobUrl = selected.blockedBlobUrl
         }
       }
 
       if (!sourceImageUrl) {
         throw new VideoGenerationError({
-          message: "未找到上游图片节点，请先连接一个图片结果节点（image-result）到视频生成节点。",
+          message: blockedBlobUrl
+            ? "上游图片只有本地预览地址，且未找到可桥接的原始图片资产。请重新上传该图片，或使用已生成的原始图片结果。"
+            : "未找到上游图片节点，请先连接一个图片结果节点（image-result）到视频生成节点。",
           code: "INVALID_IMAGE",
           retryable: false,
         })
@@ -1190,12 +1594,11 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
 
       try {
         const result = await generateVideoFromImage(
-          {
+          buildVideoGenerationInput({
             imageUrl: sourceImageUrl,
             motionPrompt: motionPrompt || undefined,
-            durationSeconds: 5,
             backend: process.env.NEXT_PUBLIC_VIDEO_BACKEND as VideoGenBackend || undefined,
-          },
+          }),
           (progress) => {
             updateNodeData(node.id, {
               summary: `${progress.message} (${progress.percent}%)`,
@@ -1216,16 +1619,14 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         })
 
         // Record usage
-        useAIUsageStore.getState().addUsageRecord({
-          id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        appendAIUsageRecord({
           nodeId: node.id,
           runId: runContext?.runId,
-          provider: "copse",
+          provider,
           model: result.backend,
-          taskType: "text", // Video gen usage tracked as text type for now
-          currency: "USD",
+          taskType: "video",
+          videoSeconds: result.durationSeconds,
           startedAt,
-          finishedAt: new Date().toISOString(),
           status: "success",
         })
 
@@ -1242,16 +1643,14 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         })
 
         // Record failed usage
-        useAIUsageStore.getState().addUsageRecord({
-          id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        appendAIUsageRecord({
           nodeId: node.id,
           runId: runContext?.runId,
-          provider: "copse",
-          model: "mock",
-          taskType: "text",
-          currency: "USD",
+          provider,
+          model: (error instanceof VideoGenerationError ? "video-error" : "video-generation"),
+          taskType: "video",
+          videoSeconds: 5,
           startedAt,
-          finishedAt: new Date().toISOString(),
           status: "failed",
           error: errMsg,
         })
@@ -1269,20 +1668,18 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         const text = node.data.content || ""
         const voiceDescription = (node.data as any).voiceDescription || 
           node.data.shot?.voiceConfig?.instruct || ""
-        
+
         if (!text.trim()) {
-          throw new TtsError({
-            message: "文本为空，无法生成配音",
-            code: "TEXT_EMPTY",
-            retryable: false,
-          })
+          throw new Error("文本为空，无法生成配音")
         }
 
         updateNodeData(node.id, {
           runMeta: createRunningRunMeta({ runId: runContext?.runId, message: "语音合成中..." }),
         })
 
-        const input: TtsInput = {
+        const { generateTts, ttsResultToNodeData } = await import("../utils/ttsService")
+
+        const input = {
           text: text.trim(),
           voiceDescription: voiceDescription || undefined,
         }
@@ -1318,6 +1715,347 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         })
         Sentry.captureException(error)
         return ""
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // TALKING PHOTO STEP (image + text/audio to talking video)
+    // ------------------------------------------------------------------
+    if (isTalkingPhotoStep(kind)) {
+      let sourceImageUrl: string | undefined
+      let sourceImageAssetId: string | undefined
+      let audioUrl: string | undefined
+      const textInputs: string[] = []
+
+      for (const edge of upstreamEdges) {
+        const upstreamNode = allNodes.find((n) => n.id === edge.source)
+        if (!upstreamNode) continue
+        const ud = upstreamNode.data as CanvasNodeData | undefined
+        const upstreamKind = ud?.nodeKind || upstreamNode.type
+
+        if (!sourceImageUrl) {
+          const imgUrl = ud?.imageUrl || ud?.resultUrl || ud?.assetUrl || ud?.thumbnailUrl
+          if (imgUrl && !String(upstreamKind).includes("video") && !String(upstreamKind).includes("audio")) {
+            sourceImageUrl = imgUrl
+            sourceImageAssetId = ud?.assetId
+          }
+        }
+
+        if (!audioUrl && (String(upstreamKind).includes("audio") || upstreamKind === "tts")) {
+          const audioData = ud as (CanvasNodeData & { voiceAudioUrl?: string; audioUrl?: string }) | undefined
+          audioUrl = audioData?.resultUrl || audioData?.assetUrl || audioData?.audioUrl || audioData?.voiceAudioUrl
+        }
+
+        const text = ud?.content || ud?.prompt || ud?.summary || ud?.text || ""
+        if (text.trim()) textInputs.push(text.trim())
+      }
+
+      if (!sourceImageUrl) {
+        const message = "数字人缺少角色头像，请连接上传图片或生成图片节点。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      const talkingText = (node.data.content || node.data.prompt || textInputs.join("\n\n")).trim()
+      if (!audioUrl && !talkingText) {
+        const message = "数字人缺少口播台词，请在节点或上游文本节点输入文案。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      updateNodeData(node.id, {
+        runMeta: createRunningRunMeta({ runId: runContext?.runId, source: runContext?.source, message: "正在提交数字人生成任务..." }),
+        summary: "正在生成照片说话视频...",
+      })
+
+      try {
+        const result = await requestTalkingPhoto({
+          imageUrl: sourceImageUrl,
+          imageAssetId: sourceImageAssetId,
+          text: talkingText || undefined,
+          audioUrl,
+          mode: "lip-sync",
+          audioSource: audioUrl ? "upload" : "text-to-speech",
+        })
+
+        if (result.status === "not_ready") {
+          updateNodeData(node.id, {
+            runMeta: createFailedRunMeta({
+              runId: runContext?.runId,
+              error: result.message,
+              message: `${result.message}。请部署 MuseTalk/SadTalker 或接入 D-ID/HeyGen 后重试。`,
+            }),
+            summary: result.message,
+            generationOutput: {
+              status: "not_ready",
+              guide: result.guide,
+              recommendedNextSteps: result.recommendedNextSteps,
+            },
+          })
+          throw Object.assign(new Error(result.message), { partialText: result.message })
+        }
+
+        updateNodeData(node.id, {
+          status: "done",
+          resultUrl: result.videoUrl,
+          imageUrl: result.videoUrl,
+          videoDurationMs: result.durationMs,
+          outputs: [{ label: "口播视频", type: "video", url: result.videoUrl }],
+          generationOutput: {
+            status: "ready",
+            videoUrl: result.videoUrl,
+            durationMs: result.durationMs,
+            text: talkingText,
+          },
+          runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: result.message ?? "数字人视频生成完成" }),
+          summary: "数字人视频生成完成",
+        })
+        return result.videoUrl
+      } catch (error: any) {
+        const message = error?.message || "数字人生成失败"
+        updateNodeData(node.id, {
+          status: "error",
+          errorMessage: message,
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        Sentry.captureException(error)
+        throw error
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // FOCUS EDIT STEP (masked image edit)
+    // ------------------------------------------------------------------
+    if (isFocusEditStep(kind)) {
+      let sourceImageUrl: string | undefined
+      let sourceImageAssetId: string | undefined
+
+      for (const edge of upstreamEdges) {
+        if (sourceImageUrl) break
+        const upstreamNode = allNodes.find((n) => n.id === edge.source)
+        if (!upstreamNode) continue
+        const ud = upstreamNode.data as CanvasNodeData | undefined
+        const upstreamKind = String(ud?.nodeKind || upstreamNode.type || "")
+        if (upstreamKind.includes("video") || upstreamKind.includes("audio")) continue
+
+        const candidate = ud?.imageUrl || ud?.resultUrl || ud?.assetUrl || ud?.thumbnailUrl
+        if (candidate) {
+          sourceImageUrl = candidate
+          sourceImageAssetId = ud?.assetId
+        }
+      }
+
+      const ownImageUrl = node.data.imageUrl || node.data.resultUrl || node.data.assetUrl || node.data.thumbnailUrl
+      if (!sourceImageUrl && ownImageUrl) {
+        sourceImageUrl = ownImageUrl
+        sourceImageAssetId = node.data.assetId
+      }
+
+      if (!sourceImageUrl) {
+        const message = "局部精修缺少源图片，请连接上传图片、生成图片或视频抽帧节点。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      const maskDataUrl = node.data.focusEditMaskDataUrl || node.data.maskDataUrl
+      if (!maskDataUrl) {
+        const message = "局部精修缺少蒙版，请先在图片上涂抹要修改的区域。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      const editInstruction = (
+        node.data.instruction ||
+        node.data.prompt ||
+        node.data.content ||
+        upstreamText ||
+        ""
+      ).trim()
+      if (!editInstruction) {
+        const message = "局部精修缺少修改描述，请在节点中填写 prompt 或 instruction。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      updateNodeData(node.id, {
+        status: "running",
+        runMeta: createRunningRunMeta({ runId: runContext?.runId, source: runContext?.source, message: "正在提交局部精修任务..." }),
+        summary: "正在按蒙版精修图片...",
+      })
+
+      const startedAt = new Date().toISOString()
+      const model = node.data.model || resolvedImageModel || "gpt-image-2"
+
+      try {
+        const result = await applyFocusEdit({
+          imageUrl: sourceImageUrl,
+          sourceAssetId: node.data.sourceImageAssetId ?? sourceImageAssetId,
+          maskDataUrl,
+          prompt: editInstruction,
+          model,
+          requestId: `focus-edit-${node.id}-${Date.now()}`,
+        })
+
+        const costUsd = estimateCostUsd({
+          provider,
+          model: result.model || model,
+          taskType: "image",
+          imageCount: 1,
+        })
+
+        appendAIUsageRecord({
+          nodeId: node.id,
+          runId: runContext?.runId,
+          provider,
+          model: result.model || model,
+          taskType: "image",
+          imageCount: 1,
+          estimatedCostUsd: costUsd,
+          startedAt,
+          status: "success",
+        })
+
+        updateNodeData(node.id, {
+          status: "done",
+          imageUrl: result.imageUrl,
+          resultUrl: result.imageUrl,
+          assetId: result.assetId,
+          source: "generated",
+          persistence: result.assetId ? "indexeddb" : "remote",
+          sourceImageAssetId: sourceImageAssetId ?? node.data.sourceImageAssetId,
+          outputs: [{ label: "精修图片", type: "image", url: result.imageUrl }],
+          generationOutput: {
+            status: "ready",
+            imageUrl: result.imageUrl,
+            assetId: result.assetId,
+            sourceImageUrl,
+            instruction: editInstruction,
+            requestId: result.requestId,
+            attempts: result.attempts,
+            model: result.model || model,
+          },
+          runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "局部精修完成" }),
+          summary: "局部精修完成",
+        })
+        return result.imageUrl
+      } catch (error: any) {
+        const message = error?.message || "局部精修失败"
+        updateNodeData(node.id, {
+          status: "error",
+          errorMessage: message,
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        Sentry.captureException(error)
+        throw error
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // UPSCALE STEP (image to HD image)
+    // ------------------------------------------------------------------
+    if (isUpscaleStep(kind)) {
+      let sourceImageUrl: string | undefined
+      let sourceImageAssetId: string | undefined
+
+      const ownImageUrl = node.data.imageUrl || node.data.resultUrl || node.data.assetUrl || node.data.thumbnailUrl
+      if (ownImageUrl) {
+        sourceImageUrl = ownImageUrl
+        sourceImageAssetId = node.data.assetId
+      }
+
+      for (const edge of upstreamEdges) {
+        if (sourceImageUrl) break
+        const upstreamNode = allNodes.find((n) => n.id === edge.source)
+        if (!upstreamNode) continue
+        const ud = upstreamNode.data as CanvasNodeData | undefined
+        const upstreamKind = String(ud?.nodeKind || upstreamNode.type || "")
+        if (upstreamKind.includes("video") || upstreamKind.includes("audio")) continue
+
+        const candidate = ud?.imageUrl || ud?.resultUrl || ud?.assetUrl || ud?.thumbnailUrl
+        if (candidate) {
+          sourceImageUrl = candidate
+          sourceImageAssetId = ud?.assetId
+        }
+      }
+
+      if (!sourceImageUrl) {
+        const message = "HD 增强缺少图片输入，请连接上传图片、生成图片或视频抽帧节点。"
+        updateNodeData(node.id, {
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        throw new Error(message)
+      }
+
+      updateNodeData(node.id, {
+        runMeta: createRunningRunMeta({ runId: runContext?.runId, source: runContext?.source, message: "正在提交高清放大任务..." }),
+        summary: "正在准备图片高清放大...",
+      })
+
+      try {
+        const result = await requestImageUpscale({
+          imageUrl: sourceImageUrl,
+          assetId: sourceImageAssetId,
+          scale: 2,
+        })
+
+        if (result.status === "not_ready") {
+          const message = result.clientFallback?.available
+            ? `${result.message}，当前可先使用视频抽帧/局部精修链路，部署 Real-ESRGAN 后可启用高清放大。`
+            : result.message
+          updateNodeData(node.id, {
+            runMeta: createFailedRunMeta({ runId: runContext?.runId, error: result.message, message }),
+            summary: result.message,
+            generationOutput: {
+              status: "not_ready",
+              clientFallback: result.clientFallback,
+              recommendedNextSteps: result.recommendedNextSteps,
+            },
+          })
+          throw Object.assign(new Error(result.message), { partialText: result.message })
+        }
+
+        updateNodeData(node.id, {
+          status: "done",
+          imageUrl: result.imageUrl,
+          resultUrl: result.imageUrl,
+          outputs: [{ label: "高清图片", type: "image", url: result.imageUrl }],
+          generationOutput: {
+            status: "ready",
+            imageUrl: result.imageUrl,
+            sourceImageUrl,
+          },
+          runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: result.message ?? "HD 增强完成" }),
+          summary: "HD 增强完成",
+        })
+        return result.imageUrl
+      } catch (error: any) {
+        const message = error?.message || "HD 增强失败"
+        updateNodeData(node.id, {
+          status: "error",
+          errorMessage: message,
+          runMeta: createFailedRunMeta({ runId: runContext?.runId, error: message, message }),
+          summary: message,
+        })
+        Sentry.captureException(error)
+        throw error
       }
     }
 
@@ -1444,18 +2182,20 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     const startedAt = new Date().toISOString()
 
     // Resolve model names once for this run (used in catch for usage recording)
-    const localModels = resolveLocalModelOverrides()
+    const runtimeProvider = await getRuntimeProviderState()
+    const localModels = resolveLocalModelOverrides(runtimeProvider.overrides ?? undefined)
     const [resolvedTextModel, resolvedImageModel] = await Promise.all([
       localModels.textModel ? Promise.resolve(localModels.textModel) : getDefaultModel(),
       localModels.imageModel ? Promise.resolve(localModels.imageModel) : getDefaultImageModel(),
     ])
+    const provider = runtimeProvider.usageProvider
 
     // ── Inject resolved model info into historyInput.settingsSnapshot ──
-    const activeModel = isImageModelStep(kind) ? resolvedImageModel : resolvedTextModel
+    const activeModel = (isImageModelStep(kind) || isFocusEditStep(kind)) ? resolvedImageModel : resolvedTextModel
     historyInput.settingsSnapshot = {
       ...historyInput.settingsSnapshot,
       model: activeModel,
-      provider: (localModels.textModel || localModels.imageModel) ? "local" : "default",
+      provider: runtimeProvider.usageProvider,
     }
 
     setState((prev) => ({
@@ -1564,7 +2304,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
       })
     } catch (err: any) {
       const finishedAt = new Date().toISOString()
-      const normalized = err?.generationError || normalizeGenerationError({ error: err, provider: "copse" })
+      const normalized = err?.generationError || normalizeGenerationError({ error: err, provider })
       const safeError = formatGenerationErrorForDisplay(normalized)
       console.debug("[WorkflowRunner] runNode failed raw:", normalized.raw)
       Sentry.captureException(err)
@@ -1612,17 +2352,14 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
       })
 
       // ── Record failed usage ─────────────────────────────
-      const isImg = isImageModelStep(kind)
+      const isImg = isImageModelStep(kind) || isFocusEditStep(kind)
       const taskType: AITaskType = isImg ? "image" : "text"
-      useAIUsageStore.getState().addUsageRecord({
-        id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      appendAIUsageRecord({
         nodeId,
-        provider: "copse",
-      model: isImg ? resolvedImageModel : resolvedTextModel,
+        provider,
+        model: isImg ? resolvedImageModel : resolvedTextModel,
         taskType,
-        currency: "USD",
         startedAt,
-        finishedAt: new Date().toISOString(),
         status: "failed",
         error: safeError,
       })
@@ -1773,7 +2510,8 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         status: "success",
       })
     } catch (err: any) {
-      const normalized = err?.generationError || normalizeGenerationError({ error: err, provider: "copse" })
+      const workflowProvider = (await getRuntimeProviderState()).usageProvider
+      const normalized = err?.generationError || normalizeGenerationError({ error: err, provider: workflowProvider })
       const safeError = formatGenerationErrorForDisplay(normalized)
       console.debug("[WorkflowRunner] workflow failed raw:", normalized.raw)
       Sentry.captureException(err)

@@ -1,6 +1,11 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { buildAutoAgentPlanningActions } from "./autoAgentService.ts"
+import {
+  buildAutoAgentPlanningActions,
+  buildAutoAgentClarificationResponseActions,
+  processWithAutoAgent,
+  shouldFallbackToPlainChat,
+} from "./autoAgentService.ts"
 import type { AutoAgentAction } from "../../../lib/ai/agents/agent-auto.ts"
 
 function makeAction(intent: AutoAgentAction["intent"], params: Record<string, any> = {}): AutoAgentAction {
@@ -13,6 +18,208 @@ function makeAction(intent: AutoAgentAction["intent"], params: Record<string, an
 }
 
 describe("buildAutoAgentPlanningActions", () => {
+  it("does not fallback to plain chat for vague but clearly creative intent", () => {
+    const action = makeAction("chat", { topic: "雨夜旧影院重逢短片创意" })
+    action.confidence = 0.4
+
+    assert.equal(
+      shouldFallbackToPlainChat(action, "帮我把这个想法做成一个短片：雨夜旧影院里两个人重逢。"),
+      false,
+    )
+  })
+
+  it("still falls back to plain chat for genuine casual conversation", () => {
+    const action = makeAction("chat", { topic: "你好" })
+    action.confidence = 0.4
+
+    assert.equal(shouldFallbackToPlainChat(action, "你好"), true)
+    assert.equal(shouldFallbackToPlainChat(action, "谢谢"), true)
+  })
+
+  it("asks a clarification question for low-confidence creative requests instead of falling back to plain chat", async () => {
+    const originalFetch = globalThis.fetch
+    let fallbackCalled = false
+    const emittedActions: any[] = []
+    const emittedText: string[] = []
+
+    globalThis.fetch = async () => {
+      const encoder = new TextEncoder()
+      const payload = JSON.stringify({
+        content: JSON.stringify({
+          intent: "chat",
+          params: { topic: "雨夜旧影院重逢短片创意" },
+          description: "低置信度普通聊天",
+          confidence: 0.4,
+        }),
+      })
+
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`data: ${payload}\n\n`))
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+            controller.close()
+          },
+        }),
+        { status: 200 },
+      )
+    }
+
+    try {
+      await processWithAutoAgent("帮我把这个想法做成一个短片：雨夜旧影院里两个人重逢。", {
+        onFallbackChat: async () => {
+          fallbackCalled = true
+        },
+        onActions: (actions) => {
+          emittedActions.push(...actions)
+        },
+        onText: (text) => {
+          emittedText.push(text)
+        },
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    assert.equal(fallbackCalled, false)
+    assert.equal(emittedActions.length, 1)
+    assert.equal(emittedActions[0].action, "ask_clarification")
+    assert.match(emittedActions[0].question, /想把它推进到哪一步/)
+    assert.ok(emittedActions[0].options.includes("生成分镜"))
+    assert.match(emittedText.join("\n"), /我先确认一下创作方向/)
+  })
+
+  it("surfaces provider contract errors before auto-agent image generation sends a real image request", async () => {
+    const originalFetch = globalThis.fetch
+    const emittedText: string[] = []
+    const capturedErrors: Error[] = []
+    const requestedUrls: string[] = []
+
+    globalThis.fetch = async (url) => {
+      const target = String(url)
+      requestedUrls.push(target)
+
+      if (target.includes("/api/ai/chat/stream")) {
+        const encoder = new TextEncoder()
+        const payload = JSON.stringify({
+          content: JSON.stringify({
+            intent: "generate-image",
+            params: { prompt: "雨夜旧影院电影感剧照" },
+            description: "生成图片",
+            confidence: 0.95,
+          }),
+        })
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode(`data: ${payload}\n\n`))
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+              controller.close()
+            },
+          }),
+          { status: 200 },
+        )
+      }
+
+      if (target.includes("/api/ai/config")) {
+        return new Response(
+          JSON.stringify({
+            baseUrl: "",
+            hasApiKey: false,
+            defaultModel: "gpt-5.5",
+            defaultImageModel: "gpt-image-2",
+            timeoutMs: 120000,
+          }),
+          { status: 200 },
+        )
+      }
+
+      return new Response(JSON.stringify({ imageUrl: "blob:should-not-happen" }), { status: 200 })
+    }
+
+    try {
+      await assert.rejects(
+        processWithAutoAgent("来一张雨夜旧影院的电影感剧照", {
+          imageModel: "vidu",
+          onText: (text) => emittedText.push(text),
+          onError: (error) => capturedErrors.push(error),
+        }),
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    assert.equal(capturedErrors[0]?.name, "ImageGenerationError")
+    assert.match(capturedErrors[0]?.message ?? "", /Vidu|路由/)
+    assert.match(emittedText.at(-1) ?? "", /当前模型\/Provider 配置不兼容/)
+    assert.equal(requestedUrls.some((target) => target.includes("/api/ai/generate-image")), false)
+  })
+
+  it("turns a clarification answer into storyboard actions", () => {
+    const actions = buildAutoAgentClarificationResponseActions({
+      action: "ask_clarification",
+      question: "你想把它推进到哪一步？",
+      options: ["生成分镜", "拆成制作圣经"],
+      data: {
+        originalInput: "雨夜旧影院里两个人重逢。",
+      },
+    }, "生成分镜")
+
+    assert.equal(actions.length, 3)
+    assert.equal(actions[0].action, "create_node")
+    assert.equal(actions[0].nodeKind, "storyboard")
+    assert.match(actions[0].prompt ?? "", /专业影视分镜/)
+    assert.match(actions[0].content ?? "", /雨夜旧影院/)
+    assert.equal(actions[1].action, "generate_storyboard")
+    assert.equal(actions[1].sourceNodeId, "Auto Agent 分镜草案")
+    assert.equal(actions[1].shots?.length, 1)
+    assert.match(actions[1].shots?.[0]?.content ?? "", /雨夜旧影院/)
+    assert.equal(actions[2].action, "open_panel")
+    assert.equal(actions[2].panel, "production_queue")
+  })
+
+  it("turns a clarification answer into a production bible chain", () => {
+    const actions = buildAutoAgentClarificationResponseActions({
+      action: "ask_clarification",
+      question: "你想把它推进到哪一步？",
+      options: ["生成分镜", "拆成制作圣经"],
+      data: {
+        originalInput: "第一集：雨夜，女主林雾带着旧相机回到废弃电影院。男主周祁在放映室发现一卷失踪胶片。",
+      },
+    }, "拆成制作圣经")
+
+    const createNodes = actions.filter((action) => action.action === "create_node")
+    const runNodes = actions.filter((action) => action.action === "run_node")
+    const openPanels = actions.filter((action) => action.action === "open_panel")
+
+    assert.equal(createNodes.length, 7)
+    assert.equal(runNodes.length, 2)
+    assert.equal(openPanels.length, 1)
+    assert.equal(createNodes[0].title, "制作圣经：一句话创意制作资产拆解")
+    assert.equal((createNodes[0].data as Record<string, unknown>).productionBibleKind, "overview")
+    assert.equal((createNodes[2].data as Record<string, unknown>).assetLibraryFolder, "Character")
+    const characterSeeds = (createNodes[2].data as Record<string, unknown>).characterAssetSeeds as Array<Record<string, unknown>>
+    assert.deepEqual(characterSeeds.map((seed) => seed.name), ["林雾", "周祁"])
+    assert.equal(runNodes[0].title, "分镜拆解任务")
+    assert.equal(openPanels[0].panel, "project_bible")
+  })
+
+  it("turns a clarification answer into a video task", () => {
+    const actions = buildAutoAgentClarificationResponseActions({
+      action: "ask_clarification",
+      question: "你想把它推进到哪一步？",
+      options: ["建立视频生成任务"],
+      data: {
+        originalInput: "雨夜旧影院里两个人重逢。",
+      },
+    }, "建立视频生成任务")
+
+    assert.equal(actions.length, 1)
+    assert.equal(actions[0].action, "create_node")
+    assert.equal(actions[0].nodeKind, "video-generation")
+    assert.match(actions[0].prompt ?? "", /雨夜旧影院/)
+  })
+
   it("creates a character compliance report from shot context", () => {
     const actions = buildAutoAgentPlanningActions(
       makeAction("validate-character-consistency"),
@@ -103,6 +310,47 @@ describe("buildAutoAgentPlanningActions", () => {
     assert.equal((actions[3].data as Record<string, unknown>).autoRunRecommended, true)
     assert.equal(actions[4].action, "run_node")
     assert.equal(actions[4].title, "整体视觉概念图生成")
+  })
+
+  it("creates a production asset bible chain for long script assets", () => {
+    const actions = buildAutoAgentPlanningActions(
+      makeAction("extract-production-assets", {
+        script: "第一集：雨夜，女主林雾带着旧相机回到废弃电影院。男主周祁在放映室发现一卷失踪胶片。",
+        goal: "悬疑短剧制作资产拆解",
+        genre: "都市悬疑",
+        style: "neo-noir, rainy night, cinematic lighting",
+        targetPlatform: "short-drama",
+      }),
+      "把这段短剧拆成制作圣经和资产清单",
+    )
+
+    const createNodes = actions.filter((a) => a.action === "create_node")
+    const runNodes = actions.filter((a) => a.action === "run_node")
+
+    assert.equal(createNodes.length, 7)
+    assert.equal(runNodes.length, 2)
+    assert.deepEqual(createNodes.map((action) => action.title), [
+      "制作圣经：悬疑短剧制作资产拆解",
+      "源剧本：悬疑短剧制作资产拆解",
+      "角色资产 Bible",
+      "场景资产 Bible",
+      "道具服装资产清单",
+      "分镜拆解任务",
+      "一致性与缺口检查",
+    ])
+    assert.equal(createNodes[0].nodeKind, "document")
+    assert.equal((createNodes[0].data as Record<string, unknown>).productionBibleKind, "overview")
+    assert.match(createNodes[0].content ?? "", /目标平台：short-drama/)
+    assert.match(createNodes[2].prompt ?? "", /character bible/i)
+    assert.equal((createNodes[2].data as Record<string, unknown>).syncToAssetLibrary, true)
+    assert.equal((createNodes[2].data as Record<string, unknown>).assetLibraryFolder, "Character")
+    const characterSeeds = (createNodes[2].data as Record<string, unknown>).characterAssetSeeds as Array<Record<string, unknown>>
+    assert.deepEqual(characterSeeds.map((seed) => seed.name), ["林雾", "周祁"])
+    assert.deepEqual(characterSeeds.map((seed) => seed.role), ["女主", "男主"])
+    assert.equal(createNodes[5].nodeKind, "storyboard")
+    assert.equal((createNodes[5].data as Record<string, unknown>).storyboardAssistantStage, "storyboard-text")
+    assert.equal(runNodes[0].title, "分镜拆解任务")
+    assert.equal(runNodes[1].title, "一致性与缺口检查")
   })
 
   it("creates the multi-step pipeline node chain with executable steps", () => {

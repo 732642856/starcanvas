@@ -6,7 +6,8 @@
 
 import { useState, useCallback, useRef } from "react"
 import { createPortal } from "react-dom"
-import { X, Sparkles, Loader2, ImageIcon, Lock, Unlock, Download } from "lucide-react"
+import { X, Sparkles, Loader2, ImageIcon, Lock, Unlock, Download, AlertTriangle, RefreshCw } from "lucide-react"
+import { generateCharacterViews } from "@/lib/services/characterViewService"
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
 import { generateId } from "../../utils/generateId"
 
@@ -82,117 +83,75 @@ export function CharacterViewPanel({
   const [selectedStyle, setSelectedStyle] = useState<ArtStyle>("realistic")
   const [selectedResolution, setSelectedResolution] = useState<Resolution>("1024x1024")
   const [generating, setGenerating] = useState(false)
+  const [errorMessage, setErrorMessage] = useState("")
   const [generatedImages, setGeneratedImages] = useState<
     { perspective: ViewPerspective; imageUrl: string; prompt: string }[]
   >([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [localRefImage, setLocalRefImage] = useState<string | undefined>(referenceImageUrl)
 
+  const buildCharacterDescription = useCallback((): string => {
+    const style = STYLE_OPTIONS.find((s) => s.value === selectedStyle)!
+    const parts = [
+      characterName ? `character: ${characterName}` : "",
+      characterDescription,
+      style.promptKeyword,
+      "clean white background, full body, centered, professional concept art",
+    ]
+
+    return parts.filter(Boolean).join(", ")
+  }, [characterDescription, characterName, selectedStyle])
+
   // 构建生成 prompt
   const buildPrompt = useCallback(
     (perspective: ViewPerspective): string => {
-      const style = STYLE_OPTIONS.find((s) => s.value === selectedStyle)!
       const perspectiveDesc =
         perspective === "all"
           ? "orthographic three-view character design sheet, front view + side view + back view"
           : `${perspective} view of the character`
 
-      const parts = [
-        perspectiveDesc,
-        characterName ? `character: ${characterName}` : "",
-        characterDescription,
-        style.promptKeyword,
-        "clean white background, full body, centered, professional concept art",
-      ]
-
-      return parts.filter(Boolean).join(", ")
+      return [perspectiveDesc, buildCharacterDescription()].filter(Boolean).join(", ")
     },
-    [characterName, characterDescription, selectedStyle]
+    [buildCharacterDescription]
   )
 
   // 调用 AI 生成三视图（使用专用 character-view API）
   const handleGenerate = useCallback(async () => {
     setGenerating(true)
+    setErrorMessage("")
     try {
-      const perspectives: ViewPerspective[] = lockedPerspective
-        ? [lockedPerspective]
-        : ["front", "side", "back"]
+      const requestedPerspective = lockedPerspective ?? "all"
+      const generated = await generateCharacterViews({
+        characterDescription: buildCharacterDescription(),
+        referenceImageUrl: localRefImage || undefined,
+        viewType: requestedPerspective,
+      })
 
-      const results: { perspective: ViewPerspective; imageUrl: string; prompt: string }[] = []
+      const resultOrder: Array<{ perspective: "front" | "side" | "back"; imageUrl?: string }> = [
+        { perspective: "front", imageUrl: generated.frontViewUrl },
+        { perspective: "side", imageUrl: generated.sideViewUrl },
+        { perspective: "back", imageUrl: generated.backViewUrl },
+      ]
 
-      const characterDesc = buildPrompt("front").replace("front view of the character", "").trim()
-
-      // 使用专用 API 逐视角生成
-      for (const perspective of perspectives) {
-        const res = await fetch("/api/ai/generate-character-view", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            characterDescription: characterDesc,
-            referenceImageUrl: localRefImage || undefined,
-            viewType: perspective,
-          }),
+      const results = resultOrder
+        .filter((item) => Boolean(item.imageUrl))
+        .map(({ perspective, imageUrl }) => {
+          const prompt = buildPrompt(perspective)
+          onImageGenerated?.(imageUrl!, perspective, prompt)
+          return { perspective, imageUrl: imageUrl!, prompt }
         })
 
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}))
-          throw new Error(errData.error?.message || `API error: ${res.status}`)
-        }
-
-        // SSE 流式解析
-        const reader = res.body?.getReader()
-        if (!reader) throw new Error("No response body")
-
-        const decoder = new TextDecoder()
-        let buffer = ""
-        let imageUrl = ""
-
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-
-          buffer += decoder.decode(value, { stream: true })
-          const eventRegex = /event: (\w+)\ndata: (.+?)\n\n/g
-          let match
-
-          while ((match = eventRegex.exec(buffer)) !== null) {
-            const eventType = match[1]
-            let data: Record<string, unknown>
-            try {
-              data = JSON.parse(match[2])
-            } catch {
-              continue
-            }
-
-            if (eventType === "result") {
-              // 获取对应视角的 URL
-              if (perspective === "front" && data.frontViewUrl) {
-                imageUrl = data.frontViewUrl as string
-              } else if (perspective === "side" && data.sideViewUrl) {
-                imageUrl = data.sideViewUrl as string
-              } else if (perspective === "back" && data.backViewUrl) {
-                imageUrl = data.backViewUrl as string
-              }
-            } else if (eventType === "error") {
-              throw new Error((data.message as string) || "生成失败")
-            }
-          }
-        }
-
-        if (!imageUrl) throw new Error("No image data returned")
-
-        const prompt = buildPrompt(perspective)
-        results.push({ perspective, imageUrl, prompt })
-        onImageGenerated?.(imageUrl, perspective, prompt)
+      if (results.length === 0) {
+        throw new Error("No image data returned")
       }
 
       setGeneratedImages((prev) => [...results.reverse(), ...prev].slice(0, 12))
     } catch (err) {
-      // Generation failed - error silently captured
+      setErrorMessage(err instanceof Error ? err.message : "角色三视图生成失败，请稍后重试。")
     } finally {
       setGenerating(false)
     }
-  }, [buildPrompt, lockedPerspective, localRefImage, onImageGenerated])
+  }, [buildCharacterDescription, buildPrompt, lockedPerspective, localRefImage, onImageGenerated])
 
   // 视角锁定切换
   const toggleLock = (perspective: ViewPerspective) => {
@@ -395,6 +354,7 @@ export function CharacterViewPanel({
           <button
             onClick={handleGenerate}
             disabled={generating}
+            data-testid="character-view-generate-button"
             className="flex items-center justify-center gap-2 w-full rounded-xl py-3 text-sm font-medium transition-all"
             style={{
               backgroundColor: generating ? DESIGN_TOKENS.accentSoft : DESIGN_TOKENS.accent,
@@ -416,6 +376,39 @@ export function CharacterViewPanel({
               </>
             )}
           </button>
+
+          {errorMessage && (
+            <div
+              className="flex items-start gap-2 rounded-xl border px-3 py-2"
+              style={{
+                borderColor: "rgba(248,113,113,0.2)",
+                backgroundColor: "rgba(248,113,113,0.08)",
+              }}
+              data-testid="character-view-error"
+            >
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" style={{ color: "#f87171" }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-medium" style={{ color: "#fca5a5" }}>
+                  生成失败
+                </div>
+                <div className="mt-1 text-[11px] leading-5" style={{ color: DESIGN_TOKENS.textMuted }}>
+                  {errorMessage}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleGenerate}
+                className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium transition hover:opacity-80"
+                style={{
+                  color: "#fca5a5",
+                  backgroundColor: "rgba(248,113,113,0.12)",
+                }}
+              >
+                <RefreshCw size={10} />
+                重试
+              </button>
+            </div>
+          )}
 
           {/* 生成结果 */}
           {generatedImages.length > 0 && (

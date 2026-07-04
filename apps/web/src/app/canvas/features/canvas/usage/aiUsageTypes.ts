@@ -57,8 +57,13 @@ export interface UsageStats {
   todayCostUsd: number
   thisMonthCostUsd: number
   totalRuns: number
+  todayRuns: number
+  thisMonthRuns: number
   successRuns: number
   failedRuns: number
+  totalTokens: number
+  totalImages: number
+  totalVideoSeconds: number
   byProvider: Record<string, { costUsd: number; runs: number }>
   byModel: Record<string, { costUsd: number; runs: number }>
   byTaskType: Record<string, { costUsd: number; runs: number }>
@@ -74,8 +79,13 @@ export function computeUsageStats(records: AIUsageRecord[]): UsageStats {
     todayCostUsd: 0,
     thisMonthCostUsd: 0,
     totalRuns: records.length,
+    todayRuns: 0,
+    thisMonthRuns: 0,
     successRuns: 0,
     failedRuns: 0,
+    totalTokens: 0,
+    totalImages: 0,
+    totalVideoSeconds: 0,
     byProvider: {},
     byModel: {},
     byTaskType: {},
@@ -88,6 +98,11 @@ export function computeUsageStats(records: AIUsageRecord[]): UsageStats {
     stats.totalCostUsd += cost
     if (r.finishedAt >= todayStart) stats.todayCostUsd += cost
     if (r.finishedAt >= monthStart) stats.thisMonthCostUsd += cost
+    if (r.finishedAt >= todayStart) stats.todayRuns++
+    if (r.finishedAt >= monthStart) stats.thisMonthRuns++
+    stats.totalTokens += r.totalTokens ?? 0
+    stats.totalImages += r.imageCount ?? 0
+    stats.totalVideoSeconds += r.videoSeconds ?? 0
 
     // Status counts
     if (r.status === "success") stats.successRuns++

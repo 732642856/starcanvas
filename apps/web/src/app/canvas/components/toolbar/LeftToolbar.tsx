@@ -8,6 +8,7 @@ import { Plus, Library, MessageCircle, Clock3, Save, ImageIcon, Camera, Palette,
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
 
 interface LeftToolbarProps {
+  isBlankCanvas?: boolean
   onOpenAssetLibrary: () => void
   onToggleAddNodePanel: () => void
   isAddNodePanelOpen: boolean
@@ -31,6 +32,7 @@ interface LeftToolbarProps {
 }
 
 export function LeftToolbar({
+  isBlankCanvas = false,
   onOpenAssetLibrary,
   onToggleAddNodePanel,
   isAddNodePanelOpen,
@@ -51,6 +53,8 @@ export function LeftToolbar({
   onOpenOnboarding,
   onOpenFileUpload,
 }: LeftToolbarProps) {
+  const showExpandedStudioTools = !isBlankCanvas
+
   return (
     <div
       className="fixed left-3 top-1/2 z-20 flex flex-col items-center rounded-full border p-2"
@@ -64,6 +68,7 @@ export function LeftToolbar({
       {/* 添加节点 (+) 按钮 */}
       <button
         onClick={onToggleAddNodePanel}
+        data-testid="add-node-button"
         className="flex h-10 w-10 items-center justify-center rounded-full transition-all hover:scale-105"
         style={{
           backgroundColor: isAddNodePanelOpen
@@ -87,9 +92,10 @@ export function LeftToolbar({
       {/* 文件上传 */}
       <button
         onClick={onOpenFileUpload}
+        data-testid="toolbar-file-upload"
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{ color: DESIGN_TOKENS.textMuted }}
-        title="上传剧本/文档 (DOCX/PDF/TXT)"
+        title="上传文档/视频素材/项目包"
       >
         <Upload size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>
@@ -113,6 +119,7 @@ export function LeftToolbar({
       {/* 聊天按钮 */}
       <button
         onClick={onToggleChat}
+        data-testid="chat-toggle"
         className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
         style={{
           color: isChatOpen ? DESIGN_TOKENS.accent : DESIGN_TOKENS.textMuted,
@@ -123,143 +130,126 @@ export function LeftToolbar({
         <MessageCircle size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
       </button>
 
-      {/* 分隔线 */}
-      <div
-        className="my-1.5 h-px w-6"
-        style={{ backgroundColor: DESIGN_TOKENS.border }}
-      />
+      {showExpandedStudioTools && (
+        <>
+          {/* 分隔线 */}
+          <div
+            className="my-1.5 h-px w-6"
+            style={{ backgroundColor: DESIGN_TOKENS.border }}
+          />
 
-      {/* 工作流模板 —— 对标 TapNow 克隆 / LibTV 打组保存 */}
-      <button
-        onClick={onOpenTemplates}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="工作流模板（保存/加载）"
-      >
-        <Save size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
+          {/* 工作流模板 —— 对标 TapNow 克隆 / LibTV 打组保存 */}
+          <button
+            onClick={onOpenTemplates}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="工作流模板（保存/加载）"
+          >
+            <Save size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
 
-      {/* 分隔线 */}
-      <div
-        className="my-1.5 h-px w-6"
-        style={{ backgroundColor: DESIGN_TOKENS.border }}
-      />
+          {/* 分隔线 */}
+          <div
+            className="my-1.5 h-px w-6"
+            style={{ backgroundColor: DESIGN_TOKENS.border }}
+          />
 
-      {/* --- 制片层面板工具 --- */}
+          {/* --- 制片层面板工具 --- */}
+          <button
+            onClick={onOpenCharacterView}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="角色三视图生成"
+          >
+            <ImageIcon size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onOpenCinematicParams}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="影视参数控制"
+            data-testid="toolbar-cinematic-params"
+          >
+            <Camera size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onOpenColorGrade}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="色彩分级"
+            data-testid="toolbar-color-grade"
+          >
+            <Palette size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onOpenPanorama}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="720/360 全景预览"
+          >
+            <Globe size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onOpenCrewAgent}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="AI 影视创作剧组 (7 Agent)"
+            data-testid="toolbar-crew-agent"
+          >
+            <Clapperboard size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onOpenReverseStoryboard}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="参考视频分析"
+            data-testid="toolbar-reverse-storyboard"
+          >
+            <Film size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onOpenShotLibrary}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="镜头库 (55 个预设)"
+            data-testid="toolbar-shot-library"
+          >
+            <Crosshair size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onOpenAIScript}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="AI 剧本生成"
+            data-testid="toolbar-ai-script"
+          >
+            <Sparkles size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onOpenOnboarding}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="新手引导"
+            data-testid="toolbar-onboarding"
+          >
+            <MapPin size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onToggleTimeline}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="时间轴编辑"
+            data-testid="toolbar-timeline"
+          >
+            <Film size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
 
-      {/* 角色三视图 */}
-      <button
-        onClick={onOpenCharacterView}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="角色三视图生成"
-      >
-        <ImageIcon size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* 运镜参数 */}
-      <button
-        onClick={onOpenCinematicParams}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="运镜参数控制"
-        data-testid="toolbar-cinematic-params"
-      >
-        <Camera size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* 调色面板 */}
-      <button
-        onClick={onOpenColorGrade}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="色彩分级"
-        data-testid="toolbar-color-grade"
-      >
-        <Palette size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* 全景预𪾢 */}
-      <button
-        onClick={onOpenPanorama}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="720/360 全景预𪾢"
-      >
-        <Globe size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* AI 创作剧组 */}
-      <button
-        onClick={onOpenCrewAgent}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="AI 影视创作剧组 (7 Agent)"
-        data-testid="toolbar-crew-agent"
-      >
-        <Clapperboard size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* 参考视频逆向分镜 */}
-      <button
-        onClick={onOpenReverseStoryboard}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="参考视频逆向分镜"
-        data-testid="toolbar-reverse-storyboard"
-      >
-        <Film size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* 镜头库 */}
-      <button
-        onClick={onOpenShotLibrary}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="镜头库 (55 个预设)"
-        data-testid="toolbar-shot-library"
-      >
-        <Crosshair size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* AI 剧本生成 */}
-      <button
-        onClick={onOpenAIScript}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="AI 剧本生成"
-        data-testid="toolbar-ai-script"
-      >
-        <Sparkles size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* 新手引导 */}
-      <button
-        onClick={onOpenOnboarding}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="新手引导"
-        data-testid="toolbar-onboarding"
-      >
-        <MapPin size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* 时间轴 */}
-      <button
-        onClick={onToggleTimeline}
-        className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
-        style={{ color: DESIGN_TOKENS.textMuted }}
-        title="时间轴编辑"
-        data-testid="toolbar-timeline"
-      >
-        <Film size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
-      </button>
-
-      {/* 分隔线 */}
-      <div
-        className="my-1.5 h-px w-6"
-        style={{ backgroundColor: DESIGN_TOKENS.border }}
-      />
+          <div
+            className="my-1.5 h-px w-6"
+            style={{ backgroundColor: DESIGN_TOKENS.border }}
+          />
+        </>
+      )}
 
       {/* 工作记录 */}
       <button

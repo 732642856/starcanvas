@@ -6,18 +6,19 @@
 // ============================================================================
 "use client";
 
-import supermemory from "@/lib/memory/supermemory";
+import supermemory from "../../../lib/memory/supermemory.ts";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { Node, Edge, Viewport } from "@xyflow/react";
 import type { CanvasNodeData } from "../components/canvas/types";
 import {
   hydrateImageAsset,
   persistImageDataUrl,
-} from "@/lib/assets/localImageStore";
+} from "../../../lib/assets/localImageStore.ts";
+import { hydrateMediaAsset } from "../../../lib/assets/localMediaStore.ts";
 import {
   findRuntimeUrlLeaks,
   sanitizeNodesForPersistence,
-} from "@/lib/storage/sanitizePersistedCanvas";
+} from "../../../lib/storage/sanitizePersistedCanvas.ts";
 
 const DEFAULT_STORAGE_KEY = "startrails_canvas";
 
@@ -51,9 +52,17 @@ const EMPTY_CANVAS_SAVE_GRACE_MS = 1_500;
 // Migrate old base64 data URLs to IndexedDB.
 // ---------------------------------------------------------------------------
 
-async function hydrateImageNodes(
+export async function hydrateCanvasMediaNodes(
   nodes: Node<CanvasNodeData>[],
+  deps: {
+    hydrateImageAssetFn?: typeof hydrateImageAsset;
+    hydrateMediaAssetFn?: typeof hydrateMediaAsset;
+    persistImageDataUrlFn?: typeof persistImageDataUrl;
+  } = {},
 ): Promise<Node<CanvasNodeData>[]> {
+  const hydrateImageAssetForNode = deps.hydrateImageAssetFn ?? hydrateImageAsset;
+  const hydrateMediaAssetForNode = deps.hydrateMediaAssetFn ?? hydrateMediaAsset;
+  const persistImageDataUrlForNode = deps.persistImageDataUrlFn ?? persistImageDataUrl;
   const hydrated = await Promise.all(
     nodes.map(async (node) => {
       const data = node.data;
@@ -64,9 +73,62 @@ async function hydrateImageNodes(
       // Remove deprecated marker
       delete clean._imageStripped;
 
-      // --- Case 1: Modern IDB asset (has assetId + persistence = "indexeddb") ---
+      // --- Case 1a: Modern IDB video asset ---
+      if (
+        clean.nodeKind === "uploaded-video" &&
+        clean.assetId &&
+        clean.persistence === "indexeddb"
+      ) {
+        const objectUrl = await hydrateMediaAssetForNode(clean.assetId);
+        if (objectUrl) {
+          clean.assetUrl = objectUrl;
+          clean.imageUrl = objectUrl;
+          clean.resultUrl = objectUrl;
+          clean.persistence = "indexeddb";
+          delete clean.loadError;
+        } else {
+          clean.assetUrl = undefined;
+          clean.imageUrl = undefined;
+          clean.resultUrl = undefined;
+          clean.persistence = "missing";
+          clean.loadError = "asset-not-found";
+        }
+        return { ...node, data: clean };
+      }
+
+      // --- Case 1a.2: Modern IDB audio asset ---
+      const audioAssetId =
+        typeof (clean as CanvasNodeData & { audioAssetId?: string }).audioAssetId === "string"
+          ? (clean as CanvasNodeData & { audioAssetId?: string }).audioAssetId
+          : typeof clean.shot?.voiceAudioAssetId === "string"
+            ? clean.shot.voiceAudioAssetId
+            : undefined;
+      const isAudioNode =
+        clean.nodeKind?.includes("audio") ||
+        clean.nodeKind?.includes("tts") ||
+        clean.nodeKind === "bgm" ||
+        Boolean(clean.shot?.voiceAudioAssetId);
+      if (isAudioNode && audioAssetId) {
+        const objectUrl = await hydrateMediaAssetForNode(audioAssetId);
+        if (objectUrl) {
+          (clean as CanvasNodeData & { audioUrl?: string; audioAssetId?: string }).audioUrl = objectUrl;
+          if (clean.shot?.voiceAudioAssetId === audioAssetId) {
+            clean.shot = { ...clean.shot, voiceAudioUrl: objectUrl };
+          }
+          delete clean.loadError;
+        } else {
+          (clean as CanvasNodeData & { audioUrl?: string }).audioUrl = undefined;
+          if (clean.shot?.voiceAudioAssetId === audioAssetId) {
+            clean.shot = { ...clean.shot, voiceAudioUrl: undefined };
+          }
+          clean.loadError = "asset-not-found";
+        }
+        return { ...node, data: clean };
+      }
+
+      // --- Case 1b: Modern IDB image asset (has assetId + persistence = "indexeddb") ---
       if (clean.assetId && clean.persistence === "indexeddb") {
-        const objectUrl = await hydrateImageAsset(clean.assetId);
+        const objectUrl = await hydrateImageAssetForNode(clean.assetId);
         if (objectUrl) {
           clean.imageUrl = objectUrl;
           clean.persistence = "indexeddb";
@@ -99,13 +161,14 @@ async function hydrateImageNodes(
         imageUrl.startsWith("data:image")
       ) {
         try {
-          const { assetId, objectUrl } = await persistImageDataUrl(imageUrl, {
+          const { assetId, objectUrl } = await persistImageDataUrlForNode(imageUrl, {
             fileName: clean.fileName,
             width: clean.imageWidth,
             height: clean.imageHeight,
           });
           clean.assetId = assetId;
           clean.imageUrl = objectUrl;
+          clean.generatedImageUrl = imageUrl;
           clean.persistence = "indexeddb";
           clean.source = clean.source ?? "upload";
           console.log(
@@ -319,7 +382,7 @@ export function useCanvasPersistence({
 
         // Hydrate image nodes from IndexedDB
         const hydratedNodes = recoverCanvasVisibilityAndLayout(
-          await hydrateImageNodes(migratedData.nodes),
+          await hydrateCanvasMediaNodes(migratedData.nodes),
         );
 
         if (cancelled) return;

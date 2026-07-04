@@ -15,8 +15,7 @@ export type SlashCommandId =
   | "pose-reference"          // 姿势参考
   | "focus-edit"              // 焦点编辑
   | "remove-bg"               // 去背景
-  | "upscale"                 // 高清放大
-  | "talking-photo"           // 说话照片
+  | "upscale"                 // 放大方案
   // ── 视频创作 ──
   | "image-to-video"          // 图生视频
   | "chain-video"             // 链式视频生成
@@ -29,7 +28,6 @@ export type SlashCommandId =
   | "compose-all"             // 合成全集
   | "export-jianying"         // 导出剪映草稿
   | "export-composition"
-  | "reverse-prompt"          // 图片反推提示词
   | "generate-with-pose";     // 姿态参考生图
 
 export type SlashCommandTargetType = "text" | "shot" | "image" | "video" | "canvas";
@@ -146,21 +144,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   {
     id: "upscale",
-    label: "高清放大",
-    description: "AI超分辨率提升画质（2K/4K）",
+    label: "放大方案",
+    description: "记录 2x/4x 超分、降噪和保细节参数",
     targets: ["image", "video"],
-  },
-  {
-    id: "talking-photo",
-    label: "说话照片",
-    description: "让静态照片开口说话",
-    targets: ["image"],
-  },
-  {
-    id: "reverse-prompt",
-    label: "反推提示词",
-    description: "从图片反推 AI 生图提示词",
-    targets: ["image"],
   },
   {
     id: "generate-with-pose",

@@ -1,4 +1,6 @@
 import { persistImageDataUrl } from "../../../lib/assets/localImageStore.ts"
+import { getRuntimeProviderState } from "../../../lib/ai/client.ts"
+import { resolveRuntimeProviderTaskContract } from "../../../lib/ai/providerTaskRouting.ts"
 
 export const IMAGE_GENERATION_CLIENT_TIMEOUT_MS = 150_000
 
@@ -136,6 +138,17 @@ export async function generateImageFromPrompt(input: {
   timeoutMs?: number
   sourceImage?: string | string[] // data URL(s) for image-to-image / reference image input
 }) {
+  const runtimeProvider = await getRuntimeProviderState()
+  const requestedModel = input.model || "gpt-image-2"
+  const taskContract = resolveRuntimeProviderTaskContract("image", runtimeProvider, requestedModel)
+  if (!taskContract.supported) {
+    throw new ImageGenerationError({
+      message: taskContract.reason || "当前图片模型与 Provider 路由不兼容。",
+      code: "UNSUPPORTED_PROVIDER_CAPABILITY",
+      retryable: false,
+      detail: `model=${requestedModel}, provider=${runtimeProvider.overrides?.providerId || runtimeProvider.usageProvider}`,
+    })
+  }
   const controller = new AbortController()
   const timeoutMs = input.timeoutMs ?? IMAGE_GENERATION_CLIENT_TIMEOUT_MS
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -148,9 +161,10 @@ export async function generateImageFromPrompt(input: {
       signal: controller.signal,
       body: JSON.stringify({
         prompt: input.prompt,
-        model: input.model || "gpt-image-2",
+        model: requestedModel,
         size: input.size || "1792x1024",
         requestId: input.requestId,
+        ...(runtimeProvider.overrides ? { _providerOverrides: runtimeProvider.overrides } : {}),
         ...(input.sourceImage ? { sourceImage: input.sourceImage } : {}),
       }),
     })

@@ -22,7 +22,7 @@ import type {
 import {
   getPersistedFlag,
   setPersistedFlag,
-  persistState,
+  persistStorageWrapper,
   clearPersistedState,
 } from '../../../lib/localStoragePersist.ts'
 
@@ -138,7 +138,27 @@ interface CanvasStore {
 
 // Shared helper for persisting asset library
 function persistAssets(assets: AssetItem[]): void {
-  persistState({ key: ASSETS_STORAGE_KEY, version: 1 }, assets)
+  persistStorageWrapper({ key: ASSETS_STORAGE_KEY, version: 1 }, { assets })
+}
+
+function loadAssets(): AssetItem[] {
+  try {
+    if (typeof window === 'undefined') return []
+    const raw = localStorage.getItem(ASSETS_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+
+    // Backward compatibility: older builds wrote the raw array directly.
+    if (Array.isArray(parsed)) return parsed
+
+    if (parsed?.version === 1 && Array.isArray(parsed.assets)) {
+      return parsed.assets
+    }
+
+    return []
+  } catch {
+    return []
+  }
 }
 
 // Initial asset state — load once at module level
@@ -172,7 +192,7 @@ export const useCanvasStore = create<CanvasStore>()(
         isOpen: false,
         scope: 'personal',
         query: '',
-        assets: [],
+        assets: loadAssets(),
       },
       openAssetLibrary: () => set((state) => ({
         assetLibrary: { ...state.assetLibrary, isOpen: true }

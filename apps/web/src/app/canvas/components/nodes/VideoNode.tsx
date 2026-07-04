@@ -242,13 +242,32 @@ const VideoNode = memo(function VideoNode({ id, data, selected, onRetry, onUpsca
               </button>
             )}
             {/* Play/Pause controls bar */}
-            <div className="absolute bottom-0 left-0 right-0 px-3 py-1.5 bg-gradient-to-t from-black/70 to-transparent">
+            <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-3 py-1.5 bg-gradient-to-t from-black/70 to-transparent">
               <button
                 onClick={togglePlay}
                 className="text-white/80 hover:text-white transition-colors"
               >
                 {isPlaying ? <Pause size={14} /> : <Play size={14} />}
               </button>
+              {onUpscale && runStatus === "succeeded" && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onUpscale(id);
+                  }}
+                  className="nodrag inline-flex items-center gap-1 rounded-md border px-2 py-0.5
+                             text-[10px] font-medium transition-colors hover:bg-white/10"
+                  style={{
+                    borderColor: "rgba(168,85,247,0.35)",
+                    backgroundColor: "rgba(168,85,247,0.12)",
+                    color: "#ddd6fe",
+                  }}
+                  title="图片/帧 HD 高清增强"
+                >
+                  <Zap size={11} />
+                  HD
+                </button>
+              )}
             </div>
             {/* Subtitle overlay */}
             {hasSubtitles && currentSubtitle && isPlaying && (
@@ -335,25 +354,6 @@ const VideoNode = memo(function VideoNode({ id, data, selected, onRetry, onUpsca
               >
                 <RotateCcw size={12} />
                 重新生成
-              </button>
-            )}
-            {onUpscale && runMeta.runStatus === "succeeded" && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onUpscale(id);
-                }}
-                className="nodrag mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
-                           text-xs font-medium border transition-colors"
-                style={{
-                  borderColor: "rgba(168,85,247,0.3)",
-                  backgroundColor: "rgba(168,85,247,0.12)",
-                  color: "#c4b5fd",
-                }}
-                title="视频 HD 高清增强"
-              >
-                <Zap size={12} />
-                HD 增强
               </button>
             )}
           </div>
