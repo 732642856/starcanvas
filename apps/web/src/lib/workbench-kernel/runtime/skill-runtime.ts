@@ -12,6 +12,7 @@ export type SkillRuntimeErrorCode =
   | "EXECUTOR_NOT_FOUND"
   | "SKILL_EXECUTION_FAILED"
   | "INVALID_EXECUTOR_RESULT"
+  | (string & {})
 
 export class SkillRuntimeError extends Error {
   readonly code: SkillRuntimeErrorCode
@@ -137,13 +138,21 @@ export class SkillRuntime {
       })
       return result
     } catch (error) {
+      const structuredError = error !== null && typeof error === "object"
+        && "skillError" in error
+        && error.skillError !== null
+        && typeof error.skillError === "object"
+        ? error.skillError as SkillError
+        : undefined
       const runtimeError = error instanceof SkillRuntimeError
         ? error
-        : executionError(
-          "SKILL_EXECUTION_FAILED",
-          error instanceof Error ? error.message : "Skill execution failed",
-          runId,
-        )
+        : structuredError !== undefined
+          ? new SkillRuntimeError(structuredError.code, structuredClone(structuredError), runId)
+          : executionError(
+            "SKILL_EXECUTION_FAILED",
+            error instanceof Error ? error.message : "Skill execution failed",
+            runId,
+          )
       await this.failRun(runId, runtimeError.skillError)
       throw runtimeError
     }

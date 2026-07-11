@@ -14,8 +14,8 @@ export interface SkillDefinition {
   name: string
   layer: SkillLayer
   role: SkillRole
-  domains: string[]
-  intents: string[]
+  domains: readonly string[]
+  intents: readonly string[]
   inputSchema: string
   outputSchema: string
   execution: {
@@ -24,13 +24,13 @@ export interface SkillDefinition {
   }
   routing: {
     priority: number
-    requiredContext: string[]
-    conflictsWith?: string[]
-    composesWith?: string[]
+    requiredContext: readonly string[]
+    conflictsWith?: readonly string[]
+    composesWith?: readonly string[]
   }
   quality: {
-    contractTests: string[]
-    examples: string[]
+    contractTests: readonly string[]
+    examples: readonly string[]
     regressionSet: string
   }
 }
