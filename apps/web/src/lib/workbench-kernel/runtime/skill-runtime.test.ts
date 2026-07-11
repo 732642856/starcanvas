@@ -145,6 +145,28 @@ test("执行器抛错时转换为 execution 错误并记录失败", async () => 
   assert.equal((await runs.getRun("run-1"))?.status, "failed")
 })
 
+test("执行器结构化 SkillError 被 Runtime 原样保留", async () => {
+  const { runtime, runs } = runtimeWith(async () => {
+    throw Object.assign(new Error("content required"), {
+      skillError: {
+        code: "FILM_CREW_CONTENT_REQUIRED",
+        category: "input" as const,
+        message: "content required",
+        retryable: false,
+      },
+    })
+  })
+
+  const error = await assertRuntimeError(
+    () => runtime.execute(request()),
+    "FILM_CREW_CONTENT_REQUIRED",
+  )
+  assert.equal(error.skillError.category, "input")
+  const failure = (await runs.getRun("run-1"))?.events.at(-1)
+  assert.equal(failure?.type, "run.failed")
+  assert.equal(failure?.type === "run.failed" ? failure.error.code : undefined, "FILM_CREW_CONTENT_REQUIRED")
+})
+
 test("执行器返回错误身份字段时拒绝保存结果", async () => {
   const { runtime, runs } = runtimeWith(async ({ runId }) => completedResult(runId, {
     runId: "wrong-run",
