@@ -405,6 +405,15 @@ export type SketchStroke = {
   points: SketchPoint[]
 }
 
+export type CanvasCrewAgentStatus = {
+  roleId: "director" | "storyboardArtist" | "cinematographer" | "productionDesigner" | "promptEngineer" | "writer" | "router"
+  status: "idle" | "running" | "done" | "error"
+  output?: string
+  error?: string
+  startedAt?: number
+  completedAt?: number
+}
+
 export type CanvasNodeData = {
   label?: ReactNode
   title?: string
@@ -455,6 +464,10 @@ export type CanvasNodeData = {
   agentOutput?: string
   agentStatus?: "idle" | "running" | "done" | "error"
   agentPhase?: string
+  crewStatuses?: CanvasCrewAgentStatus[]
+  executionTrace?: string[]
+  activeRunId?: string
+  lastSuccessfulRunId?: string
   runtimeMeta?: RuntimeMeta
   /** @deprecated 迁移到 runtimeMeta.childNodeIds */
   _childNodeIds?: string[]

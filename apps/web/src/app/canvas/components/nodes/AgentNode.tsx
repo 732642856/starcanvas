@@ -107,12 +107,12 @@ const AgentNode = memo(function AgentNode({
   const [draftContent, setDraftContent] = useState(content);
 
   // State from node data
-  const agentStatus = (data as Record<string, unknown>).agentStatus as string | undefined;
-  const agentOutput = (data as Record<string, unknown>).agentOutput as string | undefined;
-  const childNodeIds = (data as Record<string, unknown>)._childNodeIds as string[] | undefined;
-  const batchProgress = (data as Record<string, unknown>)._batchProgress as string | undefined;
-  const crewStatuses = (data as Record<string, unknown>)._crewStatuses as CrewAgentStatus[] | undefined;
-  const executionTrace = (data as Record<string, unknown>)._executionTrace as string[] | undefined;
+  const agentStatus = data.agentStatus;
+  const agentOutput = data.agentOutput;
+  const childNodeIds = data._childNodeIds;
+  const batchProgress = data._batchProgress;
+  const crewStatuses: CrewAgentStatus[] | undefined = data.crewStatuses;
+  const executionTrace = data.executionTrace;
 
   // Operation mode
   const [mode, setMode] = useState<AgentOperationMode>("max");
