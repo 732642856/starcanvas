@@ -19,6 +19,15 @@ import {
 } from "../utils/nodeRunMeta"
 import { createRunHistoryItem } from "../utils/node-run-history"
 
+function appendAIUsageRecord(record: Omit<AIUsageRecord, "id" | "currency" | "finishedAt">) {
+  useAIUsageStore.getState().addUsageRecord({
+    ...record,
+    id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    currency: "USD",
+    finishedAt: new Date().toISOString(),
+  })
+}
+
 // ---- 内部类型：用于上游数据解析 ----
 interface ParsedSceneEntry {
   sceneId?: string
@@ -72,11 +81,25 @@ import { getDefaultModel, getDefaultImageModel, getLocalProviderOverrides } from
 import { buildRunRequest } from "@/lib/ai/run-request"
 import { normalizeGenerationError, formatGenerationErrorForDisplay } from "@/lib/ai/normalizeGenerationError"
 import { persistImageDataUrl } from "@/lib/assets/localImageStore"
-import { generateVideoFromImage, VideoGenerationError, videoResultToNodeData, type VideoGenBackend } from "../utils/videoGenerationService"
+import { buildVideoGenerationInput, generateVideoFromImage, VideoGenerationError, videoResultToNodeData, type VideoGenBackend } from "../utils/videoGenerationService"
+import { resolveProviderReadableVideoSourceImage } from "../utils/videoSourceImage"
 import { generateImageFromPrompt } from "../utils/imageGeneration"
+import { requestImageUpscale } from "../utils/upscaleService"
+import { applyFocusEdit } from "../utils/focusEditService"
+import { requestTalkingPhoto } from "../utils/talkingPhotoService"
+import { reverseImagePrompt } from "../utils/reversePromptService"
+import { createReversePromptCanvasArtifacts } from "../utils/reversePromptCanvasArtifacts"
+import { analyzeRemix, generateCameraControl, generatePoster } from "../utils/newWorkflowServices"
 import { generateTts, ttsResultToNodeData, TtsError, type TtsInput, type TtsProgressCallback } from "../utils/ttsService"
 import { composeVideo } from "../utils/videoCompositionBrowser"
 import type { VideoClipInput, AudioTrackInput, SubtitleInput } from "../utils/videoCompositionBrowser"
+import { importStoryboardDraftToCanvas } from "@/features/storyboard/importDraftToCanvas"
+import { buildStoryboardDraftFromVideoAnalysis } from "@/features/storyboard/videoAnalysisToStoryboardDraft"
+import { orchestrateCrew } from "@/lib/agents"
+import { mapRunToAgentNodePatch } from "@/lib/workbench-kernel/adapters/canvas/agent-node-run-state"
+import { SkillRuntimeError } from "@/lib/workbench-kernel/runtime/skill-runtime"
+import { createAgentSkillRuntime } from "./createAgentSkillRuntime"
+import { imageUrlToBase64 } from "../utils/imagePromptReverser"
 
 interface RunContext {
   runId: string
@@ -340,8 +363,9 @@ function resolveLocalModelOverrides(): { textModel?: string; imageModel?: string
   }
 }
 
-export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEvent) => void }) {
+export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEvent) => void; projectId?: string }) {
   const onRunEvent = options?.onRunEvent
+  const projectId = options?.projectId ?? "local-canvas"
   const { getNodes, setNodes, setEdges, getEdges } = useReactFlow()
   const [state, setState] = useState<WorkflowRunnerState>({
     isRunning: false,
@@ -1891,20 +1915,132 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
   const runAgentFromCanvas = useCallback(async (nodeId: string) => {
     const node = getNodes().find((n) => n.id === nodeId)
     if (!node) return
-    const content = (node.data as Record<string, unknown>)?.content as string ?? ""
+    const content = typeof node.data.content === "string" ? node.data.content : ""
     if (!content.trim()) {
-      setNodes((nds) =>
-        nds.map((n) =>
-          n.id === nodeId
-            ? { ...n, data: { ...n.data, agentStatus: "error" as const, agentOutput: "请先输入剧本内容" } }
-            : n,
-        ),
-      )
+      updateNodeData(nodeId, { agentStatus: "error", agentOutput: "请先输入剧本内容" })
       return
     }
-    // Execute via runNode which handles history/stats/error/usage
-    await runNode(nodeId)
-  }, [getNodes, setNodes, runNode])
+
+    const runId = crypto.randomUUID()
+    const historyInput = buildHistoryInputFromNode(node, getNodes(), getEdges())
+    const agentSkillRuntime = createAgentSkillRuntime({
+      orchestrate: orchestrateCrew,
+      createRunId: () => runId,
+    })
+    updateNodeData(nodeId, {
+      agentStatus: "running",
+      agentOutput: "导演组执行中",
+      activeRunId: runId,
+    })
+    const startedAt = new Date().toISOString()
+    setState((prev) => ({
+      ...prev,
+      isRunning: true,
+      currentStep: "导演组执行中",
+      stepStatuses: { ...prev.stepStatuses, [nodeId]: "running" },
+    }))
+    onRunEvent?.({
+      type: "run-started",
+      runId,
+      startedAt,
+      nodes: [{
+        nodeId,
+        nodeType: node.type ?? "agent",
+        ...(typeof node.data.title === "string" ? { title: node.data.title } : {}),
+      }],
+      mode: "film-crew",
+    })
+    onRunEvent?.({ type: "node-started", runId, nodeId, startedAt, inputSummary: content.slice(0, 100) })
+
+    try {
+      const result = await agentSkillRuntime.runtime.execute({
+        protocolVersion: "1.0",
+        requestId: crypto.randomUUID(),
+        projectId,
+        workspaceId: "general",
+        sourceNodeId: nodeId,
+        skillSelector: { mode: "explicit", id: "film.crew.orchestrator", version: "1.0.0" },
+        intent: { type: "film.crew.run", goal: "分析并处理画布中的影视任务" },
+        inputs: { content },
+        execution: { mode: "standard", reviewPolicy: "none" },
+        requestedOutputs: ["analysis"],
+      })
+      updateNodeData(nodeId, mapRunToAgentNodePatch({
+        runId: result.runId,
+        status: result.status,
+        summary: result.summary,
+        data: result.data as { agentStatuses?: import("@/lib/agents").CrewAgentStatus[]; executionTrace?: string[] } | undefined,
+      }))
+      const finishedAt = new Date().toISOString()
+      useRunHistoryStore.getState().append(createRunHistoryItem({
+        runId,
+        nodeId,
+        nodeType: node.type ?? "agent",
+        status: "succeeded",
+        input: historyInput,
+        output: { text: result.summary },
+        message: "导演组执行成功",
+        startedAt,
+        finishedAt,
+        source: "manual",
+      }))
+      appendAIUsageRecord({
+        nodeId,
+        runId,
+        provider: "film-crew",
+        model: "film-crew-orchestrator",
+        taskType: "text",
+        startedAt,
+        status: "success",
+      })
+      setState((prev) => ({
+        ...prev,
+        isRunning: false,
+        currentStep: null,
+        stepStatuses: { ...prev.stepStatuses, [nodeId]: "done" },
+      }))
+      const endedAt = new Date().toISOString()
+      onRunEvent?.({ type: "node-succeeded", runId, nodeId, endedAt, outputSummary: result.summary })
+      onRunEvent?.({ type: "run-finished", runId, endedAt, status: "success" })
+    } catch (error) {
+      const message = error instanceof SkillRuntimeError
+        ? error.skillError.message
+        : error instanceof Error ? error.message : "导演组执行失败"
+      updateNodeData(nodeId, {
+        agentStatus: "error",
+        agentOutput: message,
+        activeRunId: undefined,
+        runMeta: {
+          runId,
+          runStatus: "failed",
+          message,
+          error: message,
+        },
+      })
+      useRunHistoryStore.getState().append(createRunHistoryItem({
+        runId,
+        nodeId,
+        nodeType: node.type ?? "agent",
+        status: "failed",
+        input: historyInput,
+        error: message,
+        message: "导演组执行失败",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        source: "manual",
+      }))
+      setState((prev) => ({
+        ...prev,
+        isRunning: false,
+        currentStep: null,
+        error: message,
+        stepStatuses: { ...prev.stepStatuses, [nodeId]: "error" },
+      }))
+      const endedAt = new Date().toISOString()
+      onRunEvent?.({ type: "node-failed", runId, nodeId, endedAt, error: message })
+      onRunEvent?.({ type: "run-finished", runId, endedAt, status: "failed", error: message })
+    }
+  }, [getEdges, getNodes, onRunEvent, projectId, updateNodeData])
 
   // ==========================================================================
   // P2-2: RUN EXECUTION PLAN — 级联执行
