@@ -11,7 +11,7 @@
     "test": "NODE_OPTIONS='' node --test --experimental-strip-types 'src/**/*.test.ts'",
     "test:e2e": "npx playwright test --config=playwright.config.ts",
     "test:e2e:smoke": "npx playwright test --config=playwright.config.ts e2e/core-workflow-smoke.spec.ts",
-    "test:e2e:smoke:prod": "E2E_SERVER=prod npx playwright test --config=playwright.config.ts e2e/core-workflow-smoke.spec.ts",
+    "test:e2e:smoke:prod": "E2E_SERVER=prod STARCANVAS_E2E_DISABLE_VIDEO=1 npx playwright test --config=playwright.config.ts e2e/core-workflow-smoke.spec.ts",
     "test:e2e:storyboard": "npx playwright test --config=playwright.config.ts e2e/storyboard-direct-only.spec.ts",
     "test:vitest": "vitest run",
     "test:vitest:watch": "vitest",

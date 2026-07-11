@@ -4632,6 +4632,7 @@ function StarCanvasInner({
 
 
   const workflowRunner = useWorkflowRunner({
+    projectId,
     onRunEvent: useCallback((event: WorkflowRunEvent) => {
       // 新 run 开始时清空旧事件
       if (event.type === "run-started") {
