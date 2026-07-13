@@ -19,6 +19,7 @@ import {
 } from "../utils/nodeRunMeta"
 import { createRunHistoryItem } from "../utils/node-run-history"
 
+// P1: 轻量 AI 用量记录辅助（与 runNode 内联逻辑解耦，供导演组 runtime 路径复用）
 function appendAIUsageRecord(record: Omit<AIUsageRecord, "id" | "currency" | "finishedAt">) {
   useAIUsageStore.getState().addUsageRecord({
     ...record,
@@ -81,25 +82,15 @@ import { getDefaultModel, getDefaultImageModel, getLocalProviderOverrides } from
 import { buildRunRequest } from "@/lib/ai/run-request"
 import { normalizeGenerationError, formatGenerationErrorForDisplay } from "@/lib/ai/normalizeGenerationError"
 import { persistImageDataUrl } from "@/lib/assets/localImageStore"
-import { buildVideoGenerationInput, generateVideoFromImage, VideoGenerationError, videoResultToNodeData, type VideoGenBackend } from "../utils/videoGenerationService"
-import { resolveProviderReadableVideoSourceImage } from "../utils/videoSourceImage"
+import { generateVideoFromImage, VideoGenerationError, videoResultToNodeData, type VideoGenBackend } from "../utils/videoGenerationService"
 import { generateImageFromPrompt } from "../utils/imageGeneration"
-import { requestImageUpscale } from "../utils/upscaleService"
-import { applyFocusEdit } from "../utils/focusEditService"
-import { requestTalkingPhoto } from "../utils/talkingPhotoService"
-import { reverseImagePrompt } from "../utils/reversePromptService"
-import { createReversePromptCanvasArtifacts } from "../utils/reversePromptCanvasArtifacts"
-import { analyzeRemix, generateCameraControl, generatePoster } from "../utils/newWorkflowServices"
 import { generateTts, ttsResultToNodeData, TtsError, type TtsInput, type TtsProgressCallback } from "../utils/ttsService"
 import { composeVideo } from "../utils/videoCompositionBrowser"
 import type { VideoClipInput, AudioTrackInput, SubtitleInput } from "../utils/videoCompositionBrowser"
-import { importStoryboardDraftToCanvas } from "@/features/storyboard/importDraftToCanvas"
-import { buildStoryboardDraftFromVideoAnalysis } from "@/features/storyboard/videoAnalysisToStoryboardDraft"
 import { orchestrateCrew } from "@/lib/agents"
 import { mapRunToAgentNodePatch } from "@/lib/workbench-kernel/adapters/canvas/agent-node-run-state"
 import { SkillRuntimeError } from "@/lib/workbench-kernel/runtime/skill-runtime"
 import { createAgentSkillRuntime } from "./createAgentSkillRuntime"
-import { imageUrlToBase64 } from "../utils/imagePromptReverser"
 
 interface RunContext {
   runId: string
@@ -1912,6 +1903,11 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
   // P1-7: RUN AGENT FROM CANVAS — AgentNode 运行的公开入口
   // ==========================================================================
 
+  // ==========================================================================
+  // P1-7: RUN AGENT FROM CANVAS — AgentNode 运行入口，路由到共享 SkillRuntime
+  // 导演组（film.crew.orchestrator）作为已注册 Skill 经 Runtime 执行。
+  // 运行历史 / AI 用量 / WorkflowRunEvent 全部保留。
+  // ==========================================================================
   const runAgentFromCanvas = useCallback(async (nodeId: string) => {
     const node = getNodes().find((n) => n.id === nodeId)
     if (!node) return
