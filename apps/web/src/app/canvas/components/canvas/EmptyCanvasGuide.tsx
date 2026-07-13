@@ -12,19 +12,23 @@ import { DESIGN_TOKENS } from "../../styles/designSystem"
 interface EmptyCanvasGuideProps {
   onCreateTextNode?: () => void
   onImportScript?: () => void
+  onImportReferenceVideo?: () => void
   onUploadImage: () => void
   chatOpen?: boolean
   chatPanelWidth?: number
   leftToolbarWidth?: number
+  entryMode?: "blank" | "storyboard" | "video-production"
 }
 
 export function EmptyCanvasGuide({
   onCreateTextNode,
   onImportScript,
+  onImportReferenceVideo,
   onUploadImage,
   chatOpen = false,
   chatPanelWidth = 400,
   leftToolbarWidth = 88,
+  entryMode = "blank",
 }: EmptyCanvasGuideProps) {
   const [mounted, setMounted] = useState(false)
 
@@ -37,6 +41,9 @@ export function EmptyCanvasGuide({
     { icon: FileText, label: "导入剧本 / AI 分析", desc: "粘贴或上传剧本文档，自动进入 Shot 拆分与 Bible 设定", onClick: onImportScript, testId: "empty-guide-import-script" },
     { icon: Sparkles, label: "空白写作", desc: "从一句话灵感开始创作", onClick: onCreateTextNode, testId: "empty-guide-create-text" },
     { icon: Image, label: "上传参考图", desc: "把图片放进画布，用于角色、风格、场景参考", onClick: onUploadImage, testId: "empty-guide-upload-image" },
+    ...(entryMode === "video-production" && onImportReferenceVideo
+      ? [{ icon: Image, label: "导入参考视频", desc: "从参考视频拆解镜头、节奏与画面语言", onClick: onImportReferenceVideo, testId: "empty-guide-import-reference-video" }]
+      : []),
   ]
 
   return (
