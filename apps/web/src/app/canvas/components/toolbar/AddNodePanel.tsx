@@ -73,6 +73,7 @@ interface AddNodeCategory {
 interface AddNodePanelProps {
   isOpen: boolean
   onClose: () => void
+  entryMode?: "blank" | "storyboard" | "video-production"
   onAddNode: (nodeType: "content" | "image" | "workflow" | "agent" | "sketch", nodeKind: CanvasNodeKind) => void
   onUploadImage: () => void
   onUploadDocument?: () => void
@@ -301,6 +302,7 @@ const CATEGORIES: AddNodeCategory[] = [
 export function AddNodePanel({
   isOpen,
   onClose,
+  entryMode: _entryMode,
   onAddNode,
   onUploadImage,
   onUploadDocument,

@@ -11,6 +11,8 @@ import supermemory from "@/lib/memory/supermemory"
 // Types
 // ============================================================================
 
+export type ProjectEntryMode = "blank" | "storyboard" | "video-production"
+
 export interface ProjectMeta {
   id: string
   name: string
