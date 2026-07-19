@@ -20,6 +20,10 @@ import {
   getTaskReadinessPrimaryBlockingReason,
   truncateReadinessHint,
 } from "@/lib/ai/taskReadiness";
+import {
+  loadStoredProviderSmokeResults,
+  type StoredProviderSmokeResult,
+} from "@/lib/ai/providerSmokeResult";
 import { loadProviderSettings, openProviderSettings } from "@/lib/ai/user-settings";
 
 // ============================================================================
@@ -208,6 +212,7 @@ export function ProductionRunQueuePanel({
 }: ProductionRunQueuePanelProps) {
   const displayQueue = projectProductionRunQueueRuntimeState(queue, execState);
   const [providerHealthSummary, setProviderHealthSummary] = useState<ProviderHealthSummary | null>(null);
+  const [storedProviderSmokeResults, setStoredProviderSmokeResults] = useState<Partial<Record<"text" | "image" | "video", StoredProviderSmokeResult>>>({});
   const statusLabel = STATUS_LABEL[displayQueue.status] ?? displayQueue.status;
   const statusColor = STATUS_COLOR[displayQueue.status] ?? PANEL.accent;
   const hasContent = displayQueue.tasks.length > 0 || displayQueue.blockedActions.length > 0;
@@ -230,8 +235,9 @@ export function ProductionRunQueuePanel({
     () => buildTaskReadinessSummary({
       providerHealthSummary,
       providerSmokeReport: null,
+      storedProviderSmokeResults,
     }),
-    [providerHealthSummary],
+    [providerHealthSummary, storedProviderSmokeResults],
   );
   const productionTaskReadiness = taskReadinessSummary.items.find((item) => item.taskId === "production-run");
   const providerBlockingCount = productionProviderItems.filter((item) => item.status === "blocked").length;
@@ -286,20 +292,12 @@ export function ProductionRunQueuePanel({
       if (cancelled) return;
 
       const settings = loadProviderSettings();
-      const serverWithSessionKey = serverConfig
-        ? {
-            ...serverConfig,
-            baseUrl:
-              settings.useLocalOverride && settings.apiBaseUrl
-                ? settings.apiBaseUrl
-                : serverConfig.baseUrl,
-            hasApiKey: Boolean(serverConfig.hasApiKey || settings.sessionApiKey.trim()),
-          }
-        : null;
+      setStoredProviderSmokeResults(loadStoredProviderSmokeResults());
 
       setProviderHealthSummary(
         buildProviderHealthSummary({
-          serverConfig: serverWithSessionKey,
+          serverConfig,
+          apiBaseUrl: settings.apiBaseUrl,
           sessionApiKey: settings.sessionApiKey,
           useLocalOverride: settings.useLocalOverride,
           useMock: settings.useMock,
@@ -690,6 +688,11 @@ export function ProductionRunQueuePanel({
                       }}
                     >
                       {task.title || "—"} · {TASK_ACTION_LABEL[task.action] ?? task.action}
+                      {task.detail ? (
+                        <span data-testid="production-run-queue-task-detail" className="ml-1 text-[10px]" style={{ color: PANEL.textMuted }}>
+                          {task.detail}
+                        </span>
+                      ) : null}
                     </span>
                     {/* ── Failure reason (Step 4) ── */}
                     {isFailed && liveError && (

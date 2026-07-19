@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 
 /**
  * Full AI pipeline E2E test: image-result → video-generation via Vidu API.
@@ -16,6 +16,10 @@ type StoredCanvas = {
   savedAt: number
   nodes: Array<Record<string, any>>
   edges: Array<Record<string, any>>
+}
+
+type StarCanvasE2EState = {
+  getNodeData?: (nodeId: string) => Record<string, unknown> | undefined
 }
 
 const MOCK_IMAGE_URL =
@@ -65,6 +69,21 @@ function createStoredCanvas(): StoredCanvas {
           runMeta: { status: "idle", message: "等待运行" },
           duration: "5s",
           model: "Vidu",
+          shot: {
+            id: "e2e-shot",
+            order: 1,
+            title: "角色参考动效预演",
+            description: "赵珩回身，镜头缓慢推进。",
+            visualPrompt: "period palace interior, restrained dramatic movement",
+            characterIdentities: [
+              {
+                id: "e2e-prince",
+                name: "赵珩",
+                frontViewUrl: "https://e2e.invalid/prince-front.png",
+                sideViewUrl: "https://e2e.invalid/prince-side.png",
+              },
+            ],
+          },
         },
       },
     ],
@@ -79,6 +98,19 @@ function createStoredCanvas(): StoredCanvas {
   }
 }
 
+function createUnreadableReferenceCanvas(): StoredCanvas {
+  const canvas = createStoredCanvas()
+  const videoNode = canvas.nodes.find((node) => node.id === "e2e-video-generation")
+  if (videoNode?.data?.shot?.characterIdentities?.[0]) {
+    videoNode.data.shot.characterIdentities[0] = {
+      ...videoNode.data.shot.characterIdentities[0],
+      frontViewUrl: "blob:http://localhost/unrestored-prince-front",
+      sideViewUrl: undefined,
+    }
+  }
+  return canvas
+}
+
 test("full pipeline: image-result → video-generation → Vidu SSE → done", async ({ page }) => {
   const videoRequests: Array<any> = []
 
@@ -88,7 +120,7 @@ test("full pipeline: image-result → video-generation → Vidu SSE → done", a
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        baseUrl: "https://e2e.invalid/v1",
+        baseUrl: "https://dashscope/v1",
         hasApiKey: true,
         defaultModel: "e2e-text-model",
         defaultImageModel: "e2e-image-model",
@@ -97,9 +129,21 @@ test("full pipeline: image-result → video-generation → Vidu SSE → done", a
     })
   })
 
+  let viduConnectionAttempts = 0
+
   // ── Mock Vidu video generation (SSE) ──
   await page.route("**/api/ai/generate-video-vidu", async (route) => {
     videoRequests.push(route.request().postDataJSON())
+    viduConnectionAttempts += 1
+
+    if (viduConnectionAttempts === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: "event: progress\ndata: " + JSON.stringify({ stage: "queued", percent: 10, message: "任务已创建，连接中断" }) + "\n\n",
+      })
+      return
+    }
 
     const sseBody = [
       "event: progress\ndata: " + JSON.stringify({ stage: "queued", percent: 5, message: "正在提交视频生成任务到 Vidu..." }) + "\n\n",
@@ -116,6 +160,13 @@ test("full pipeline: image-result → video-generation → Vidu SSE → done", a
         "Connection": "keep-alive",
       },
       body: sseBody,
+    })
+  })
+  await page.route(MOCK_VIDEO_URL, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "video/mp4",
+      body: Buffer.from("fake-mp4-binary"),
     })
   })
 
@@ -146,11 +197,15 @@ test("full pipeline: image-result → video-generation → Vidu SSE → done", a
   await page.waitForTimeout(2000)
 
   // ── 5) Verify Vidu API was called with correct payload ──
-  expect(videoRequests, "Vidu API should be called").toHaveLength(1)
+  expect(videoRequests, "Vidu API should reconnect once after an incomplete SSE response").toHaveLength(2)
   const req = videoRequests[0]
-  expect(req.mode).toBe("i2v")
-  expect(req.imageUrl).toBe(MOCK_IMAGE_URL)
-  expect(req.imageUrl.startsWith("blob:")).toBe(false)
+  expect(videoRequests[1].requestId).toBe(req.requestId)
+  expect(req.mode).toBe("r2v")
+  expect(req.referenceImageUrls).toEqual([
+    "https://e2e.invalid/prince-front.png",
+    "https://e2e.invalid/prince-side.png",
+  ])
+  expect(req).not.toHaveProperty("imageUrl")
   expect(req.prompt).toBeTruthy()
   expect(req.duration).toBe(5)
   expect(req._providerOverrides?.sessionApiKey).toBe("sk-e2e-dashscope-session")
@@ -162,4 +217,68 @@ test("full pipeline: image-result → video-generation → Vidu SSE → done", a
   await expect(page.getByText("Workflow Run")).toBeVisible({ timeout: 15_000 })
   await expect(page.getByText(/成功/)).toBeVisible()
   await expect(page.getByText("1/1 完成")).toBeVisible()
+  await expect
+    .poll(async () => {
+      const nodeData = await readNodeData(page, "e2e-video-generation")
+      return {
+        hasAssetId: Boolean(nodeData?.assetId),
+        hasBlobResultUrl:
+          typeof nodeData?.resultUrl === "string" && nodeData.resultUrl.startsWith("blob:"),
+        persistence: nodeData?.persistence,
+      }
+    }, {
+      timeout: 15_000,
+      message: "generated video should be recovered into a local asset-backed blob url",
+    })
+    .toMatchObject({
+      hasAssetId: true,
+      hasBlobResultUrl: true,
+      persistence: "indexeddb",
+    })
 })
+
+test("full pipeline blocks an unreadable configured character reference before Vidu", async ({ page }) => {
+  const videoRequests: Array<any> = []
+  await page.route("**/api/ai/config", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        baseUrl: "https://dashscope/v1",
+        hasApiKey: true,
+        defaultModel: "e2e-text-model",
+        defaultImageModel: "e2e-image-model",
+      }),
+    })
+  })
+  await page.route("**/api/ai/generate-video-vidu", async (route) => {
+    videoRequests.push(route.request().postDataJSON())
+    await route.abort()
+  })
+  await page.addInitScript((storedCanvas) => {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+    window.localStorage.setItem("startrails_canvas", JSON.stringify(storedCanvas))
+    window.sessionStorage.setItem("startrails_session_api_key", "sk-e2e-dashscope-session")
+  }, createUnreadableReferenceCanvas())
+
+  await page.goto("/canvas", { waitUntil: "domcontentloaded", timeout: 180_000 })
+  const videoNode = page.locator("[data-id='e2e-video-generation']")
+  await expect(videoNode).toBeVisible({ timeout: 15_000 })
+  await videoNode.click({ button: "right" })
+  await page.getByText("运行当前节点").click()
+
+  const message = "已绑定的 1 张角色参考图均无法读取。请等待本地素材恢复或重新上传后再生成视频。"
+  await expect(page.getByText(message).first()).toBeVisible({ timeout: 15_000 })
+  expect(videoRequests).toHaveLength(0)
+})
+
+async function readNodeData(
+  page: Page,
+  nodeId: string,
+): Promise<Record<string, unknown> | undefined> {
+  return page.evaluate((targetNodeId) => {
+    const e2eState = (window as Window & { __starcanvasE2E?: StarCanvasE2EState }).__starcanvasE2E
+    return e2eState?.getNodeData?.(targetNodeId)
+  }, nodeId)
+}

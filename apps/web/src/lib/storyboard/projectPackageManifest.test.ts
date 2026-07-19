@@ -46,6 +46,34 @@ function makeBrief(
 }
 
 describe("buildProjectPackageManifest", () => {
+  it("exports partial R2V reference usage and schedules its handoff review", () => {
+    const manifest = buildProjectPackageManifest({
+      shots: [{ id: "shot-node-1", order: 1, title: "镜头 1" }],
+      productionBriefs: [makeBrief(1, {
+        handoff: {
+          videoReferenceAudit: {
+            mode: "r2v",
+            configuredCount: 3,
+            usedCount: 2,
+            skippedCount: 1,
+            reason: "角色参考图部分不可读：已使用 2/3 张，其余 1 张未恢复或桥接失败。",
+          },
+          warnings: ["视频参考审计：R2V，已使用 2/3 张，跳过 1 张。"],
+        },
+      })],
+    });
+
+    assert.deepEqual(manifest.productionRunPlan[0]?.videoReferenceAudit, {
+      mode: "r2v",
+      configuredCount: 3,
+      usedCount: 2,
+      skippedCount: 1,
+      reason: "角色参考图部分不可读：已使用 2/3 张，其余 1 张未恢复或桥接失败。",
+    });
+    assert.ok(manifest.productionRunPlan[0]?.nextActions.includes("review-handoff-warnings"));
+    assert.ok(manifest.handoffWarnings.some((item) => item.warning.includes("跳过 1 张")));
+  });
+
   it("builds a sound-picture production run manifest with counts and ordered shot index", () => {
     const manifest = buildProjectPackageManifest({
       shots: [
@@ -114,6 +142,7 @@ describe("buildProjectPackageManifest", () => {
       audioIntent: 1,
       handoffNotes: 1,
       warnings: 0,
+      previsPlans: 0,
     });
     assert.equal(manifest.productionPreflight.summary.totalShots, 2);
     assert.equal(manifest.productionPreflight.summary.blockedShots, 0);
@@ -240,5 +269,25 @@ describe("buildProjectPackageManifest", () => {
       manifest.videoProviderDryRun.shots[0]?.sourceImageUrl,
       "data:image/jpeg;base64,frame",
     );
+  });
+
+  it("exports recommended whitebox previs plans", () => {
+    const manifest = buildProjectPackageManifest({
+      shots: [{ id: "shot-node-1", order: 1, title: "镜头 1" }],
+      productionBriefs: [makeBrief(1, {
+        handoff: { previs: { status: "recommended", pose: true, depth: true, splitShotRecommended: true } },
+      })],
+    });
+
+    assert.equal(manifest.counts.previsPlans, 1);
+    assert.deepEqual(manifest.previsPlans, [{
+      shotId: "shot-1",
+      order: 1,
+      title: "镜头 1",
+      status: "recommended",
+      pose: true,
+      depth: true,
+      splitShotRecommended: true,
+    }]);
   });
 });

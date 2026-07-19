@@ -1,8 +1,59 @@
 import { persistImageDataUrl } from "../../../lib/assets/localImageStore.ts"
-import { getRuntimeProviderState } from "../../../lib/ai/client.ts"
+import { getAiConfig, getRuntimeProviderState } from "../../../lib/ai/client.ts"
 import { resolveRuntimeProviderTaskContract } from "../../../lib/ai/providerTaskRouting.ts"
 
 export const IMAGE_GENERATION_CLIENT_TIMEOUT_MS = 150_000
+export const IMAGE_GENERATION_CLIENT_TIMEOUT_BUFFER_MS = 15_000
+const MOCK_IMAGE_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+
+export function resolveImageGenerationSize(size?: string, aspectRatio?: string): string {
+  if (typeof size === "string" && size.trim()) return size.trim()
+
+  switch (aspectRatio) {
+    case "1:1":
+      return "1024x1024"
+    case "9:16":
+      return "1024x1792"
+    case "16:9":
+    default:
+      return "1792x1024"
+  }
+}
+
+function canPersistGeneratedImageLocally(): boolean {
+  return typeof indexedDB !== "undefined" &&
+    typeof URL !== "undefined" &&
+    typeof URL.createObjectURL === "function"
+}
+
+function isMockImageEnabled(): boolean {
+  if (typeof window === "undefined") {
+    return process.env.NEXT_PUBLIC_USE_MOCK === "true"
+  }
+  return window.localStorage.getItem("startrails_use_mock") === "true"
+}
+
+async function finalizeGeneratedImagePayload<T extends { imageUrl: string }>(
+  payload: T,
+): Promise<T & { imageUrl: string; assetId?: string }> {
+  let displayUrl = payload.imageUrl
+  let assetId: string | undefined
+
+  if (payload.imageUrl.startsWith("data:image") && canPersistGeneratedImageLocally()) {
+    const persisted = await persistImageDataUrl(payload.imageUrl, {
+      fileName: `generated-${Date.now()}.png`,
+    })
+    displayUrl = persisted.objectUrl
+    assetId = persisted.assetId
+  }
+
+  return {
+    ...payload,
+    imageUrl: displayUrl,
+    assetId,
+  }
+}
 
 type ApiErrorPayload = {
   code?: string
@@ -57,6 +108,40 @@ function createTimeoutError(): ImageGenerationError {
   })
 }
 
+export async function resolveImageGenerationTimeoutMs(params?: {
+  requestedTimeoutMs?: number
+  overrideTimeoutMs?: number
+}): Promise<number> {
+  if (
+    typeof params?.requestedTimeoutMs === "number" &&
+    Number.isFinite(params.requestedTimeoutMs) &&
+    params.requestedTimeoutMs > 0
+  ) {
+    return params.requestedTimeoutMs
+  }
+
+  const candidates = [IMAGE_GENERATION_CLIENT_TIMEOUT_MS]
+
+  if (
+    typeof params?.overrideTimeoutMs === "number" &&
+    Number.isFinite(params.overrideTimeoutMs) &&
+    params.overrideTimeoutMs > 0
+  ) {
+    candidates.push(params.overrideTimeoutMs + IMAGE_GENERATION_CLIENT_TIMEOUT_BUFFER_MS)
+  }
+
+  try {
+    const config = await getAiConfig()
+    if (typeof config.timeoutMs === "number" && Number.isFinite(config.timeoutMs) && config.timeoutMs > 0) {
+      candidates.push(config.timeoutMs + IMAGE_GENERATION_CLIENT_TIMEOUT_BUFFER_MS)
+    }
+  } catch {
+    // Ignore config fetch failures; image generation can still proceed with the default timeout.
+  }
+
+  return Math.max(...candidates)
+}
+
 function parseRetryableFromStatus(status: number): boolean {
   return [408, 429, 500, 502, 503, 504].includes(status)
 }
@@ -78,7 +163,7 @@ function normalizeApiError(payload: any, status: number): ImageGenerationError {
       status,
       requestId: payload?.requestId,
       attempts: payload?.attempts,
-      retryable: parseRetryableFromStatus(status),
+      retryable: status !== 524 && parseRetryableFromStatus(status),
     })
   }
 
@@ -89,13 +174,14 @@ function normalizeApiError(payload: any, status: number): ImageGenerationError {
     ? `${userMessage}\n${detail}`
     : userMessage || rawMessage || `API error: ${status}`
 
+  const errorStatus = error?.status || status
   return new ImageGenerationError({
     message,
     code: error?.code || "API_ERROR",
-    status: error?.status || status,
+    status: errorStatus,
     requestId: payload?.requestId,
     attempts: payload?.attempts,
-    retryable: error?.retryable ?? parseRetryableFromStatus(status),
+    retryable: errorStatus === 524 ? false : error?.retryable ?? parseRetryableFromStatus(status),
     detail: error?.detail,
   })
 }
@@ -134,12 +220,87 @@ export async function generateImageFromPrompt(input: {
   prompt: string
   model?: string
   size?: string
+  aspectRatio?: string
   requestId?: string
   timeoutMs?: number
   sourceImage?: string | string[] // data URL(s) for image-to-image / reference image input
 }) {
-  const runtimeProvider = await getRuntimeProviderState()
   const requestedModel = input.model || "gpt-image-2"
+  if (isMockImageEnabled()) {
+    return finalizeGeneratedImagePayload({
+      imageUrl: MOCK_IMAGE_DATA_URL,
+      prompt: input.prompt,
+      model: requestedModel,
+      requestId: input.requestId,
+      attempts: 0,
+      provider: "mock",
+      revisedPrompt: input.prompt,
+      endpoint: "mock",
+    })
+  }
+  if (requestedModel === "comfyui-local") {
+    const hasReferenceImage = Array.isArray(input.sourceImage)
+      ? input.sourceImage.length > 0
+      : Boolean(input.sourceImage)
+    if (hasReferenceImage) {
+      throw new ImageGenerationError({
+        message: "本机 ComfyUI 当前仅支持文生图，不能用于角色参考图编辑。",
+        code: "UNSUPPORTED_IMAGE_TO_IMAGE",
+        retryable: false,
+      })
+    }
+    const [widthRaw, heightRaw] = resolveImageGenerationSize(input.size, input.aspectRatio).split("x")
+    const width = Number(widthRaw)
+    const height = Number(heightRaw)
+    if (!Number.isInteger(width) || !Number.isInteger(height)) {
+      throw new ImageGenerationError({
+        message: "本机 ComfyUI 图片尺寸无效。",
+        code: "INVALID_RESPONSE",
+        retryable: false,
+      })
+    }
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? IMAGE_GENERATION_CLIENT_TIMEOUT_MS)
+    let res: Response
+    try {
+      res = await fetch("/api/ai/generate-image-comfy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ prompt: input.prompt, width, height }),
+      })
+    } catch (error: any) {
+      if (error?.name === "AbortError") throw createTimeoutError()
+      throw new ImageGenerationError({
+        message: "本机 ComfyUI 请求失败，请检查本机服务是否已启动。",
+        code: "NETWORK_ERROR",
+        retryable: true,
+        detail: error?.message,
+      })
+    } finally {
+      clearTimeout(timeout)
+    }
+    const payload = await readJsonSafely(res)
+    if (!res.ok) throw normalizeApiError(payload, res.status)
+    if (!payload?.imageUrl || typeof payload.imageUrl !== "string") {
+      throw new ImageGenerationError({
+        message: "本机 ComfyUI 没有返回可用图片。",
+        code: "INVALID_RESPONSE",
+        retryable: false,
+      })
+    }
+    return finalizeGeneratedImagePayload({
+      imageUrl: payload.imageUrl,
+      prompt: input.prompt,
+      model: typeof payload.model === "string" ? payload.model : requestedModel,
+      requestId: input.requestId,
+      attempts: 1,
+      provider: typeof payload.provider === "string" ? payload.provider : "local-comfyui",
+      revisedPrompt: input.prompt,
+      endpoint: "local-comfyui",
+    })
+  }
+  const runtimeProvider = await getRuntimeProviderState("image")
   const taskContract = resolveRuntimeProviderTaskContract("image", runtimeProvider, requestedModel)
   if (!taskContract.supported) {
     throw new ImageGenerationError({
@@ -150,7 +311,10 @@ export async function generateImageFromPrompt(input: {
     })
   }
   const controller = new AbortController()
-  const timeoutMs = input.timeoutMs ?? IMAGE_GENERATION_CLIENT_TIMEOUT_MS
+  const timeoutMs = await resolveImageGenerationTimeoutMs({
+    requestedTimeoutMs: input.timeoutMs,
+    overrideTimeoutMs: runtimeProvider.overrides?.timeoutMs,
+  })
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
   let res: Response
@@ -162,7 +326,7 @@ export async function generateImageFromPrompt(input: {
       body: JSON.stringify({
         prompt: input.prompt,
         model: requestedModel,
-        size: input.size || "1792x1024",
+        size: resolveImageGenerationSize(input.size, input.aspectRatio),
         requestId: input.requestId,
         ...(runtimeProvider.overrides ? { _providerOverrides: runtimeProvider.overrides } : {}),
         ...(input.sourceImage ? { sourceImage: input.sourceImage } : {}),
@@ -206,22 +370,7 @@ export async function generateImageFromPrompt(input: {
     })
   }
 
-  let displayUrl = payload.imageUrl
-  let assetId: string | undefined
-
-  if (payload.imageUrl.startsWith("data:image")) {
-    const persisted = await persistImageDataUrl(payload.imageUrl, {
-      fileName: `generated-${Date.now()}.png`,
-    })
-    displayUrl = persisted.objectUrl
-    assetId = persisted.assetId
-  }
-
-  return {
-    ...payload,
-    imageUrl: displayUrl,
-    assetId,
-  }
+  return finalizeGeneratedImagePayload(payload)
 }
 
 // ============================================================================

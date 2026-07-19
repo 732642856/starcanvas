@@ -368,17 +368,54 @@ export function getCurrentIsoTime(): string {
  * @returns 文件名
  */
 export function extractFileName(url: string): string {
+  if (/^(data|blob):/i.test(url)) return "";
   try {
     const parsed = new URL(url);
     const pathname = parsed.pathname;
     const segments = pathname.split("/");
     const last = segments[segments.length - 1];
-    if (last && last.includes(".")) return last;
+    if (last && last.includes(".")) return decodeURIComponent(last);
   } catch {
     // URL 解析失败，使用默认逻辑
   }
   // 使用时间戳生成唯一文件名
   return `media_${Date.now()}`;
+}
+
+function sanitizePackageFileName(fileName: string, fallbackBase: string, fallbackExt: string): string {
+  const trimmed = fileName
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "_")
+    .replace(/^\.+/, "")
+    .replace(/[. ]+$/g, "");
+  const withExt = /\.[A-Za-z0-9]{2,8}$/.test(trimmed)
+    ? trimmed
+    : `${trimmed || fallbackBase}${fallbackExt}`;
+  const dotIndex = withExt.lastIndexOf(".");
+  const base = dotIndex > 0 ? withExt.slice(0, dotIndex) : withExt;
+  const ext = dotIndex > 0 ? withExt.slice(dotIndex) : fallbackExt;
+  const safeBase = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(base) ? `${base}_` : base;
+  return `${safeBase}${ext}`;
+}
+
+function uniquePackageFileName(
+  fileName: string | undefined,
+  fallbackBase: string,
+  fallbackExt: string,
+  used: Set<string>,
+): string {
+  const safeName = sanitizePackageFileName(fileName ?? `${fallbackBase}${fallbackExt}`, fallbackBase, fallbackExt);
+  const dotIndex = safeName.lastIndexOf(".");
+  const base = dotIndex > 0 ? safeName.slice(0, dotIndex) : safeName;
+  const ext = dotIndex > 0 ? safeName.slice(dotIndex) : fallbackExt;
+  let candidate = safeName;
+  let suffix = 2;
+  while (used.has(candidate.toLowerCase())) {
+    candidate = `${base}-${suffix}${ext}`;
+    suffix += 1;
+  }
+  used.add(candidate.toLowerCase());
+  return candidate;
 }
 
 // ============================================================================
@@ -855,13 +892,33 @@ export async function buildJianyingCompatiblePackage(
   audioNodes: JianyingAudioNodeInput[],
   subtitleNodes: JianyingSubtitleNodeInput[],
 ): Promise<JianyingCompatiblePackage> {
+  const usedVideoFileNames = new Set<string>();
+  const usedAudioFileNames = new Set<string>();
+  const packageVideoNodes = videoNodes.map((node, index) => ({
+    ...node,
+    fileName: uniquePackageFileName(
+      node.fileName ?? extractFileName(node.videoUrl),
+      `video_${index + 1}`,
+      ".mp4",
+      usedVideoFileNames,
+    ),
+  }));
+  const packageAudioNodes = audioNodes.map((node, index) => ({
+    ...node,
+    fileName: uniquePackageFileName(
+      node.fileName ?? extractFileName(node.audioUrl),
+      `audio_${index + 1}`,
+      ".mp3",
+      usedAudioFileNames,
+    ),
+  }));
   const entries: Array<{ path: string; data: Uint8Array }> = [];
   const files: Array<{ path: string; size: number }> = [];
   const downloadFailures: string[] = [];
   const baseDir = "JianYingCompatible";
 
   // ── 添加 README ──
-  const readmeContent = buildReadmeContent(videoNodes, audioNodes, subtitleNodes);
+  const readmeContent = buildReadmeContent(packageVideoNodes, packageAudioNodes, subtitleNodes);
   entries.push({
     path: `${baseDir}/README.txt`,
     data: stringToUint8Array(readmeContent),
@@ -877,8 +934,8 @@ export async function buildJianyingCompatiblePackage(
   files.push({ path: `${baseDir}/subtitles.srt`, size: srtContent.length });
 
   // ── 添加视频文件 ──
-  for (let i = 0; i < videoNodes.length; i++) {
-    const videoNode = videoNodes[i];
+  for (let i = 0; i < packageVideoNodes.length; i++) {
+    const videoNode = packageVideoNodes[i];
     const fileName = videoNode.fileName ?? `video_${i + 1}.mp4`;
     try {
       const videoData = await fetchAsUint8Array(videoNode.videoUrl);
@@ -893,8 +950,8 @@ export async function buildJianyingCompatiblePackage(
   }
 
   // ── 添加音频文件 ──
-  for (let i = 0; i < audioNodes.length; i++) {
-    const audioNode = audioNodes[i];
+  for (let i = 0; i < packageAudioNodes.length; i++) {
+    const audioNode = packageAudioNodes[i];
     const fileName = audioNode.fileName ?? `audio_${i + 1}.mp3`;
     try {
       const audioData = await fetchAsUint8Array(audioNode.audioUrl);
@@ -913,7 +970,7 @@ export async function buildJianyingCompatiblePackage(
   }
 
   // ── 添加剪映草稿 JSON ──
-  const result = exportToJianyingDraft(videoNodes, audioNodes, subtitleNodes);
+  const result = exportToJianyingDraft(packageVideoNodes, packageAudioNodes, subtitleNodes);
   entries.push({
     path: `${baseDir}/draft_content.json`,
     data: stringToUint8Array(result.draftContentJson),
@@ -1049,11 +1106,20 @@ function downloadBlob(blob: Blob, fileName: string): void {
  * @param nodes - 画布节点列表
  * @returns 视频节点输入列表
  */
+export const JIANYING_VIDEO_NODE_KINDS = new Set([
+  "uploaded-video",
+  "video",
+  "video-generation",
+  "video-result",
+  "talking-photo",
+]);
+
 export function extractVideoNodesFromCanvas(
   nodes: Array<{
     id: string;
     data: {
       title?: string;
+      nodeKind?: string;
       resultUrl?: string;
       assetUrl?: string;
       imageUrl?: string;
@@ -1068,8 +1134,8 @@ export function extractVideoNodesFromCanvas(
   }>,
 ): JianyingVideoNodeInput[] {
   const result: JianyingVideoNodeInput[] = [];
-
   for (const node of nodes) {
+    if (!JIANYING_VIDEO_NODE_KINDS.has(node.data.nodeKind ?? "")) continue;
     const videoUrl = node.data.resultUrl || node.data.assetUrl || node.data.imageUrl;
     if (!videoUrl) continue;
 
@@ -1123,6 +1189,8 @@ export function extractAudioNodesFromCanvas(
       voiceAudioUrl?: string;
       duration?: string;
       durationSeconds?: number;
+      startOffsetSeconds?: number;
+      timelineStartTimeSeconds?: number;
       fileName?: string;
       shot?: { voiceAudioUrl?: string; voiceConfig?: { text?: string } };
     };
@@ -1158,12 +1226,20 @@ export function extractAudioNodesFromCanvas(
       }
     }
 
+    const startOffsetCandidate = node.data.startOffsetSeconds ?? node.data.timelineStartTimeSeconds;
+    const startOffsetSeconds =
+      typeof startOffsetCandidate === "number" &&
+      Number.isFinite(startOffsetCandidate) &&
+      startOffsetCandidate >= 0
+        ? startOffsetCandidate
+        : 0;
+
     result.push({
       id: node.id,
       title: node.data.title ?? "音频节点",
       audioUrl,
       durationSeconds,
-      startOffsetSeconds: 0,
+      startOffsetSeconds,
       volume: 1.0,
       fileName: node.data.fileName,
     });

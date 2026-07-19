@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   CircleAlert,
   Clapperboard,
+  Download,
   FileText,
   Film,
   Grid3X3,
@@ -143,6 +144,7 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: W
   const StatusIcon = getStatusIcon(runStatus)
   const title = data.title || workflowLabels[kind] || "工作流节点"
   const body = data.summary || data.instruction || data.prompt || data.content || data.fileName || "等待输入或连接上游节点。"
+  const compositionResultUrl = kind === "composition" && typeof data.resultUrl === "string" ? data.resultUrl : undefined
   const metaItems = [
     data.workflowRole,
     data.model,
@@ -162,6 +164,15 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: W
 
   const isBusy = isNodeBusy(runStatus)
   const isFinished = isNodeFinished(runStatus)
+  const downloadComposition = () => {
+    if (!compositionResultUrl) return
+    const anchor = document.createElement("a")
+    anchor.href = compositionResultUrl
+    anchor.download = "starcanvas-composition.mp4"
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+  }
 
   return (
     <>
@@ -251,12 +262,36 @@ export const WorkflowNode = memo(function WorkflowNode({ id, data, selected }: W
               <div className="rounded-lg border border-red-400/20 bg-red-500/10 px-2 py-1.5 text-xs text-red-100/80">
                 {runMeta.message && <p className="mb-0.5 font-medium text-red-200/90">{runMeta.message}</p>}
                 {runMeta.error && <p className="opacity-80">{runMeta.error}</p>}
+                {kind === "composition" && runMeta.error?.includes("剪映交接包") && (
+                  <button
+                    type="button"
+                    data-testid="composition-export-jianying"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => window.dispatchEvent(new CustomEvent("starcanvas:open-jianying-export"))}
+                    className="mt-2 inline-flex items-center gap-1 rounded border border-red-300/30 bg-red-400/10 px-2 py-1 text-[10px] text-red-100 transition-colors hover:bg-red-400/20"
+                  >
+                    <Clapperboard size={12} />
+                    导出剪映交接包
+                  </button>
+                )}
               </div>
             )}
 
             {/* ── Succeeded Message ──────────────────── */}
             {runStatus === "succeeded" && runMeta.message && (
               <p className="text-[10px] text-emerald-200/50">{runMeta.message}</p>
+            )}
+            {runStatus === "succeeded" && compositionResultUrl && (
+              <button
+                type="button"
+                data-testid="composition-download"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={downloadComposition}
+                className="mt-1 inline-flex items-center gap-1 rounded border border-emerald-300/30 bg-emerald-400/10 px-2 py-1 text-[10px] text-emerald-100 transition-colors hover:bg-emerald-400/20"
+              >
+                <Download size={12} />
+                下载 MP4
+              </button>
             )}
 
             {/* ── AI 用量摘要 ───────────────────────── */}

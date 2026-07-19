@@ -68,6 +68,26 @@ describe("productionPreflightFix", () => {
     assert.equal(draft.patch.characterIdentities?.[1]?.visualSignature, undefined);
   });
 
+  it("does not inject placeholder anchors when restored character view asset ids already exist", () => {
+    const draft = buildProductionPreflightFixDraft(
+      makeShot({
+        characterIdentities: [
+          {
+            id: "char-1",
+            name: "林夏",
+            role: "protagonist",
+            frontViewAssetId: "front-asset-1",
+          },
+        ],
+      }),
+      ["complete-character-anchor"],
+    );
+
+    assert.equal(draft.patch.characterIdentities?.[0]?.frontViewAssetId, "front-asset-1");
+    assert.equal(draft.patch.characterIdentities?.[0]?.visualSignature, undefined);
+    assert.equal(draft.patch.characterIdentities?.[0]?.costume, undefined);
+  });
+
   it("adds a voice intent draft from dialogue", () => {
     const draft = buildProductionPreflightFixDraft(makeShot(), ["add-voice-intent"]);
 
@@ -89,10 +109,12 @@ describe("productionPreflightFix", () => {
     assert.match(outcome.notice.title, /阻塞已解除/);
   });
 
-  it("reports ready when the draft clears the last issue", () => {
+  it("clears the voice warning while preserving required previs review", () => {
     const outcome = buildProductionPreflightFixOutcome(
       makeShot({
-        visualPrompt: "woman turns around at the rainy doorway, distant silhouette, cinematic lighting",
+        title: "雨夜宫门静景",
+        description: "雨夜宫门前灯笼静止摇曳，远处无人。",
+        visualPrompt: "cinematic medium shot of a rain-soaked palace gate at night, still lantern light reflected on wet stone, empty courtyard, static composition, detailed carved wood, realistic film grain",
         shotType: "medium",
         cameraMovement: "static",
         duration: "3s",
@@ -103,9 +125,12 @@ describe("productionPreflightFix", () => {
     );
 
     assert.equal(outcome.before.status, "needs-review");
-    assert.equal(outcome.after.status, "ready");
-    assert.equal(outcome.notice.kind, "success");
-    assert.match(outcome.notice.title, /预检通过/);
+    assert.ok(outcome.before.issues.some((issue) => issue.code === "missing-voice-intent"));
+    assert.equal(outcome.after.status, "needs-review");
+    assert.equal(outcome.after.issues.some((issue) => issue.code === "missing-voice-intent"), false);
+    assert.ok(outcome.after.issues.some((issue) => issue.code === "handoff-warning"));
+    assert.equal(outcome.notice.kind, "warning");
+    assert.match(outcome.notice.title, /仍需复核/);
   });
 
   it("keeps blocking feedback when a draft cannot fix the primary blocker", () => {

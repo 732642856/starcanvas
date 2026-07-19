@@ -6,6 +6,21 @@ import {
 } from "./exportPreflightCheck.ts";
 
 describe("runExportPreflightCheck", () => {
+  it("does not preflight video analysis as an exportable video asset", () => {
+    const checks = runExportPreflightCheck([
+      {
+        id: "analysis-1",
+        type: "workflow",
+        data: {
+          title: "视频分析",
+          nodeKind: "video-analyze",
+          resultUrl: "https://cdn.example.com/analysis.json",
+        },
+      },
+    ]);
+    assert.equal(checks.length, 0);
+  });
+
   it("flags missing local video and audio assets even when stale runtime urls remain", () => {
     const checks = runExportPreflightCheck([
       {
@@ -56,6 +71,21 @@ describe("runExportPreflightCheck", () => {
     assert.equal(checks.length, 1);
     assert.equal(checks[0]?.type, "subtitle");
     assert.equal(checks[0]?.hasContent, true);
+  });
+
+  it("preflights legacy shot voice audio exported by the Jianying extractor", () => {
+    const checks = runExportPreflightCheck([
+      {
+        id: "shot-voice-1",
+        type: "shot",
+        data: {
+          title: "镜头配音",
+          nodeKind: "shot",
+          shot: { voiceAudioUrl: "https://cdn.example.com/voice.wav" },
+        },
+      },
+    ]);
+    assert.deepEqual(checks.map((check) => [check.type, check.hasContent]), [["audio", true]]);
   });
 
   it("keeps ready remote media nodes available", () => {
@@ -113,6 +143,69 @@ describe("runExportPreflightCheck", () => {
     assert.deepEqual(
       checks.map((check) => check.nodeId),
       ["video-in-timeline", "audio-outside-timeline"],
+    );
+  });
+
+  it("warns about risky media file names before handoff export", () => {
+    const checks = runExportPreflightCheck([
+      {
+        id: "video-invalid",
+        data: {
+          title: "非法文件名视频",
+          nodeKind: "video-result",
+          resultUrl: "data:video/mp4;base64,AAAA",
+          fileName: "bad:/name",
+        },
+      },
+      {
+        id: "audio-reserved",
+        data: {
+          title: "保留名音频",
+          nodeKind: "tts-audio",
+          audioUrl: "data:audio/mpeg;base64,BBBB",
+          fileName: "CON.mp3",
+        },
+      },
+    ]);
+
+    assert.equal(
+      checks.find((check) => check.nodeId === "video-invalid")?.warningReason,
+      "文件名包含跨平台非法字符，导出时会自动替换",
+    );
+    assert.equal(
+      checks.find((check) => check.nodeId === "audio-reserved")?.warningReason,
+      "文件名是 Windows 保留名，导出时会自动改名",
+    );
+  });
+
+  it("warns about duplicate media file names before handoff export", () => {
+    const checks = runExportPreflightCheck([
+      {
+        id: "video-1",
+        data: {
+          title: "视频 1",
+          nodeKind: "video-result",
+          resultUrl: "data:video/mp4;base64,AAAA",
+          fileName: "same.mp4",
+        },
+      },
+      {
+        id: "video-2",
+        data: {
+          title: "视频 2",
+          nodeKind: "video-result",
+          resultUrl: "data:video/mp4;base64,BBBB",
+          fileName: "same.mp4",
+        },
+      },
+    ]);
+
+    assert.deepEqual(
+      checks.map((check) => check.warningReason),
+      [
+        "存在同名素材，导出时会自动追加序号避免覆盖",
+        "存在同名素材，导出时会自动追加序号避免覆盖",
+      ],
     );
   });
 });

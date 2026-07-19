@@ -23,12 +23,48 @@ export type FinalCompositionArgsInput = {
   fps?: number
 }
 
+export type MultiClipConcatArgsInput = {
+  clipFiles: readonly string[]
+  outputFile: string
+  width?: number
+  height?: number
+  fps?: number
+}
+
 function positiveInt(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) && value! > 0 ? Math.round(value!) : fallback
 }
 
 function nonNegativeNumber(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) && value! >= 0 ? value! : fallback
+}
+
+export function buildMultiClipConcatArgs(input: MultiClipConcatArgsInput): string[] {
+  if (input.clipFiles.length < 2) throw new Error("至少需要两个视频片段才能拼接")
+  const width = positiveInt(input.width, 1080)
+  const height = positiveInt(input.height, 1920)
+  const fps = positiveInt(input.fps, 24)
+  const normalizedLabels = input.clipFiles.map((_, index) => `v${index}`)
+  const filters = [
+    ...normalizedLabels.map(
+      (label, index) =>
+        `[${index}:v]setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}[${label}]`,
+    ),
+    `${normalizedLabels.map((label) => `[${label}]`).join("")}concat=n=${input.clipFiles.length}:v=1:a=0[vout]`,
+  ]
+
+  return [
+    ...input.clipFiles.flatMap((filename) => ["-i", filename]),
+    "-filter_complex", filters.join(";"),
+    "-map", "[vout]",
+    "-c:v", "libx264",
+    "-preset", "fast",
+    "-crf", "23",
+    "-pix_fmt", "yuv420p",
+    "-an",
+    "-y",
+    input.outputFile,
+  ]
 }
 
 function escapeSubtitlePath(filename: string): string {

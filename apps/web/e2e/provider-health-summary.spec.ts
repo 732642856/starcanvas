@@ -397,6 +397,237 @@ test.describe("Provider health summary", () => {
     })
   })
 
+  test("reference image edit requires independent confirmation without sending a request", async ({ page }) => {
+    const projectId = createTestProjectId("provider-health-reference-edit-confirm")
+    await openProviderSmokePanel(page, projectId)
+
+    const card = page.getByTestId("provider-smoke-item-image-edit")
+    await card.scrollIntoViewIfNeeded()
+    await expect(card).toContainText("普通生图通过不代表该路径可生产")
+    await card.getByRole("button", { name: "真实试跑" }).click()
+
+    await expect(page.getByTestId("provider-real-smoke-confirm-dialog")).toContainText("确认参考图编辑 smoke")
+    await expect(page.getByTestId("provider-real-smoke-confirm-input")).toHaveValue("")
+    await expect(page.getByTestId("provider-real-smoke-confirm-submit")).toBeDisabled()
+  })
+
+  test("failed image real smoke keeps image workflows blocked after reload", async ({
+    page,
+  }) => {
+    const projectId = createTestProjectId("provider-health-image-failed-persisted")
+    const context = page.context()
+    const requests: Array<Record<string, unknown>> = []
+
+    await context.route("**/api/ai/config", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          baseUrl: "https://e2e.invalid/v1",
+          hasApiKey: true,
+          defaultModel: "gpt-5.5",
+          defaultImageModel: "gpt-image-2",
+          videoModel: "vidu",
+          timeoutMs: 120000,
+          providers: [],
+        }),
+      })
+    })
+
+    await context.route("**/api/ai/provider-smoke", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          mode: "dry-run",
+          overallStatus: "ready",
+          readyCount: 3,
+          warningCount: 0,
+          blockedCount: 0,
+          items: [
+            {
+              target: "text",
+              label: "文本 / Chat",
+              status: "ready",
+              summary: "已检测到文本模型 gpt-5.5。",
+              details: ["当前基座地址：https://e2e.invalid/v1"],
+              realSmokeSupported: true,
+              realSmokeRequiresConsent: false,
+              mayConsumeQuota: false,
+            },
+            {
+              target: "image",
+              label: "图片生成",
+              status: "ready",
+              summary: "已检测到图片模型 gpt-image-2。",
+              details: ["真实生图 smoke 需要显式授权，因为会消耗图片额度。"],
+              realSmokeSupported: true,
+              realSmokeRequiresConsent: true,
+              mayConsumeQuota: true,
+            },
+            {
+              target: "video",
+              label: "视频生成（Vidu / DashScope）",
+              status: "ready",
+              summary: "已检测到视频模型 vidu。",
+              details: ["真实生视频 smoke 必须显式授权，因为会消耗视频额度。"],
+              realSmokeSupported: true,
+              realSmokeRequiresConsent: true,
+              mayConsumeQuota: true,
+            },
+          ],
+        }),
+      })
+    })
+
+    await context.route("**/api/ai/provider-smoke/run", async (route) => {
+      const body = route.request().postDataJSON() as Record<string, unknown>
+      requests.push(body)
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          target: "image",
+          status: "failed",
+          message: "图片生成超时，请稍后重试。",
+          details: ["上游服务响应时间过长，可能是服务繁忙或当前图片处理耗时过高。"],
+        }),
+      })
+    })
+
+    await openProviderSmokePanel(page, projectId)
+
+    const imageCard = page.getByTestId("provider-smoke-item-image")
+    await imageCard.scrollIntoViewIfNeeded()
+    await imageCard.getByRole("button", { name: "真实试跑" }).click()
+    await page.getByTestId("provider-real-smoke-confirm-input").fill("RUN_IMAGE_SMOKE")
+    await page.getByTestId("provider-real-smoke-confirm-submit").click()
+
+    await expect(page.getByTestId("provider-smoke-result-image")).toContainText("请求超时")
+    await expect(page.getByTestId("provider-smoke-result-image")).toContainText("图片生成超时，请稍后重试。")
+    await expect(page.getByTestId("task-readiness-item-image-production")).toContainText("请求超时")
+    await expect(page.getByTestId("task-readiness-item-production-run")).toContainText("请求超时")
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({
+      target: "image",
+      confirmCost: true,
+      confirmationText: "RUN_IMAGE_SMOKE",
+    })
+
+    const reloadedPage = await context.newPage()
+    await openProviderSmokePanel(reloadedPage, projectId)
+
+    await expect(reloadedPage.getByTestId("task-readiness-item-image-production")).toContainText("请求超时")
+    await expect(reloadedPage.getByTestId("task-readiness-item-production-run")).toContainText("请求超时")
+    await reloadedPage.close()
+  })
+
+  test("saving settings clears stale failed real smoke and restores ready-state guidance", async ({ page }) => {
+    const projectId = createTestProjectId("provider-health-image-failed-cleared")
+
+    await page.route("**/api/ai/config", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          baseUrl: "https://relay.example/v1",
+          hasApiKey: true,
+          defaultModel: "gpt-5.5",
+          defaultImageModel: "gpt-image-2",
+          videoModel: "vidu",
+          timeoutMs: 120000,
+          providers: [
+            {
+              id: "dashscope",
+              name: "DashScope",
+              hasApiKey: true,
+              capabilities: ["text", "image", "video"],
+            },
+          ],
+        }),
+      })
+    })
+
+    await page.route("**/api/ai/provider-smoke", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          mode: "dry-run",
+          overallStatus: "ready",
+          readyCount: 3,
+          warningCount: 0,
+          blockedCount: 0,
+          items: [
+            {
+              target: "text",
+              label: "文本 / Chat",
+              status: "ready",
+              summary: "已检测到文本模型 gpt-5.5。",
+              details: ["当前基座地址：https://e2e.invalid/v1"],
+              realSmokeSupported: true,
+              realSmokeRequiresConsent: false,
+              mayConsumeQuota: false,
+            },
+            {
+              target: "image",
+              label: "图片生成",
+              status: "ready",
+              summary: "已检测到图片模型 gpt-image-2。",
+              details: ["真实生图 smoke 需要显式授权，因为会消耗图片额度。"],
+              realSmokeSupported: true,
+              realSmokeRequiresConsent: true,
+              mayConsumeQuota: true,
+            },
+            {
+              target: "video",
+              label: "视频生成（Vidu / DashScope）",
+              status: "ready",
+              summary: "已检测到视频模型 vidu。",
+              details: ["真实生视频 smoke 必须显式授权，因为会消耗视频额度。"],
+              realSmokeSupported: true,
+              realSmokeRequiresConsent: true,
+              mayConsumeQuota: true,
+            },
+          ],
+        }),
+      })
+    })
+
+    await page.route("**/api/ai/provider-smoke/run", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          target: "image",
+          status: "failed",
+          message: "图片生成超时，请稍后重试。",
+          details: ["上游服务响应时间过长，可能是服务繁忙或当前图片处理耗时过高。"],
+        }),
+      })
+    })
+
+    await openProviderSmokePanel(page, projectId)
+
+    const imageCard = page.getByTestId("provider-smoke-item-image")
+    await imageCard.scrollIntoViewIfNeeded()
+    await imageCard.getByRole("button", { name: "真实试跑" }).click()
+    await page.getByTestId("provider-real-smoke-confirm-input").fill("RUN_IMAGE_SMOKE")
+    await page.getByTestId("provider-real-smoke-confirm-submit").click()
+
+    await expect(page.getByTestId("task-readiness-item-image-production")).toContainText("请求超时")
+    await page.getByTestId("provider-settings-save").click()
+
+    await openProviderSmokePanel(page, projectId)
+
+    await expect(page.getByTestId("task-readiness-item-image-production")).toContainText("可开始")
+    await expect(page.getByTestId("task-readiness-item-production-run")).toContainText("可开始")
+    await expect(page.getByTestId("provider-smoke-result-image")).toHaveCount(0)
+  })
+
   test("smoke artifacts can be imported back into canvas and asset library for continued workflow use", async ({ page }) => {
     const projectId = createTestProjectId("provider-smoke-import")
 

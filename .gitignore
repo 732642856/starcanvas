@@ -21,6 +21,10 @@ coverage
 playwright-report/
 test-results/
 
+# local code-index / agent workspace state
+.serena/
+apps/web/src/graphify-out/
+
 # security
 *.pem
 *.key

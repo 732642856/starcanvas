@@ -82,6 +82,21 @@ test("resolveProviderTaskContract: DashScope video provider accepts normalized V
   assert.equal(contract.resolvedModel, "vidu/viduq3-turbo_text2video")
   assert.equal(contract.routeFamily, "vidu")
 })
+
+test("resolveProviderTaskContract: DashScope video provider accepts HappyHorse image-to-video", () => {
+  const contract = resolveProviderTaskContract({
+    taskType: "video",
+    providerId: "dashscope",
+    providerLabel: "DashScope",
+    providerType: "openai-compatible",
+    providerCapabilities: ["text", "video"],
+    requestedModel: "happyhorse-1.1-i2v",
+  })
+
+  assert.equal(contract.supported, true)
+  assert.equal(contract.resolvedModel, "happyhorse-1.1-i2v")
+  assert.equal(contract.routeFamily, "vidu")
+})
 test("resolveRuntimeProviderTaskContract: uses override providerId before usageProvider", () => {
   const contract = resolveRuntimeProviderTaskContract(
     "video",

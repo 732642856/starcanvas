@@ -1,3 +1,5 @@
+import { assetUrlToDataUrl } from "./providerMediaDataUrl.ts";
+
 type ImageUrlToBase64Fn = (imageUrl: string, assetId?: string) => Promise<string>;
 
 export type ReversePromptResult = {
@@ -108,8 +110,7 @@ export function cleanReversePromptOutput(raw: string): ReversePromptResult {
 }
 
 async function defaultImageUrlToBase64(imageUrl: string, assetId?: string): Promise<string> {
-  const { imageUrlToBase64 } = await import("./imagePromptReverser.ts");
-  return imageUrlToBase64(imageUrl, assetId);
+  return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" });
 }
 
 export async function reverseImagePrompt(

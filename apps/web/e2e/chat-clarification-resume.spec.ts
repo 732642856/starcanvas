@@ -125,7 +125,8 @@ test("auto agent clarification survives refresh and resumes into a project skele
   await input.press("Enter")
 
   await expect(panel).toContainText("我先确认一下创作方向", { timeout: 20_000 })
-  await expect(panel).toContainText("需要澄清：你想把它推进到哪一步", { timeout: 20_000 })
+  await expect(panel).toContainText("需要澄清：你想先走哪条主路径", { timeout: 20_000 })
+  await expect(panel).toContainText("导演/叙事风格", { timeout: 20_000 })
   await panel.getByRole("button", { name: "执行 1 个操作" }).click()
 
   await page.reload({ waitUntil: "domcontentloaded" })
@@ -136,7 +137,7 @@ test("auto agent clarification survives refresh and resumes into a project skele
 
   const reloadedPanel = page.getByTestId("chat-panel")
   await expect(reloadedPanel.getByTestId("pending-clarification-banner")).toContainText(
-    "你想把它推进到哪一步？",
+    "你想先走哪条主路径？",
   )
   await reloadedPanel.getByRole("button", { name: "拆成制作圣经" }).click()
 
@@ -151,7 +152,10 @@ test("auto agent clarification survives refresh and resumes into a project skele
   expect(requests[1].message).toContain("【用户正在回答上一轮澄清问题】")
   expect(requests[1].message).toContain("澄清ID：auto-agent-creative-")
   expect(requests[1].message).toContain("线程ID：")
-  expect(requests[1].message).toContain("问题：你想把它推进到哪一步？（帮我把这个想法做成短片：雨夜旧影院里两个人重逢。）")
+  expect(requests[1].message).toContain("问题：你想先走哪条主路径？")
+  expect(requests[1].message).toContain("导演/叙事风格")
+  expect(requests[1].message).toContain("这场戏的故事功能")
+  expect(requests[1].message).toContain("希望观众感受到的情绪")
   expect(requests[1].message).toContain("用户回答：拆成制作圣经，竖屏 9:16，节奏偏剧情短片。")
 
   await expect(reloadedPanel).toContainText("即将执行以下画布操作", { timeout: 20_000 })

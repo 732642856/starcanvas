@@ -7,14 +7,16 @@ export type ProviderSmokeStatus = "ready" | "warning" | "blocked";
 export type ProviderSmokeTarget =
   | "text"
   | "image"
+  | "image-edit"
   | "video"
   | "tts-browser"
   | "tts-server";
 
-export type ProviderRealSmokeTarget = "text" | "tts-server" | "image" | "video";
+export type ProviderRealSmokeTarget = "text" | "tts-server" | "image" | "image-edit" | "video";
 
 const REAL_SMOKE_CONFIRMATION_TEXT: Partial<Record<ProviderRealSmokeTarget, string>> = {
   image: "RUN_IMAGE_SMOKE",
+  "image-edit": "RUN_IMAGE_EDIT_SMOKE",
   video: "RUN_VIDEO_SMOKE",
 };
 
@@ -147,6 +149,38 @@ export function buildProviderSmokeReport(
           details: [
             mergedConfig
               ? "缺少默认图片模型，请在设置面板填写 Image Model。"
+              : mergedConfigError || "请先配置图片 Provider。",
+          ],
+          realSmokeSupported: false,
+          realSmokeRequiresConsent: true,
+          mayConsumeQuota: true,
+      },
+  );
+
+  items.push(
+    mergedConfig?.defaultImageModel
+      ? {
+          target: "image-edit",
+          label: "参考图编辑",
+          status: "warning",
+          summary: "参考图编辑需要独立验证，普通生图通过不代表该路径可生产。",
+          details: [
+            `将使用图片模型 ${mergedConfig.defaultImageModel} 的 images/edits 合同。`,
+            "不会把普通生图 smoke 当成参考图编辑已验证。",
+            "真实试跑会上传一张极小测试参考图并消耗少量图片额度。",
+          ],
+          realSmokeSupported: true,
+          realSmokeRequiresConsent: true,
+          mayConsumeQuota: true,
+        }
+      : {
+          target: "image-edit",
+          label: "参考图编辑",
+          status: "blocked",
+          summary: "参考图编辑尚未就绪。",
+          details: [
+            mergedConfig
+              ? "缺少默认图片模型，请先配置 Image Model。"
               : mergedConfigError || "请先配置图片 Provider。",
           ],
           realSmokeSupported: false,

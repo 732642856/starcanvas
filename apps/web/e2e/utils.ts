@@ -16,10 +16,22 @@ type E2EProbeResult = {
 
 export function buildE2EHealthProbeUrl(baseURL: string): string {
   const url = new URL(baseURL)
-  url.pathname = "/"
+  url.pathname = "/api/ai/config"
   url.search = ""
   url.hash = ""
   return url.toString()
+}
+
+function shouldRetryE2EProbeError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase()
+  return (
+    message.includes("timeout") ||
+    message.includes("aborted") ||
+    message.includes("fetch failed") ||
+    message.includes("network") ||
+    message.includes("econnrefused") ||
+    message.includes("econnreset")
+  )
 }
 
 export async function probeE2EBaseReadiness(params: {
@@ -28,10 +40,10 @@ export async function probeE2EBaseReadiness(params: {
   fetchImpl?: typeof fetch
 }): Promise<E2EProbeResult> {
   const probeUrl = buildE2EHealthProbeUrl(params.baseURL)
-  const timeoutMs = params.timeoutMs ?? 5_000
+  const timeoutMs = params.timeoutMs ?? 10_000
   const fetchImpl = params.fetchImpl ?? fetch
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
     try {
       const response = await fetchImpl(probeUrl, {
         signal: AbortSignal.timeout(timeoutMs),
@@ -46,8 +58,8 @@ export async function probeE2EBaseReadiness(params: {
         message: `E2E preflight failed: ${probeUrl} returned HTTP ${response.status}`,
       }
     } catch (error) {
-      if (attempt === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 250))
+      if (attempt < 6 && shouldRetryE2EProbeError(error)) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(2_500, attempt * 800)))
         continue
       }
       return {
@@ -141,6 +153,11 @@ export async function waitForCanvasReady(
   await expect(
     page.locator(".react-flow__node, .react-flow__background").first()
   ).toBeVisible({ timeout: 30_000 })
+  await page.waitForFunction(
+    () => Boolean((window as Window & { __starcanvasE2E?: unknown }).__starcanvasE2E),
+    undefined,
+    { timeout },
+  )
 }
 
 /**

@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test"
+import { readFile } from "node:fs/promises"
+import { gotoCanvas } from "./utils"
 import { createTestProjectId } from "./utils/project"
 
 type StoredCanvas = {
@@ -122,6 +124,22 @@ async function countNodesByKind(page: Page, nodeKind: string) {
   return nodes.filter((node) => node.data.nodeKind === nodeKind).length
 }
 
+async function downloadExportText(page: Page, label: string) {
+  const dropdown = page.getByTestId("export-dropdown-toggle").locator("xpath=..")
+  await page.getByTestId("export-dropdown-toggle").click()
+  const downloadPromise = page.waitForEvent("download")
+  await dropdown.getByRole("button", { name: label, exact: true }).click()
+  const download = await downloadPromise
+  const filePath = await download.path()
+  if (!filePath) {
+    throw new Error(`download path unavailable for ${download.suggestedFilename()}`)
+  }
+  return {
+    filename: download.suggestedFilename(),
+    text: (await readFile(filePath, "utf8")).replace(/^\uFEFF/, ""),
+  }
+}
+
 async function openRemixContextMenu(page: Page) {
   const remixNode = page.locator("[data-id='e2e-remix-analysis']")
   await expect(remixNode).toBeVisible({ timeout: 15_000 })
@@ -147,11 +165,7 @@ async function openRemixContextMenu(page: Page) {
 async function bootSeededRemixCanvas(page: Page) {
   const projectId = createTestProjectId("remix-analysis-derivation")
   await seedCanvas(page, projectId)
-  await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
-    waitUntil: "domcontentloaded",
-    timeout: 180_000,
-  })
-  await expect(page.locator(".react-flow").first()).toBeVisible({ timeout: 90_000 })
+  await gotoCanvas(page, projectId)
   await waitForE2EBridge(page)
 }
 
@@ -245,4 +259,12 @@ test("remix-analysis can create production queue from browser UI", async ({ page
       message: "remix-analysis production queue should create storyboard image nodes",
     })
     .toBe(2)
+
+  const storyboardExport = await downloadExportText(page, "分镜表")
+  expect(storyboardExport.filename).toBe("星轨_分镜表.csv")
+  expect(storyboardExport.text).toContain("\"编号\",\"标题\",\"景别\",\"运镜\",\"时长\",\"角色\",\"对白\"")
+  expect(storyboardExport.text).toContain("\"1\",\"参考分镜 1\"")
+  expect(storyboardExport.text).toContain("\"2\",\"参考分镜 2\"")
+  expect(storyboardExport.text).toContain("\"reference-video\",\"3s\"")
+  expect(storyboardExport.text).toContain("\"reference-video\",\"2s\"")
 })

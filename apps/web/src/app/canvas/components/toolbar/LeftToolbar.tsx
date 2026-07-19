@@ -4,7 +4,7 @@
  * - 底部保留素材库、聊天、用户
  */
 
-import { Plus, Library, MessageCircle, Clock3, Save, ImageIcon, Camera, Palette, Film, Globe, Clapperboard, Upload, Crosshair, Sparkles, MapPin } from "lucide-react"
+import { Plus, Library, MessageCircle, Clock3, Save, ImageIcon, Camera, Palette, Film, Globe, Clapperboard, Upload, Crosshair, Sparkles, MapPin, ListChecks } from "lucide-react"
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
 
 interface LeftToolbarProps {
@@ -28,6 +28,7 @@ interface LeftToolbarProps {
   onOpenReverseStoryboard?: () => void
   onOpenShotLibrary?: () => void
   onOpenAIScript?: () => void
+  onOpenIssueCenter?: () => void
   onOpenOnboarding?: () => void
 }
 
@@ -50,6 +51,7 @@ export function LeftToolbar({
   onOpenReverseStoryboard,
   onOpenShotLibrary,
   onOpenAIScript,
+  onOpenIssueCenter,
   onOpenOnboarding,
   onOpenFileUpload,
 }: LeftToolbarProps) {
@@ -224,6 +226,15 @@ export function LeftToolbar({
             data-testid="toolbar-ai-script"
           >
             <Sparkles size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
+          </button>
+          <button
+            onClick={onOpenIssueCenter}
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-all hover:bg-white/10"
+            style={{ color: DESIGN_TOKENS.textMuted }}
+            title="生产问题"
+            data-testid="toolbar-issue-center"
+          >
+            <ListChecks size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />
           </button>
           <button
             onClick={onOpenOnboarding}

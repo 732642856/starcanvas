@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { normalizeGenerationError } from "@/lib/ai/normalizeGenerationError";
 import { getImageProviderCapability } from "@/lib/ai/imageProviderCapabilities";
 import { getProvider } from "@/lib/ai/provider-registry";
+import { fetchWithTimeout } from "@/lib/ai/server-fetch";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 function getConfig() {
@@ -91,8 +92,6 @@ function buildImageEditFormData(params: {
 }
 
 export async function POST(request: NextRequest) {
-  const config = getConfig()
-
   try {
     const body = await request.json();
     const {
@@ -116,6 +115,8 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+
+    const config = getConfig()
 
     if (!config.apiKey) {
       return NextResponse.json(
@@ -157,108 +158,13 @@ export async function POST(request: NextRequest) {
         upstreamUrl,
       );
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-
-      try {
-        const upstreamRes = await fetch(upstreamUrl, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${config.apiKey}`,
-          },
-          body: formData,
-          signal: controller.signal,
-        });
-
-        if (!upstreamRes.ok) {
-          const errorText = await upstreamRes.text();
-          const normalized = normalizeGenerationError({
-            status: upstreamRes.status,
-            body: errorText,
-            provider: capability.provider,
-          });
-          return NextResponse.json(
-            {
-              ok: false,
-              error: normalized,
-              requestId,
-              model,
-            },
-            { status: normalized.status || upstreamRes.status },
-          );
-        }
-
-        const imageData = await upstreamRes.json();
-        const b64Json = imageData.data?.[0]?.b64_json;
-
-        if (b64Json) {
-          return NextResponse.json({
-            ok: true,
-            imageUrl: `data:image/png;base64,${b64Json}`,
-            prompt: posePrompt,
-            model,
-            requestId,
-          });
-        }
-
-        const url = imageData.data?.[0]?.url;
-        if (url) {
-          return NextResponse.json({
-            ok: true,
-            imageUrl: url,
-            prompt: posePrompt,
-            model,
-            requestId,
-          });
-        }
-
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "No image data returned",
-            requestId,
-            model,
-          },
-          { status: 500 },
-        );
-      } finally {
-        clearTimeout(timeout);
-      }
-    }
-
-    // Text-to-image fallback: embed pose description in the prompt
-    const poseDescription = poseJson
-      ? buildPoseDescription(poseJson)
-      : "A person in a standing pose.";
-
-    const textPrompt = [
-      prompt.trim(),
-      poseDescription,
-    ].join(" ");
-
-    const generationPayload = {
-      model,
-      prompt: textPrompt,
-      n: 1,
-      size: normalizedSize,
-      response_format: "b64_json",
-    };
-
-    console.info("[generate-with-pose] calling text-to-image");
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-
-    try {
-      const upstreamRes = await fetch(`${config.baseUrl}${TEXT_TO_IMAGE_ENDPOINT}`, {
+      const upstreamRes = await fetchWithTimeout(upstreamUrl, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           Authorization: `Bearer ${config.apiKey}`,
         },
-        body: JSON.stringify(generationPayload),
-        signal: controller.signal,
-      });
+        body: formData,
+      }, config.timeoutMs);
 
       if (!upstreamRes.ok) {
         const errorText = await upstreamRes.text();
@@ -285,7 +191,18 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           ok: true,
           imageUrl: `data:image/png;base64,${b64Json}`,
-          prompt: textPrompt,
+          prompt: posePrompt,
+          model,
+          requestId,
+        });
+      }
+
+      const url = imageData.data?.[0]?.url;
+      if (url) {
+        return NextResponse.json({
+          ok: true,
+          imageUrl: url,
+          prompt: posePrompt,
           model,
           requestId,
         });
@@ -300,9 +217,77 @@ export async function POST(request: NextRequest) {
         },
         { status: 500 },
       );
-    } finally {
-      clearTimeout(timeout);
     }
+
+    // Text-to-image fallback: embed pose description in the prompt
+    const poseDescription = poseJson
+      ? buildPoseDescription(poseJson)
+      : "A person in a standing pose.";
+
+    const textPrompt = [
+      prompt.trim(),
+      poseDescription,
+    ].join(" ");
+
+    const generationPayload = {
+      model,
+      prompt: textPrompt,
+      n: 1,
+      size: normalizedSize,
+      response_format: "b64_json",
+    };
+
+    console.info("[generate-with-pose] calling text-to-image");
+
+    const upstreamRes = await fetchWithTimeout(`${config.baseUrl}${TEXT_TO_IMAGE_ENDPOINT}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify(generationPayload),
+    }, config.timeoutMs);
+
+    if (!upstreamRes.ok) {
+      const errorText = await upstreamRes.text();
+      const normalized = normalizeGenerationError({
+        status: upstreamRes.status,
+        body: errorText,
+        provider: capability.provider,
+      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: normalized,
+          requestId,
+          model,
+        },
+        { status: normalized.status || upstreamRes.status },
+      );
+    }
+
+    const imageData = await upstreamRes.json();
+    const b64Json = imageData.data?.[0]?.b64_json;
+
+    if (b64Json) {
+      return NextResponse.json({
+        ok: true,
+        imageUrl: `data:image/png;base64,${b64Json}`,
+        prompt: textPrompt,
+        model,
+        requestId,
+      });
+    }
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "No image data returned",
+        requestId,
+        model,
+      },
+      { status: 500 },
+    );
   } catch (error: any) {
     const normalized = normalizeGenerationError({ error, provider: "copse" });
     console.debug("[generate-with-pose] unexpected error:", normalized.raw);

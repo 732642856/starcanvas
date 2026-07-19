@@ -91,6 +91,28 @@ function makeManifest(
 }
 
 describe("productionRunQueue", () => {
+  it("annotates the handoff review task with partial R2V reference usage", () => {
+    const queue = buildProductionRunQueue(makeManifest([{
+      shotId: "shot-r2v",
+      order: 1,
+      title: "角色参考镜头",
+      requiredAssets: ["handoff-review"],
+      nextActions: ["review-handoff-warnings"],
+      videoReferenceAudit: {
+        mode: "r2v",
+        configuredCount: 3,
+        usedCount: 2,
+        skippedCount: 1,
+        reason: "角色参考图部分不可读。",
+      },
+    }]));
+
+    assert.equal(
+      queue.tasks.find((task) => task.action === "review-handoff-warnings")?.detail,
+      "R2V · 已用 2/3 · 跳过 1",
+    );
+  });
+
   it("builds queue tasks from executable production run actions and records blocked manual actions", () => {
     const queue = buildProductionRunQueue(
       makeManifest([

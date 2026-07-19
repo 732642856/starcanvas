@@ -71,6 +71,32 @@ describe("shotProductionBrief", () => {
     assert.match(brief.handoff.notes ?? "", /后期保持门轴吱呀声/);
   });
 
+  it("carries partial R2V reference usage into the handoff audit", () => {
+    const brief = buildShotProductionBrief({
+      id: "shot-r2v-audit",
+      order: 1,
+      title: "角色参考镜头",
+      description: "赵珩回身。",
+      visualPrompt: "period palace interior",
+      videoReferenceAudit: {
+        mode: "r2v",
+        configuredCount: 3,
+        usedCount: 2,
+        skippedCount: 1,
+        reason: "角色参考图部分不可读：已使用 2/3 张，其余 1 张未恢复或桥接失败。",
+      },
+    });
+
+    assert.deepEqual(brief.handoff.videoReferenceAudit, {
+      mode: "r2v",
+      configuredCount: 3,
+      usedCount: 2,
+      skippedCount: 1,
+      reason: "角色参考图部分不可读：已使用 2/3 张，其余 1 张未恢复或桥接失败。",
+    });
+    assert.ok(brief.handoff.warnings?.some((warning) => warning.includes("R2V") && warning.includes("跳过 1 张")));
+  });
+
   it("prefers Director Agent cinematic metadata for visual, voice, subtitle, and handoff fields", () => {
     const brief = buildShotProductionBrief({
       id: "shot-2",
@@ -138,7 +164,9 @@ describe("shotProductionBrief", () => {
     assert.deepEqual(brief.handoff.warnings, [
       "keep the red coat consistent",
       "红色外套必须跨镜头保持一致",
+      "建议白模预演：姿态 + 深度 控制图。",
     ]);
+    assert.deepEqual(brief.handoff.previs, { status: "recommended", pose: true, depth: true, splitShotRecommended: false });
   });
 
   it("sorts shot briefs by shot order and ignores non-shot nodes", () => {
@@ -185,6 +213,36 @@ describe("shotProductionBrief", () => {
     });
 
     assert.deepEqual(missingPromptBrief.handoff.warnings, ["Missing visual prompt for shot generation"]);
+  });
+
+  it("persists a whitebox previs plan for a dynamic camera shot", () => {
+    const brief = buildShotProductionBrief({
+      id: "shot-previs",
+      order: 5,
+      title: "藏锅",
+      description: "荆钗缓慢把铁锅藏到身后，警觉望向宫门。",
+      visualPrompt: "period drama kitchen",
+      shotType: "medium close-up",
+      cameraMovement: "slow push in",
+    });
+
+    assert.deepEqual(brief.handoff.previs, { status: "recommended", pose: true, depth: true, splitShotRecommended: false });
+    assert.ok(brief.handoff.warnings?.includes("建议白模预演：姿态 + 深度 控制图。"));
+  });
+
+  it("persists a split-shot recommendation for sequential actions", () => {
+    const brief = buildShotProductionBrief({
+      id: "shot-split",
+      order: 6,
+      title: "藏锅后望向宫门",
+      description: "荆钗缓慢把铁锅藏到身后，然后警觉望向宫门。",
+      visualPrompt: "period drama kitchen",
+      shotType: "medium close-up",
+      cameraMovement: "slow push in",
+    });
+
+    assert.deepEqual(brief.handoff.previs, { status: "recommended", pose: true, depth: true, splitShotRecommended: true });
+    assert.ok(brief.handoff.warnings?.includes("检测到连续动作，建议拆成多个单动作镜头后再生成视频。"));
   });
 
   it("preserves reference-video source metadata for handoff", () => {

@@ -41,8 +41,5 @@ export default withSentryConfig(nextConfig, {
   silent: !process.env.CI,
   widenClientFileUpload: true,
   sourcemaps: { disable: true },
-  // Suppress deprecation warnings pending official migration guide.
-  // Sentry SDK warns about disableLogger, automaticVercelMonitors,
-  // and missing instrumentation/global-error files.
-  // These will be addressed in the next Sentry upgrade pass.
+  // Keep Sentry build output quiet locally; CI still reports integration warnings.
 })

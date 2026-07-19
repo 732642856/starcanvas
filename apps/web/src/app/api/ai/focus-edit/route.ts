@@ -4,6 +4,7 @@
 // ============================================================================
 import { NextRequest, NextResponse } from "next/server"
 import { getProvider } from "@/lib/ai/provider-registry"
+import { fetchWithTimeout } from "@/lib/ai/server-fetch"
 
 // ── Config ──────────────────────────────────────────────────────────────────
 function getConfig() {
@@ -16,20 +17,6 @@ function getConfig() {
   }
 }
 const RETRYABLE_UPSTREAM_STATUSES = new Set([429, 500, 502, 503, 504])
-
-async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-
-  try {
-    return await fetch(input, {
-      ...init,
-      signal: controller.signal,
-    })
-  } finally {
-    clearTimeout(timeout)
-  }
-}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))

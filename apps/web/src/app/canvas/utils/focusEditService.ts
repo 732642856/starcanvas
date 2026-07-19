@@ -1,6 +1,7 @@
 "use client";
 
 import { persistImageDataUrl } from "../../../lib/assets/localImageStore.ts";
+import { assetUrlToDataUrl } from "./providerMediaDataUrl.ts";
 
 export const FOCUS_EDIT_CLIENT_TIMEOUT_MS = 150_000;
 type ImageUrlToBase64Fn = (imageUrl: string, assetId?: string) => Promise<string>;
@@ -80,8 +81,7 @@ async function persistResultImage(
 }
 
 async function defaultImageUrlToBase64(imageUrl: string, assetId?: string): Promise<string> {
-  const { imageUrlToBase64 } = await import("./imagePromptReverser.ts");
-  return imageUrlToBase64(imageUrl, assetId);
+  return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" });
 }
 
 export async function applyFocusEdit(input: {

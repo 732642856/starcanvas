@@ -4,11 +4,13 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { ReactNode } from 'react'
 import type { CinematicShot, ContinuityWarning, SceneAnalysis } from '@/types/cinematic'
+import type { CrewAgentStatus } from '@/lib/agents'
 
 // ============================================================================
 // Node Types
 // ============================================================================
 export type AgentNodeType = "text" | "prompt" | "image" | "storyboard" | "shot" | "storyboard-grid" | "document" | "reference" | "group"
+export type CanvasCrewAgentStatus = CrewAgentStatus
 export type VideoWorkflowNodeKind =
   | "script"
   | "image-generation"
@@ -272,6 +274,14 @@ export type CharacterIdentityAsset = {
   viewGenerationStatus?: "idle" | "generating" | "done" | "failed"
 }
 
+export type VideoReferenceAudit = {
+  mode: "r2v" | "i2v"
+  configuredCount: number
+  usedCount: number
+  skippedCount: number
+  reason?: string
+}
+
 export type StoryboardShotData = {
   id: string
   order: number
@@ -286,6 +296,10 @@ export type StoryboardShotData = {
   notes?: string
   /** 角色一致性资产：用于跨镜头保持同一角色的脸、发型、服装、道具和轮廓稳定 */
   characterIdentities?: CharacterIdentityAsset[]
+  /** R2V reference assets that could not be restored or bridged for this shot */
+  videoReferenceWarning?: string
+  /** Actual reference-to-video inputs used for this shot's last production attempt */
+  videoReferenceAudit?: VideoReferenceAudit
   /** 专业分镜导演层输出：保留镜头动机、构图、调度、连续性等成熟镜头语言信息 */
   cinematicShot?: CinematicShot
   sceneAnalysis?: SceneAnalysis
@@ -423,6 +437,12 @@ export type CanvasNodeData = {
   summary?: string
   prompt?: string
   content?: string
+  autoAgentIntent?: string
+  preferredImageModel?: string
+  preferredImageSize?: string
+  preferredAspectRatio?: string
+  imageGenerationDeferred?: boolean
+  imageGenerationError?: string
   /** 文本内容（非 markdown 类型节点的纯文本展示，兼容旧数据） */
   text?: string
   negativePrompt?: string
@@ -455,6 +475,10 @@ export type CanvasNodeData = {
   agentOutput?: string
   agentStatus?: "idle" | "running" | "done" | "error"
   agentPhase?: string
+  crewStatuses?: CanvasCrewAgentStatus[]
+  executionTrace?: string[]
+  activeRunId?: string
+  lastSuccessfulRunId?: string
   runtimeMeta?: RuntimeMeta
   /** @deprecated 迁移到 runtimeMeta.childNodeIds */
   _childNodeIds?: string[]
@@ -534,6 +558,8 @@ export type CanvasNodeData = {
   generatedImageUrl?: string
   /** Mask data used by focus-edit nodes. */
   focusEditMaskDataUrl?: string
+  /** IndexedDB identity for a focus-edit mask. */
+  focusEditMaskAssetId?: string
   /** @deprecated Use focusEditMaskDataUrl for focus-edit nodes. */
   maskDataUrl?: string
   /** @internal Where the image data lives: "indexeddb" | "remote" | "missing" */

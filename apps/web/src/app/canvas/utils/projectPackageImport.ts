@@ -10,9 +10,57 @@ export type ProjectPackageCanvasImport = {
   edges: Edge[];
   viewport: Viewport | null;
   warnings: string[];
+  assets: Array<{ id: string; dataUrl: string }>;
 };
 
 type UnknownRecord = Record<string, unknown>;
+
+function collectPackageAssets(payload: UnknownRecord): Array<{ id: string; dataUrl: string }> {
+  const assets = Array.isArray(payload.assets) ? payload.assets : [];
+  const collected: Array<{ id: string; dataUrl: string }> = [];
+  for (const asset of assets) {
+    if (!isRecord(asset)) continue;
+    if (typeof asset.id !== "string" || typeof asset.dataUrl !== "string") continue;
+    if (!/^data:(image|video|audio)\//.test(asset.dataUrl)) continue;
+    collected.push({ id: asset.id, dataUrl: asset.dataUrl });
+  }
+  return collected;
+}
+
+function restoreNodeAssetUrls(node: Node<CanvasNodeData>, assets: Map<string, string>): Node<CanvasNodeData> {
+  if (assets.size === 0) return node;
+  const data = { ...(node.data || {}) } as CanvasNodeData & {
+    audioUrl?: string;
+    audioAssetId?: string;
+    generatedImageUrl?: string;
+  };
+  const assetUrl = typeof data.assetId === "string" ? assets.get(data.assetId) : undefined;
+  if (assetUrl) {
+    data.imageUrl = assetUrl;
+    data.assetUrl = assetUrl;
+    data.resultUrl = assetUrl;
+    data.generatedImageUrl = assetUrl;
+    data.persistence = "indexeddb";
+    delete data.loadError;
+  }
+  if (data.audioAssetId) {
+    const audioUrl = assets.get(data.audioAssetId);
+    if (audioUrl) data.audioUrl = audioUrl;
+  }
+  if (data.shot?.generatedImageAssetId) {
+    const generatedImageUrl = assets.get(data.shot.generatedImageAssetId);
+    if (generatedImageUrl) {
+      data.shot = { ...data.shot, generatedImageUrl };
+    }
+  }
+  if (data.shot?.voiceAudioAssetId) {
+    const voiceAudioUrl = assets.get(data.shot.voiceAudioAssetId);
+    if (voiceAudioUrl) {
+      data.shot = { ...data.shot, voiceAudioUrl };
+    }
+  }
+  return { ...node, data };
+}
 
 export function isProjectPackageJsonFile(file: Pick<File, "name" | "type">): boolean {
   const name = file.name.trim().toLowerCase();
@@ -125,12 +173,14 @@ export function importProjectPackageToCanvas(payload: unknown): ProjectPackageCa
   }
 
   const warnings: string[] = [];
+  const assets = collectPackageAssets(payload);
+  const assetMap = new Map(assets.map((asset) => [asset.id, asset.dataUrl]));
   const rawNodes = Array.isArray(payload.canvas.nodes) ? payload.canvas.nodes : [];
   const nodes = rawNodes
     .map((rawNode, index) => coerceNode(rawNode, index, warnings))
     .filter((node): node is Node<CanvasNodeData> => Boolean(node));
 
-  const sanitizedNodes = sanitizeNodesForPersistence(nodes);
+  const sanitizedNodes = sanitizeNodesForPersistence(nodes).map((node) => restoreNodeAssetUrls(node, assetMap));
   const validNodeIds = new Set(sanitizedNodes.map((node) => node.id));
   const edges = coerceEdges(payload.canvas.edges, validNodeIds, warnings);
 
@@ -140,5 +190,6 @@ export function importProjectPackageToCanvas(payload: unknown): ProjectPackageCa
     edges,
     viewport: coerceViewport(payload.canvas.viewport),
     warnings,
+    assets,
   };
 }

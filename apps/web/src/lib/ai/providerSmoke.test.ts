@@ -33,6 +33,13 @@ test("provider smoke reports video as warning when only a session DashScope key 
   assert.equal(video.status, "warning");
   assert.equal(video.realSmokeSupported, true);
   assert.equal(video.realSmokeRequiresConsent, true);
+
+  const referenceEdit = report.items.find((item) => item.target === "image-edit");
+  assert.ok(referenceEdit);
+  assert.equal(referenceEdit.status, "warning");
+  assert.equal(referenceEdit.realSmokeSupported, true);
+  assert.equal(referenceEdit.realSmokeRequiresConsent, true);
+  assert.match(referenceEdit.details.join("\n"), /不会把普通生图 smoke 当成参考图编辑已验证/);
 });
 
 test("provider smoke blocks image when no merged provider config is available", () => {

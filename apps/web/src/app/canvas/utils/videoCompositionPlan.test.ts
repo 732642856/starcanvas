@@ -1,7 +1,25 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
-import { buildFinalCompositionArgs } from "./videoCompositionPlan.ts"
+import { buildFinalCompositionArgs, buildMultiClipConcatArgs } from "./videoCompositionPlan.ts"
+
+describe("buildMultiClipConcatArgs", () => {
+  it("normalizes mixed browser clips before concat", () => {
+    const args = buildMultiClipConcatArgs({
+      clipFiles: ["clip_0.webm", "clip_1.mp4"],
+      outputFile: "concat.mp4",
+      width: 160,
+      height: 90,
+      fps: 8,
+    })
+    const command = args.join(" ")
+    assert.equal(command.includes("-i clip_0.webm -i clip_1.mp4"), true)
+    assert.equal(command.includes("[0:v]setpts=PTS-STARTPTS,scale=160:90"), true)
+    assert.equal(command.includes("[v0][v1]concat=n=2:v=1:a=0[vout]"), true)
+    assert.equal(command.includes("-map [vout] -c:v libx264"), true)
+    assert.equal(args.at(-1), "concat.mp4")
+  })
+})
 
 describe("buildFinalCompositionArgs", () => {
   it("maps rendered video and optional source audio when no extra tracks exist", () => {

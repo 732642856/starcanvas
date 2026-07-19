@@ -77,7 +77,7 @@ export function useChainVideoGeneration() {
       })
 
       try {
-        const runtimeProvider = await getRuntimeProviderState()
+        const runtimeProvider = await getRuntimeProviderState("video")
         const prompt = shot.prompt || `cinematic shot, ${shot.title || ""}`
         const requestBody: Record<string, unknown> = {
           prompt,
@@ -86,6 +86,7 @@ export function useChainVideoGeneration() {
           ...(runtimeProvider.overrides ? {
             overrides: {
               baseUrl: runtimeProvider.overrides.baseUrl,
+              sessionApiKey: runtimeProvider.overrides.sessionApiKey,
               videoModel: runtimeProvider.overrides.videoModel,
               timeoutMs: runtimeProvider.overrides.timeoutMs,
             },

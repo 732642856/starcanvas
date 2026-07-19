@@ -10,8 +10,12 @@ import {
   buildVideoProviderDryRunPlan,
   formatVideoProviderDryRunIssues,
 } from "../../../lib/ai/video-provider-capabilities.ts";
-import { getRuntimeProviderState } from "@/lib/ai/client";
-import { resolveRuntimeProviderTaskContract } from "@/lib/ai/providerTaskRouting";
+import { getRuntimeProviderState } from "../../../lib/ai/client.ts";
+import { resolveRuntimeProviderTaskContract } from "../../../lib/ai/providerTaskRouting.ts";
+import {
+  hydrateMediaAsset,
+  persistMediaBlob,
+} from "../../../lib/assets/localMediaStore.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -51,6 +55,10 @@ function throwBackendUnavailable(message: string, detail?: string): never {
 export interface VideoGenInput {
   /** Input image URL or base64 data URL */
   imageUrl: string
+  /** Stable caller id used to reuse a Vidu task after a client interruption */
+  requestId?: string
+  /** Character or style references for Vidu reference-to-video (1-7 images) */
+  referenceImageUrls?: string[]
   /** Motion prompt (e.g. "camera slowly pushes in, subject turns head") */
   motionPrompt?: string
   /** Target duration in seconds */
@@ -64,7 +72,10 @@ export interface VideoGenInput {
 }
 
 export function buildVideoGenerationInput(
-  input: Pick<VideoGenInput, "imageUrl" | "motionPrompt" | "aspectRatio" | "resolution"> & {
+  input: Pick<
+    VideoGenInput,
+    "imageUrl" | "requestId" | "referenceImageUrls" | "motionPrompt" | "aspectRatio" | "resolution"
+  > & {
     durationSeconds?: number
     backend?: VideoGenBackend
     useMock?: boolean
@@ -72,11 +83,42 @@ export function buildVideoGenerationInput(
 ): VideoGenInput {
   return {
     imageUrl: input.imageUrl,
+    requestId: input.requestId,
+    referenceImageUrls: input.referenceImageUrls,
     motionPrompt: input.motionPrompt,
     aspectRatio: input.aspectRatio,
     resolution: input.resolution,
     durationSeconds: input.durationSeconds ?? 5,
     backend: input.useMock ? "mock" : input.backend,
+  }
+}
+
+export function buildViduVideoRequestPayload(input: VideoGenInput) {
+  const common = {
+    ...(input.requestId ? { requestId: input.requestId } : {}),
+    prompt: input.motionPrompt || "Generate a cinematic video from the image",
+    duration: input.durationSeconds ?? 5,
+    resolution: input.resolution === "1080p" ? "1080P" : "720P",
+    size:
+      input.aspectRatio === "9:16"
+        ? "720*1280"
+        : input.aspectRatio === "1:1"
+          ? "1024*1024"
+          : "1280*720",
+  }
+
+  if (input.referenceImageUrls?.length) {
+    return {
+      mode: "r2v" as const,
+      ...common,
+      referenceImageUrls: input.referenceImageUrls,
+    }
+  }
+
+  return {
+    mode: "i2v" as const,
+    ...common,
+    imageUrl: input.imageUrl,
   }
 }
 
@@ -88,6 +130,10 @@ export interface VideoGenResult {
   durationSeconds: number
   /** Backend used */
   backend: VideoGenBackend
+  /** Persisted local asset id when available */
+  assetId?: string
+  /** @internal Where the final video currently lives */
+  persistence?: "indexeddb" | "remote" | "missing"
   /** Generation metadata */
   metadata?: {
     seed?: number
@@ -141,6 +187,15 @@ export class VideoGenerationError extends Error {
     this.retryable = params.retryable ?? true
     this.detail = params.detail
   }
+}
+
+export function shouldReconnectViduSse(
+  input: Pick<VideoGenInput, "requestId">,
+  error: unknown,
+  reconnectAttempt: number,
+): boolean {
+  if (!input.requestId?.trim() || reconnectAttempt >= 1) return false
+  return !(error instanceof VideoGenerationError) || error.code === "NETWORK_ERROR"
 }
 
 // ---------------------------------------------------------------------------
@@ -283,11 +338,17 @@ async function runwayGenerateVideo(
 async function viduGenerateVideo(
   input: VideoGenInput,
   onProgress?: VideoGenProgressCallback,
+  reconnectAttempt = 0,
 ): Promise<VideoGenResult> {
-  return Sentry.startSpan(
-    { op: "video.generate", name: "Vidu SSE Call", attributes: { mode: input.backend || "i2v" } },
+  try {
+    return await Sentry.startSpan(
+    {
+      op: "video.generate",
+      name: "Vidu SSE Call",
+      attributes: { mode: input.referenceImageUrls?.length ? "r2v" : "i2v" },
+    },
     async (span) => {
-      const runtimeProvider = await getRuntimeProviderState()
+      const runtimeProvider = await getRuntimeProviderState("video")
       const requestedModel = runtimeProvider.overrides?.videoModel || "vidu"
       const taskContract = resolveRuntimeProviderTaskContract("video", runtimeProvider, requestedModel)
       if (!taskContract.supported) {
@@ -302,12 +363,7 @@ async function viduGenerateVideo(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      mode: "i2v",
-      prompt: input.motionPrompt || "Generate a cinematic video from the image",
-      imageUrl: input.imageUrl,
-      duration: input.durationSeconds ?? 5,
-      resolution: input.resolution === "1080p" ? "1080P" : "720P",
-      size: input.aspectRatio === "9:16" ? "720*1280" : input.aspectRatio === "1:1" ? "1024*1024" : "1280*720",
+      ...buildViduVideoRequestPayload(input),
       ...(runtimeProvider.overrides ? { _providerOverrides: runtimeProvider.overrides } : {}),
     }),
   })
@@ -386,9 +442,9 @@ async function viduGenerateVideo(
 
     if (!videoUrl) {
       throw new VideoGenerationError({
-        message: "Vidu API did not return video URL",
-        code: "API_ERROR",
-        retryable: true,
+        message: "Vidu SSE stream ended before a result URL",
+        code: "NETWORK_ERROR",
+        retryable: false,
       })
     }
 
@@ -402,6 +458,15 @@ async function viduGenerateVideo(
     reader.releaseLock()
   }
     })
+  } catch (error) {
+    if (!shouldReconnectViduSse(input, error, reconnectAttempt)) throw error
+    onProgress?.({
+      stage: "processing",
+      percent: 10,
+      message: "连接中断，正在恢复原视频任务...",
+    })
+    return viduGenerateVideo(input, onProgress, reconnectAttempt + 1)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -501,7 +566,7 @@ export async function generateVideoFromImage(
 
   try {
     const result = await generator(input, onProgress)
-    return { ...result, backend }
+    return await persistGeneratedVideoResult({ ...result, backend })
   } catch (error: any) {
     Sentry.captureException(error)
     if (error?.name === "AbortError") {
@@ -522,6 +587,55 @@ export async function generateVideoFromImage(
   }
 }
 
+type PersistGeneratedVideoResultDeps = {
+  fetchImpl?: typeof fetch
+  persistMediaBlobFn?: typeof persistMediaBlob
+  hydrateMediaAssetFn?: typeof hydrateMediaAsset
+}
+
+function isPersistableGeneratedVideoUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url)
+}
+
+export async function persistGeneratedVideoResult(
+  result: VideoGenResult,
+  deps: PersistGeneratedVideoResultDeps = {},
+): Promise<VideoGenResult> {
+  if (result.assetId || !isPersistableGeneratedVideoUrl(result.videoUrl)) {
+    return result
+  }
+
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const persistMediaBlobFn = deps.persistMediaBlobFn ?? persistMediaBlob
+  const hydrateMediaAssetFn = deps.hydrateMediaAssetFn ?? hydrateMediaAsset
+
+  try {
+    const response = await fetchImpl(result.videoUrl)
+    if (!response.ok) {
+      throw new Error(`下载真实视频结果失败: ${response.status}`)
+    }
+
+    const videoBlob = await response.blob()
+    const persistedVideo = await persistMediaBlobFn(videoBlob, {
+      kind: "video",
+      fileName: `generated-video-${Date.now()}.mp4`,
+      mimeType: videoBlob.type || "video/mp4",
+    })
+    const hydratedVideoUrl =
+      (await hydrateMediaAssetFn(persistedVideo.assetId)) ?? persistedVideo.objectUrl
+
+    return {
+      ...result,
+      videoUrl: hydratedVideoUrl,
+      assetId: persistedVideo.assetId,
+      persistence: "indexeddb",
+    }
+  } catch (error) {
+    console.warn("[videoGenerationService] Failed to persist generated video locally:", error)
+    return result
+  }
+}
+
 /**
  * Convert a VideoGenResult to data suitable for node persistence.
  */
@@ -531,6 +645,8 @@ export function videoResultToNodeData(result: VideoGenResult): {
   model: string
   status: "done"
   summary: string
+  assetId?: string
+  persistence?: "indexeddb" | "remote" | "missing"
 } {
   return {
     resultUrl: result.videoUrl,
@@ -540,5 +656,7 @@ export function videoResultToNodeData(result: VideoGenResult): {
     summary: result.backend === "mock"
       ? `本地演示视频已生成 (${result.durationSeconds}s, mock)`
       : `视频已生成 (${result.durationSeconds}s, ${result.backend})`,
+    assetId: result.assetId,
+    persistence: result.persistence,
   }
 }

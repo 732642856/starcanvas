@@ -2,12 +2,32 @@ import { expect, test, type Page } from "@playwright/test"
 import JSZip from "jszip"
 import { readFile } from "node:fs/promises"
 
-import { collectConsoleErrors, dismissOnboardingIfPresent, gotoCanvas, waitForCanvasReady } from "./utils"
+import { collectConsoleErrors, dismissOnboardingIfPresent, gotoCanvas } from "./utils"
 
 type ChatStreamRequest = {
   message?: string
   model?: string
   context?: Record<string, unknown>
+}
+
+type StarCanvasE2EBridge = {
+  getNodes: () => Array<{ id: string; data: Record<string, any> }>
+}
+
+async function hasGeneratedImageForAnyShot(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const e2e = (window as Window & { __starcanvasE2E?: StarCanvasE2EBridge }).__starcanvasE2E
+    const nodes = e2e?.getNodes() ?? []
+    const nodeIds = new Set(nodes.map((node) => node.id))
+    return nodes.some((node) => {
+      const imageNodeId = node.data.shot?.generatedImageNodeId
+      return Boolean(
+        imageNodeId
+        && nodeIds.has(imageNodeId)
+        && nodes.some((candidate) => candidate.id === imageNodeId && candidate.data.nodeKind === "ai-generated-image"),
+      )
+    })
+  })
 }
 
 function streamText(content: string): string {
@@ -59,12 +79,10 @@ async function openExportPreflight(page: Page) {
 }
 
 test.describe("Auto Agent creative -> production handoff", () => {
-  test("can resume clarification after reload, continue to production, and export Jianying handoff", async ({ page }) => {
+  test("can turn a vague creative ask into production and export Jianying handoff", async ({ page }) => {
     test.setTimeout(240_000)
     const errors = collectConsoleErrors(page)
     const requests: ChatStreamRequest[] = []
-    let imageRequests = 0
-
     await page.route("**/api/ai/chat/stream", async (route) => {
       const requestBody = route.request().postDataJSON() as ChatStreamRequest
       requests.push(requestBody)
@@ -133,13 +151,12 @@ test.describe("Auto Agent creative -> production handoff", () => {
     })
 
     await page.route("**/api/ai/generate-image", async (route) => {
-      imageRequests += 1
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           imageUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
-          requestId: `e2e-auto-agent-image-${imageRequests}`,
+          requestId: "e2e-auto-agent-image",
         }),
       })
     })
@@ -213,28 +230,16 @@ test.describe("Auto Agent creative -> production handoff", () => {
     await input.press("Enter")
 
     await expect(panel).toContainText("我先确认一下创作方向", { timeout: 20_000 })
-    await expect(panel).toContainText("需要澄清：你想把它推进到哪一步", { timeout: 20_000 })
-    await panel.getByRole("button", { name: "执行 1 个操作" }).click()
+    await expect(panel).toContainText("需要澄清：你想先走哪条主路径", { timeout: 20_000 })
+    await expect(panel).toContainText("导演/叙事风格", { timeout: 20_000 })
+    await panel.getByRole("button", { name: "生成分镜" }).click()
 
-    await page.reload({ waitUntil: "domcontentloaded" })
-    await waitForCanvasReady(page)
-    await dismissOnboardingIfPresent(page)
-    await openChatPanel(page)
 
-    const reloadedPanel = page.getByTestId("chat-panel")
-    await expect(reloadedPanel.getByTestId("pending-clarification-banner")).toContainText("你想把它推进到哪一步？")
-    await reloadedPanel.getByRole("button", { name: "生成分镜" }).click()
 
-    const reloadedInput = page.getByTestId("chat-input")
-    await expect(reloadedInput).toHaveValue("生成分镜")
-    await reloadedInput.fill("生成分镜，竖屏 9:16，直接进入生产。")
-    await reloadedInput.press("Enter")
 
-    await expect.poll(() => requests.length, { timeout: 20_000 }).toBe(2)
-    await expect(reloadedPanel).toContainText("即将执行以下画布操作", { timeout: 20_000 })
-    await reloadedPanel.getByRole("button", { name: /执行 \d+ 个操作/ }).click()
+    await expect(panel).toContainText("已选择：生成分镜", { timeout: 20_000 })
 
-    await expect(reloadedPanel.getByText(/已执行 \d+ 个操作/)).toBeVisible({ timeout: 20_000 })
+    await expect(panel.getByText(/已执行 \d+ 个操作/)).toBeVisible({ timeout: 20_000 })
     await expect(page.getByTestId("production-run-queue-panel")).toBeVisible({ timeout: 20_000 })
     await expect(page.getByTestId("production-preflight-summary")).toContainText("0 阻塞", { timeout: 20_000 })
     await expect(page.getByTestId("production-run-queue-start")).toBeEnabled({ timeout: 20_000 })
@@ -242,7 +247,7 @@ test.describe("Auto Agent creative -> production handoff", () => {
     await page.getByTestId("production-run-queue-start").click()
     await expect(page.getByTestId("production-run-queue-status")).toContainText("已完成", { timeout: 60_000 })
     await expect(page.getByTestId("production-run-queue-progress")).toContainText("完成", { timeout: 60_000 })
-    await expect.poll(() => imageRequests, { timeout: 20_000 }).toBeGreaterThanOrEqual(1)
+    await expect.poll(() => hasGeneratedImageForAnyShot(page), { timeout: 20_000 }).toBe(true)
 
     await openExportPreflight(page)
     const downloadPromise = page.waitForEvent("download")

@@ -1,5 +1,6 @@
 import type { ProviderCapability } from "./provider-registry";
 import { resolveProviderTaskContract } from "./providerTaskRouting.ts";
+import { shouldApplySessionApiKeyForTask } from "./providerSessionScope.ts";
 
 export type ProviderHealthItemId = "text" | "image" | "video" | "tts" | "voice-clone";
 export type ProviderHealthStatus = "ready" | "warning" | "blocked";
@@ -22,6 +23,7 @@ export interface ProviderHealthProvider {
 
 export interface ProviderHealthSummaryInput {
   serverConfig: ProviderHealthServerConfig | null;
+  apiBaseUrl?: string;
   sessionApiKey: string;
   useLocalOverride: boolean;
   useMock: boolean;
@@ -53,12 +55,29 @@ function hasSessionKey(input: ProviderHealthSummaryInput): boolean {
   return Boolean(input.sessionApiKey.trim());
 }
 
+function hasScopedTextOrImageSessionKey(input: ProviderHealthSummaryInput): boolean {
+  return shouldApplySessionApiKeyForTask({
+    taskType: "image",
+    sessionApiKey: input.sessionApiKey,
+    apiBaseUrl: input.apiBaseUrl,
+    routeHint: input.useLocalOverride
+      ? {
+          baseUrl: input.apiBaseUrl,
+          defaultModel: input.defaultModel,
+          imageModel: input.imageModel,
+          videoModel: input.videoModel,
+          timeoutMs: input.timeoutMs ? Number(input.timeoutMs) : undefined,
+        }
+      : null,
+  });
+}
+
 function hasServerKey(input: ProviderHealthSummaryInput): boolean {
   return Boolean(input.serverConfig?.hasApiKey);
 }
 
 function hasAnyTextOrImageKey(input: ProviderHealthSummaryInput): boolean {
-  return hasSessionKey(input) || hasServerKey(input);
+  return hasScopedTextOrImageSessionKey(input) || hasServerKey(input);
 }
 
 function hasDashScopeVideoKey(input: ProviderHealthSummaryInput): boolean {

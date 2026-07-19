@@ -30,4 +30,13 @@ describe("resolveViduModel", () => {
     assert.equal(resolveViduModel(undefined, "start-end"), "vidu/viduq3-turbo_img2video");
     assert.equal(resolveViduModel("custom-vidu-model", "t2v"), "custom-vidu-model");
   });
+
+  it("resolves Vidu reference-video models without falling back to text-to-video", () => {
+    assert.equal(resolveViduModel(undefined, "r2v"), "vidu/viduq3-turbo_reference2video");
+    assert.equal(resolveViduModel("viduq3-turbo", "r2v"), "vidu/viduq3-turbo_reference2video");
+    assert.equal(
+      resolveViduModel("vidu/viduq3-drama_reference2video", "r2v"),
+      "vidu/viduq3-drama_reference2video",
+    );
+  });
 });

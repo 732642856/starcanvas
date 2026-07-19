@@ -6,14 +6,27 @@
 
 import { FFmpeg } from "@ffmpeg/ffmpeg"
 import { fetchFile, toBlobURL } from "@ffmpeg/util"
-import { buildFinalCompositionArgs } from "./videoCompositionPlan"
+import { buildFinalCompositionArgs, buildMultiClipConcatArgs } from "./videoCompositionPlan"
+import { assertBrowserCompositionInputSize } from "./videoCompositionGuard"
 
 // ── 单例 ────────────────────────────────────────────────────────────────────
-const BASE_URL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm"
+const BASE_URL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd"
 
 let ffmpeg: FFmpeg | null = null
 let loadPromise: Promise<void> | null = null
 let loaded = false
+const ffmpegLogTail: string[] = []
+
+function appendFfmpegLog(message: string) {
+  const normalized = message.trim()
+  if (!normalized) return
+  ffmpegLogTail.push(normalized)
+  if (ffmpegLogTail.length > 8) ffmpegLogTail.shift()
+}
+
+function ffmpegFailureDetail() {
+  return ffmpegLogTail.at(-1) || "无上游诊断"
+}
 
 /**
  * 获取 FFmpeg 单例（懒加载，仅首次调用的 30MB 下载）
@@ -25,6 +38,7 @@ export async function getFFmpeg(): Promise<FFmpeg> {
     loadPromise = (async () => {
       try {
         ffmpeg = new FFmpeg()
+        ffmpeg.on("log", ({ message }) => appendFfmpegLog(message))
         await ffmpeg.load({
           coreURL: await toBlobURL(`${BASE_URL}/ffmpeg-core.js`, "text/javascript"),
           wasmURL: await toBlobURL(`${BASE_URL}/ffmpeg-core.wasm`, "application/wasm"),
@@ -129,8 +143,6 @@ export interface CompositionResult {
  * 5. 输出 MP4
  */
 export async function composeVideo(input: CompositionInput): Promise<CompositionResult> {
-  const ff = await getFFmpeg()
-
   const w = input.width ?? 1080
   const h = input.height ?? 1920
   const fps = input.fps ?? 24
@@ -138,29 +150,37 @@ export async function composeVideo(input: CompositionInput): Promise<Composition
   const outputFile = `${outputName}.mp4`
 
   // ---- 1. 写入所有视频片段 ----
+  const resolvedClips = await Promise.all(input.clips.map((clip) => resolveFile(clip.data)))
+  const totalInputBytes = resolvedClips.reduce((total, clip) => total + clip.size, 0)
+  assertBrowserCompositionInputSize(totalInputBytes)
+
+  const ff = await getFFmpeg()
   const clipFiles: string[] = []
   for (let i = 0; i < input.clips.length; i++) {
     const name = `clip_${i}.mp4`
-    const data = await resolveFile(input.clips[i].data)
-    await ff.writeFile(name, await fetchFile(data))
+    await ff.writeFile(name, await fetchFile(resolvedClips[i]))
     clipFiles.push(name)
   }
 
-  // ---- 2. 创建 concat demuxer 列表 ----
-  const concatList = clipFiles.map((f) => `file '${f}'`).join("\n")
-  await ff.writeFile("concat_list.txt", new TextEncoder().encode(concatList))
-
-  // ---- 3. 拼接视频 ----
-  const concatOutput = "concat_temp.mp4"
-  await ff.exec([
-    "-f", "concat",
-    "-safe", "0",
-    "-i", "concat_list.txt",
-    "-c", "copy",
-    concatOutput,
-  ])
-
-  const inputFiles = [concatOutput]
+  // ---- 2. 拼接视频 ----
+  // Single browser-recorded WebM can go straight to final rendering. Multiple
+  // inputs use concat filter normalization, safe for mixed WebM/MP4 sources.
+  const needsFinalRender = Boolean(input.narration || input.bgm || input.subtitle)
+  const concatOutput = clipFiles.length === 1
+    ? clipFiles[0]
+    : needsFinalRender
+      ? "concat_temp.mp4"
+      : outputFile
+  if (clipFiles.length > 1) {
+    const concatExitCode = await ff.exec(buildMultiClipConcatArgs({
+      clipFiles,
+      outputFile: concatOutput,
+      width: w,
+      height: h,
+      fps,
+    }))
+    if (concatExitCode !== 0) throw new Error(`视频片段拼接失败（FFmpeg exit ${concatExitCode}）：${ffmpegFailureDetail()}`)
+  }
 
   // ---- 4. 准备音频输入 ----
   const audioInputs: Array<{ filename: string; volume?: number; delay?: number }> = []
@@ -194,17 +214,40 @@ export async function composeVideo(input: CompositionInput): Promise<Composition
   }
 
   // ---- 6. 最终输出 ----
-  const allArgs = buildFinalCompositionArgs({
-    concatOutput,
-    outputFile,
-    audioInputs,
-    subtitle: input.subtitle ? { filename: srtName, style: input.subtitle.style } : undefined,
-    width: w,
-    height: h,
-    fps,
-  })
+  // Subtitle rendering and audio encoding together can exceed the wasm memory
+  // ceiling. Both operations work independently, so sequence them here.
+  const subtitleIntermediate = "subtitle_intermediate.mp4"
+  const needsStagedRender = Boolean(input.subtitle && audioInputs.length > 0)
+  let finalInput = concatOutput
+  if (needsStagedRender) {
+    const subtitleExitCode = await ff.exec(buildFinalCompositionArgs({
+      concatOutput,
+      outputFile: subtitleIntermediate,
+      audioInputs: [],
+      subtitle: { filename: srtName, style: input.subtitle?.style },
+      width: w,
+      height: h,
+      fps,
+    }))
+    if (subtitleExitCode !== 0) throw new Error(`字幕中间渲染失败（FFmpeg exit ${subtitleExitCode}）：${ffmpegFailureDetail()}`)
+    finalInput = subtitleIntermediate
+  }
 
-  await ff.exec(allArgs)
+  // Video-only multi-clip concat is already normalized to the requested MP4.
+  // Skip a second encode only when no additional filter is required.
+  if (concatOutput !== outputFile) {
+    const allArgs = buildFinalCompositionArgs({
+      concatOutput: finalInput,
+      outputFile,
+      audioInputs,
+      subtitle: needsStagedRender ? undefined : input.subtitle ? { filename: srtName, style: input.subtitle.style } : undefined,
+      width: w,
+      height: h,
+      fps,
+    })
+    const finalExitCode = await ff.exec(allArgs)
+    if (finalExitCode !== 0) throw new Error(`最终视频转码失败（FFmpeg exit ${finalExitCode}）：${ffmpegFailureDetail()}`)
+  }
 
   // ---- 7. 读取结果 ----
   const data = await ff.readFile(outputFile)
@@ -212,7 +255,7 @@ export async function composeVideo(input: CompositionInput): Promise<Composition
   const url = URL.createObjectURL(blob)
 
   // 清理临时文件
-  for (const f of [...clipFiles, "concat_list.txt", concatOutput, ...audioInputs.map((audio) => audio.filename)]) {
+  for (const f of [...clipFiles, ...(concatOutput === clipFiles[0] ? [] : [concatOutput]), ...(needsStagedRender ? [subtitleIntermediate] : []), ...audioInputs.map((audio) => audio.filename)]) {
     try { await ff.deleteFile(f) } catch {}
   }
   if (input.subtitle) {

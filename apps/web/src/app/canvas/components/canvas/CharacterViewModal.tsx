@@ -194,7 +194,11 @@ export function CharacterViewPanel({
               </span>
             )}
           </div>
-          <button onClick={onClose} className="rounded-lg p-1 transition-colors hover:bg-white/10">
+          <button
+            onClick={onClose}
+            aria-label="关闭三视图生成面板"
+            className="rounded-lg p-1 transition-colors hover:bg-white/10"
+          >
             <X size={16} strokeWidth={ICON_CONFIG.strokeWidth} style={{ color: DESIGN_TOKENS.textMuted }} />
           </button>
         </div>

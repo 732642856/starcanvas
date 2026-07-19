@@ -11,6 +11,7 @@ export interface ViduTaskRequest {
   model?: string;
   prompt: string;
   imageUrl?: string;
+  referenceImageUrls?: string[];
   firstFrameUrl?: string;
   lastFrameUrl?: string;
   duration?: number;
@@ -78,7 +79,7 @@ export type WaitForViduTaskResultOutcome =
   | {
       ok: false;
       taskId: string;
-      status: "FAILED" | "CANCELED" | "TIMEOUT";
+      status: "FAILED" | "CANCELED" | "TIMEOUT" | "UNKNOWN";
       error: string;
       code?: string;
       result?: ViduTaskQueryResult;
@@ -100,6 +101,7 @@ export async function createViduTask(
     model,
     prompt,
     imageUrl,
+    referenceImageUrls,
     firstFrameUrl,
     lastFrameUrl,
     duration,
@@ -112,6 +114,10 @@ export async function createViduTask(
 
   const resolvedModel = resolveViduModel(model, mode);
   const input: Record<string, unknown> = { prompt };
+  const references = mode === "r2v" ? referenceImageUrls ?? [] : [];
+  if (mode === "r2v" && (references.length < 1 || references.length > 7)) {
+    throw new Error("Reference video requires between 1 and 7 reference images.");
+  }
   const providerImageUrl =
     mode === "i2v" && isDataImageUrl(imageUrl)
       ? await uploadDataUrlToDashScopeOss({
@@ -121,10 +127,29 @@ export async function createViduTask(
           fileNamePrefix: "starcanvas-vidu-i2v",
         })
       : imageUrl;
-  const needsOssResolve = mode === "i2v" && typeof providerImageUrl === "string" && providerImageUrl.startsWith("oss://");
+  const providerReferenceUrls = await Promise.all(references.map(async (url) => (
+    isDataImageUrl(url)
+      ? uploadDataUrlToDashScopeOss({
+          dataUrl: url,
+          apiKey,
+          baseUrl,
+          fileNamePrefix: "starcanvas-vidu-r2v",
+        })
+      : url
+  )));
+  const needsOssResolve =
+    (mode === "i2v" && typeof providerImageUrl === "string" && providerImageUrl.startsWith("oss://")) ||
+    (mode === "r2v" && providerReferenceUrls.some((url) => url.startsWith("oss://")));
 
   if (mode === "i2v" && providerImageUrl) {
-    input.media = [{ type: "image", url: providerImageUrl }];
+    if (resolvedModel.toLowerCase().startsWith("happyhorse-")) {
+      input.first_frame = providerImageUrl;
+      input.media = [{ type: "first_frame", url: providerImageUrl }];
+    } else {
+      input.media = [{ type: "image", url: providerImageUrl }];
+    }
+  } else if (mode === "r2v") {
+    input.media = providerReferenceUrls.map((url) => ({ type: "image", url }));
   } else if (mode === "start-end" && firstFrameUrl && lastFrameUrl) {
     input.media = [
       { type: "image", url: firstFrameUrl },
@@ -222,12 +247,30 @@ export async function waitForViduTaskResult(
   const maxPollTime = maxPollMinutes * 60 * 1000;
   let lastStatus = "PENDING";
   let pollCount = 0;
+  let consecutiveQueryErrors = 0;
 
   while (now() - startTime < maxPollTime) {
     pollCount += 1;
     await sleepImpl(pollIntervalMs);
 
-    const result = await queryViduTask(params.taskId, params.apiKey, params.baseUrl);
+    let result: ViduTaskQueryResult;
+    try {
+      result = await queryViduTask(params.taskId, params.apiKey, params.baseUrl);
+      consecutiveQueryErrors = 0;
+    } catch {
+      consecutiveQueryErrors += 1;
+      if (consecutiveQueryErrors >= 3) {
+        return {
+          ok: false,
+          taskId: params.taskId,
+          status: "UNKNOWN",
+          error: `视频任务查询连续失败，请稍后通过 task_id 查询：${params.taskId}`,
+          pollCount,
+          elapsedMs: now() - startTime,
+        };
+      }
+      continue;
+    }
     const status = result.output?.task_status || "UNKNOWN";
     const elapsedMs = now() - startTime;
 

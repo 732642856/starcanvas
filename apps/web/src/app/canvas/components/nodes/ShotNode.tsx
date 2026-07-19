@@ -22,6 +22,7 @@ import {
 } from "@/lib/storyboard/characterIdentitySummary"
 import { InlineSlashCommandMenu } from "../menus/InlineSlashCommandMenu"
 import { VoicePanel } from "./VoicePanel"
+import { buildVideoPromptDirection } from "@/lib/storyboard/videoPromptDirector"
 
 interface ShotNodeProps extends NodeProps {
   data: CanvasNodeData
@@ -42,8 +43,18 @@ export const ShotNode = memo(function ShotNode({ id, data, selected, width, heig
   const canRetry = shot?.generationRetryable !== false
   const hasVisualPrompt = Boolean(shot?.visualPrompt?.trim())
   const showPromptEditor = selected || hasVisualPrompt || Boolean(generationError)
+  const videoDirection = useMemo(
+    () => buildVideoPromptDirection({
+      action: shot?.description?.trim() || shot?.visualPrompt?.trim(),
+      shotType: shot?.shotType,
+      cameraMovement: shot?.cameraMovement,
+      hasReferenceFrame: hasGeneratedImage,
+    }),
+    [hasGeneratedImage, shot?.cameraMovement, shot?.description, shot?.shotType, shot?.visualPrompt],
+  )
   const cinematicShot = shot?.cinematicShot
   const continuityWarnings = shot?.continuityWarnings ?? []
+  const videoReferenceWarning = shot?.videoReferenceWarning?.trim()
   const characterSummaries = useMemo(
     () => summarizeCharacterIdentities(shot?.characterIdentities),
     [shot?.characterIdentities],
@@ -248,6 +259,11 @@ export const ShotNode = memo(function ShotNode({ id, data, selected, width, heig
                 </div>
               )}
 
+              {videoReferenceWarning && (
+                <div data-testid="shot-video-reference-warning" className="rounded-lg px-2 py-1.5 text-[11px] leading-relaxed" style={{ color: "rgba(253, 230, 138, 0.92)", backgroundColor: "rgba(245, 158, 11, 0.1)" }}>
+                  {videoReferenceWarning}
+                </div>
+              )}
               {selected && isEditingCharacters && (
                 <div data-testid="shot-character-editor" className="space-y-2 rounded-lg border p-2" style={{ borderColor: "rgba(168, 85, 247, 0.18)", backgroundColor: "rgba(15, 23, 42, 0.35)" }}>
                   {(shot?.characterIdentities ?? []).map((identity, index) => (
@@ -393,6 +409,29 @@ export const ShotNode = memo(function ShotNode({ id, data, selected, width, heig
                 style={{ borderColor: DESIGN_TOKENS.border, minHeight: selected ? 112 : 72 }}
                 placeholder="生图提示词，留空时使用剧本文本"
               />
+              <div className="space-y-1 rounded-lg border p-2" style={{ borderColor: DESIGN_TOKENS.border, backgroundColor: "rgba(0,0,0,0.12)" }}>
+                <div className="flex items-center justify-between gap-2 text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                  <span>视频导演 Prompt</span>
+                  <span>{videoDirection.controlPlan.splitShotRecommended ? "建议拆镜 + 白模预演" : videoDirection.controlPlan.whiteboxPrevisRecommended ? "建议白模预演" : "可直接 I2V"}</span>
+                </div>
+                <textarea
+                  data-testid={`shot-video-direction-${id}`}
+                  readOnly
+                  value={videoDirection.prompt}
+                  className="nodrag nopan nowheel w-full resize-none rounded-md border bg-transparent px-2 py-1.5 text-[10px] leading-relaxed text-white/60 focus:outline-none"
+                  style={{ borderColor: DESIGN_TOKENS.border, minHeight: 82 }}
+                />
+                {videoDirection.controlPlan.whiteboxPrevisRecommended && (
+                  <div className="text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                    {videoDirection.controlPlan.pose ? "姿态" : ""}{videoDirection.controlPlan.pose && videoDirection.controlPlan.depth ? " + " : ""}{videoDirection.controlPlan.depth ? "深度" : ""} 控制建议先走白模预演。
+                  </div>
+                )}
+                {videoDirection.controlPlan.splitShotRecommended && (
+                  <div className="text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                    检测到连续动作，当前视频只保留第一个动作；后续动作建议拆成下一镜。
+                  </div>
+                )}
+              </div>
             </section>
           ) : (
             <section className="rounded-xl border px-3 py-2 text-[11px] leading-5" style={{ borderColor: DESIGN_TOKENS.border, color: DESIGN_TOKENS.textMuted, backgroundColor: "rgba(255,255,255,0.02)" }}>

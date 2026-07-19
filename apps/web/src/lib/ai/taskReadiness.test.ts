@@ -224,6 +224,34 @@ test("task readiness falls back to provider health and marks production as warni
   assert.equal(summary.warningCount, 1);
 });
 
+test("task readiness treats the latest failed real image smoke as a production blocker", () => {
+  const summary = buildTaskReadinessSummary({
+    providerHealthSummary: makeHealthSummary({ text: "ready", image: "ready", video: "ready" }),
+    providerSmokeReport: null,
+    storedProviderSmokeResults: {
+      image: {
+        target: "image",
+        status: "failed",
+        message: "图片生成超时，请稍后重试。",
+        details: ["上游服务响应时间过长，可能是服务繁忙或当前图片处理耗时过高。"],
+        updatedAt: Date.now(),
+        summaryCategory: "timeout",
+        summarySeverity: "warning",
+        summaryTitle: "请求超时",
+        hints: ["可稍后重试，或切换到另一个可用 provider。"],
+      },
+    },
+  });
+
+  assert.equal(summary.items.find((item) => item.taskId === "auto-agent-project-bootstrap")?.status, "warning");
+  assert.equal(summary.items.find((item) => item.taskId === "image-production")?.status, "blocked");
+  assert.equal(summary.items.find((item) => item.taskId === "production-run")?.status, "blocked");
+  assert.match(
+    summary.items.find((item) => item.taskId === "image-production")?.blockingReasons.join("\n") ?? "",
+    /最近一次真实 smoke：请求超时/,
+  );
+});
+
 test("task readiness shared helpers expose stable primary hint order", () => {
   const item = {
     blockingReasons: ["图片生成尚未就绪。", "缺少 API Key。"],

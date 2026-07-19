@@ -121,7 +121,7 @@ test("reverse-prompt asset survives reload and can be re-consumed as a prompt no
       name: "反推提示词：Reverse Prompt Source",
     });
 
-  await page.getByTitle("素材库").click();
+  await page.getByRole("button", { name: "素材库" }).first().click();
   await expect(page.getByRole("heading", { name: "素材库" })).toBeVisible({ timeout: 15_000 });
   await page.getByText("反推提示词：Reverse Prompt Source").click();
 

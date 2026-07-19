@@ -7,6 +7,7 @@ import {
   getProviderRealSmokeConfirmationText,
   type ProviderRealSmokeTarget,
 } from "../../../../lib/ai/providerSmoke.ts";
+import { buildImageEditFormData } from "../generate-image/image-edit-form.ts";
 import { resolveViduAuth } from "../generate-video-vidu/vidu-auth.ts";
 import {
   createViduTask,
@@ -35,6 +36,9 @@ export interface ProviderRealSmokeResult {
     mimeType?: string;
   };
 }
+
+const REFERENCE_IMAGE_SMOKE_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLKOwAAAABJRU5ErkJggg==";
 
 function blocked(target: ProviderRealSmokeTarget, message: string, details?: string[]): ProviderRealSmokeResult {
   return { ok: false, target, message, status: "blocked", details };
@@ -190,7 +194,7 @@ export async function runProviderRealSmoke(
             response_format: "b64_json",
           }),
         },
-        30_000,
+        config.timeoutMs,
       );
 
       const text = await response.text();
@@ -232,6 +236,72 @@ export async function runProviderRealSmoke(
     } catch (error) {
       const normalized = normalizeClientError(error, config.type);
       return failed("image", normalized.message);
+    }
+  }
+
+  if (input.target === "image-edit") {
+    let config: ReturnType<typeof mergeProviderConfig>;
+    try {
+      config = mergeProviderConfig(input._providerOverrides);
+    } catch (error) {
+      return blocked("image-edit", error instanceof Error ? error.message : "图片 Provider 未配置。");
+    }
+
+    const model = input._providerOverrides?.imageModel || config.defaultImageModel;
+    if (!model) return blocked("image-edit", "图片模型未配置。");
+
+    try {
+      const response = await fetchWithTimeout(
+        `${config.baseUrl}/images/edits`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${config.apiKey}` },
+          body: buildImageEditFormData({
+            model,
+            prompt: "Minimal reference image edit smoke. Preserve the source image identity and composition; add a subtle monochrome frame.",
+            size: "1024x1024",
+            sourceImageValues: [REFERENCE_IMAGE_SMOKE_DATA_URL],
+          }),
+        },
+        config.timeoutMs,
+      );
+      const text = await response.text();
+      if (!response.ok) {
+        const normalized = normalizeUpstreamError(response.status, text, config.type);
+        return failed("image-edit", normalized.message, [
+          "这是 images/edits 合同，不等同于普通 images/generations 生图。",
+        ]);
+      }
+
+      let artifact: ProviderRealSmokeResult["artifact"] | undefined;
+      try {
+        const payload = JSON.parse(text) as { data?: Array<{ b64_json?: string; url?: string }> };
+        const firstImage = payload.data?.[0];
+        if (firstImage?.b64_json) {
+          artifact = {
+            type: "image",
+            url: `data:image/png;base64,${firstImage.b64_json}`,
+            mimeType: "image/png",
+          };
+        } else if (firstImage?.url) {
+          artifact = { type: "image", url: firstImage.url };
+        }
+      } catch {
+        artifact = undefined;
+      }
+
+      return {
+        ...passed("image-edit", `参考图编辑 smoke 已通过（${model}）。`, [
+          "已验证 images/edits 请求合同；仍建议在首张关键帧上检查角色一致性。",
+          "这是一次极小参考图编辑真实请求，会消耗少量图片额度。",
+        ]),
+        artifact,
+      };
+    } catch (error) {
+      const normalized = normalizeClientError(error, config.type);
+      return failed("image-edit", normalized.message, [
+        "这是 images/edits 合同，不等同于普通 images/generations 生图。",
+      ]);
     }
   }
 

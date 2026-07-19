@@ -80,12 +80,19 @@ import { quickLayout } from "../utils/dagre-layout"
 import type { WorkflowRunEvent } from "../types/workflow-run"
 import { enhancePromptWithCinematicContext } from "@/lib/cinematic/context"
 import { getDefaultModel, getDefaultImageModel, getRuntimeProviderState } from "@/lib/ai/client"
+import type { ProviderSessionTaskType } from "@/lib/ai/providerSessionScope"
 import { buildRunRequest } from "@/lib/ai/run-request"
 import { normalizeGenerationError, formatGenerationErrorForDisplay } from "@/lib/ai/normalizeGenerationError"
 import { persistImageDataUrl } from "@/lib/assets/localImageStore"
 import { buildVideoGenerationInput, generateVideoFromImage, VideoGenerationError, videoResultToNodeData, type VideoGenBackend } from "../utils/videoGenerationService"
-import { resolveProviderReadableVideoSourceImage } from "../utils/videoSourceImage"
-import { generateImageFromPrompt } from "../utils/imageGeneration"
+import {
+  describeVideoReferenceAvailability,
+  resolveProviderReadableCharacterReferenceImages,
+  resolveProviderReadableVideoSourceImage,
+  selectFirstCanvasImageSource,
+  selectVideoSourceImageUrl,
+} from "../utils/videoSourceImage"
+import { generateImageFromPrompt, resolveImageGenerationSize } from "../utils/imageGeneration"
 import { requestImageUpscale } from "../utils/upscaleService"
 import { applyFocusEdit } from "../utils/focusEditService"
 import { requestTalkingPhoto } from "../utils/talkingPhotoService"
@@ -96,7 +103,12 @@ import { composeVideo } from "../utils/videoCompositionBrowser"
 import type { VideoClipInput, AudioTrackInput, SubtitleInput } from "../utils/videoCompositionBrowser"
 import { importStoryboardDraftToCanvas } from "@/features/storyboard/importDraftToCanvas"
 import { buildStoryboardDraftFromVideoAnalysis } from "@/features/storyboard/videoAnalysisToStoryboardDraft"
-import { imageUrlToBase64 } from "../utils/imagePromptReverser"
+import { assetUrlToDataUrl } from "../utils/providerMediaDataUrl"
+import { orchestrateCrew } from "@/lib/agents"
+import { mapRunToAgentNodePatch } from "@/lib/workbench-kernel/adapters/canvas/agent-node-run-state"
+import { SkillRuntimeError } from "@/lib/workbench-kernel/runtime/skill-runtime"
+import { createAgentSkillRuntime } from "./createAgentSkillRuntime"
+import { createFilmCrewRuntimeRequest } from "./agentSkillRuntimeRequest"
 
 interface RunContext {
   runId: string
@@ -184,8 +196,12 @@ function isTextModelStep(kind: CanvasNodeKind): boolean {
   return ["text", "script", "storyboard", "subtitle"].includes(kind)
 }
 
-function isImageModelStep(kind: CanvasNodeKind): boolean {
-  return ["image-generation", "image-result"].includes(kind)
+function isDeferredImagePromptStep(kind: CanvasNodeKind, data?: CanvasNodeData): boolean {
+  return kind === "prompt" && data?.imageGenerationDeferred === true && data?.autoAgentIntent === "generate-image"
+}
+
+function isImageModelStep(kind: CanvasNodeKind, data?: CanvasNodeData): boolean {
+  return ["image-generation", "image-result"].includes(kind) || isDeferredImagePromptStep(kind, data)
 }
 
 function isFocusEditStep(kind: CanvasNodeKind): boolean {
@@ -210,6 +226,12 @@ function isVideoAnalyzeStep(kind: CanvasNodeKind): boolean {
 
 function isVideoGenerationStep(kind: CanvasNodeKind): boolean {
   return kind === "video-generation"
+}
+
+function resolveProviderTaskTypeForNode(kind: CanvasNodeKind, data?: CanvasNodeData): ProviderSessionTaskType {
+  if (isVideoGenerationStep(kind)) return "video"
+  if (isImageModelStep(kind, data) || isFocusEditStep(kind) || isPosterStep(kind)) return "image"
+  return "text"
 }
 
 function isCameraControlStep(kind: CanvasNodeKind): boolean {
@@ -454,9 +476,10 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
 
     const upstreamText = upstreamContent.join("\n\n")
     const currentContent = overridePrompt ?? (node.data.content || node.data.prompt || "")
+    const runtimeTaskType = resolveProviderTaskTypeForNode(kind, node.data)
 
     // Resolve model names from config (respects .env.local + Local Override)
-    const runtimeProvider = await getRuntimeProviderState()
+    const runtimeProvider = await getRuntimeProviderState(runtimeTaskType)
     const localModels = resolveLocalModelOverrides(runtimeProvider.overrides ?? undefined)
     const [resolvedTextModel, resolvedImageModel] = await Promise.all([
       localModels.textModel ? Promise.resolve(localModels.textModel) : getDefaultModel(),
@@ -639,9 +662,19 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     // ------------------------------------------------------------------
     // IMAGE MODEL STEP
     // ------------------------------------------------------------------
-    if (isImageModelStep(kind)) {
+    if (isImageModelStep(kind, node.data)) {
       const startedAt = new Date().toISOString()
       const providerOverrides = runtimeProvider.overrides
+      const requestedImageSize = resolveImageGenerationSize(
+        node.data.preferredImageSize,
+        node.data.preferredAspectRatio,
+      )
+      const requestedImageModel =
+        typeof node.data.preferredImageModel === "string" && node.data.preferredImageModel.trim()
+          ? node.data.preferredImageModel.trim()
+          : typeof node.data.model === "string" && node.data.model.trim()
+            ? node.data.model.trim()
+            : undefined
 
       // Cinematic enhancement (still needed as async call for upstream node walk)
       const baseImagePrompt = upstreamText || currentContent || "A cinematic scene"
@@ -652,6 +685,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         taskType: "image",
         prompt: currentContent,
         upstreamContent: upstreamText || undefined,
+        nodeModel: requestedImageModel,
         localImageModel: localModels.imageModel,
         envDefaultImageModel: resolvedImageModel,
         cinematicPrompt,
@@ -671,7 +705,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
       const result = await generateImageFromPrompt({
         prompt: finalPrompt,
         model,
-        size: "1792x1024",
+        size: requestedImageSize,
         sourceImage: referenceImages.length > 0 ? referenceImages : undefined,
       })
 
@@ -712,6 +746,40 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         startedAt,
         status: "success",
       })
+      const appendGeneratedImageNode = (title = "生成结果") => {
+        const newNode = {
+          id: `node-${Date.now()}`,
+          type: "image" as const,
+          position: { x: node.position.x + 340, y: node.position.y },
+          data: {
+            title,
+            imageUrl: displayUrl,
+            generatedImageUrl: imageUrl,
+            assetId,
+            nodeKind: "ai-generated-image" as CanvasNodeKind,
+            source: "generated" as const,
+            sourcePromptId: node.id,
+            prompt: currentContent,
+            summary: result.prompt,
+            model,
+            size: requestedImageSize,
+            persistence: assetId ? "indexeddb" as const : undefined,
+            displayWidth: 280,
+            displayHeight: 200,
+            status: "done" as const,
+            runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "图片已生成" }),
+            createdAt: Date.now(),
+          },
+        }
+        setNodes((nds) => [...nds, newNode])
+        setEdges((eds) => [...eds, {
+          id: `edge-${node.id}-${newNode.id}`,
+          source: node.id,
+          target: newNode.id,
+          type: "creative",
+          animated: true,
+        }])
+      }
 
       // For image-generation node, create/update the image-result node
       if (kind === "image-generation") {
@@ -732,41 +800,20 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
             summary: `已生成图片 (${finalPrompt.slice(0, 50)}...)`,
           })
         } else {
-          // Create a new image-result node
-          const newNode = {
-            id: `node-${Date.now()}`,
-            type: "image" as const,
-            position: { x: node.position.x + 340, y: node.position.y },
-            data: {
-              title: "生成结果",
-              imageUrl: displayUrl,
-              generatedImageUrl: imageUrl,
-              assetId,
-              nodeKind: "ai-generated-image" as CanvasNodeKind,
-              source: "generated" as const,
-              persistence: assetId ? "indexeddb" as const : undefined,
-              displayWidth: 280,
-              displayHeight: 200,
-              status: "done" as const,
-              runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "图片已生成" }),
-              createdAt: Date.now(),
-            },
-          }
-          setNodes((nds) => [...nds, newNode])
-          setEdges((eds) => [...eds, {
-            id: `edge-${node.id}-${newNode.id}`,
-            source: node.id,
-            target: newNode.id,
-            type: "creative",
-            animated: true,
-          }])
+          appendGeneratedImageNode()
         }
+      } else if (isDeferredImagePromptStep(kind, node.data)) {
+        appendGeneratedImageNode("概念图结果")
       }
 
       updateNodeData(node.id, {
         status: "done",
         runMeta: createSucceededRunMeta({ runId: runContext?.runId, message: "图片已生成" }),
         summary: `图片已生成`,
+        imageGenerationDeferred: isDeferredImagePromptStep(kind, node.data) ? false : node.data.imageGenerationDeferred,
+        imageGenerationError: isDeferredImagePromptStep(kind, node.data) ? undefined : node.data.imageGenerationError,
+        preferredImageModel: requestedImageModel ?? node.data.preferredImageModel,
+        preferredImageSize: requestedImageSize,
       })
 
       return displayUrl
@@ -836,27 +883,14 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     }
 
     if (isReversePromptStep(kind)) {
-      let sourceImageUrl: string | undefined
-      let sourceImageAssetId: string | undefined
-
-      for (const edge of upstreamEdges) {
-        if (sourceImageUrl) break
-        const upstreamNode = allNodes.find((n) => n.id === edge.source)
-        if (!upstreamNode) continue
-        const ud = upstreamNode.data as CanvasNodeData | undefined
-        const upstreamKind = String(ud?.nodeKind || upstreamNode.type || "")
-        if (upstreamKind.includes("video") || upstreamKind.includes("audio")) continue
-
-        const candidate =
-          ud?.imageUrl ||
-          ud?.resultUrl ||
-          ud?.assetUrl ||
-          ud?.thumbnailUrl
-        if (candidate) {
-          sourceImageUrl = candidate
-          sourceImageAssetId = ud?.assetId
-        }
-      }
+      const upstreamImage = selectFirstCanvasImageSource(
+        upstreamEdges
+          .map((edge) => allNodes.find((n) => n.id === edge.source))
+          .filter((candidate): candidate is Node<CanvasNodeData> => Boolean(candidate))
+          .map((candidate) => ({ type: candidate.type, data: candidate.data })),
+      )
+      const sourceImageUrl = upstreamImage.url || upstreamImage.blockedBlobUrl
+      const sourceImageAssetId = upstreamImage.assetId
 
       if (!sourceImageUrl) {
         const message = "反推提示词缺少源图片，请连接上传图片、生成图片或视频抽帧节点。"
@@ -1555,6 +1589,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
 
       // Find upstream image node for the source image
       let sourceImageUrl: string | undefined
+      let sourceImageData: CanvasNodeData | undefined
       let blockedBlobUrl: string | undefined
       for (const edge of upstreamEdges) {
         const upstreamNode = allNodes.find((n) => n.id === edge.source)
@@ -1562,10 +1597,14 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
           const ud = upstreamNode.data as CanvasNodeData | undefined
           const selected = await resolveProviderReadableVideoSourceImage(ud, {
             bridgeLocalAssetToProviderUrl: async ({ assetId, imageUrl }) => {
-              return imageUrlToBase64(imageUrl, assetId)
+              return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" })
             },
           })
-          if (selected.url) { sourceImageUrl = selected.url; break }
+          if (selected.url) {
+            sourceImageUrl = selected.url
+            sourceImageData = ud
+            break
+          }
           if (!blockedBlobUrl) blockedBlobUrl = selected.blockedBlobUrl
         }
       }
@@ -1584,10 +1623,51 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         || (node.data as CanvasNodeData).content
         || upstreamText
         || ""
+      const videoNodeData = node.data as CanvasNodeData
+      const characterReferences = await resolveProviderReadableCharacterReferenceImages(
+        videoNodeData.shot?.characterIdentities ?? sourceImageData?.shot?.characterIdentities,
+        {
+          bridgeLocalAssetToProviderUrl: async ({ assetId, imageUrl }) => {
+            return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" })
+          },
+        },
+      )
+
+      const videoReferenceWarning = describeVideoReferenceAvailability(characterReferences)
+      const videoReferenceAudit = {
+        mode: characterReferences.urls.length > 0 ? "r2v" as const : "i2v" as const,
+        configuredCount: characterReferences.candidateCount,
+        usedCount: characterReferences.urls.length,
+        skippedCount: characterReferences.unavailableReferenceCount,
+        reason: videoReferenceWarning,
+      }
+      if (videoReferenceWarning && characterReferences.urls.length === 0) {
+        if (videoNodeData.shot) {
+          updateNodeData(node.id, {
+            shot: {
+              ...videoNodeData.shot,
+              videoReferenceWarning,
+              videoReferenceAudit,
+            },
+          })
+        }
+        throw new VideoGenerationError({
+          message: videoReferenceWarning,
+          code: "INVALID_IMAGE",
+          retryable: false,
+        })
+      }
 
       // Update node to generating state
       updateNodeData(node.id, {
         status: "running",
+        shot: videoNodeData.shot
+          ? {
+              ...videoNodeData.shot,
+              videoReferenceWarning,
+              videoReferenceAudit,
+            }
+          : videoNodeData.shot,
         runMeta: createRunningRunMeta({ runId: runContext?.runId, source: runContext?.source, message: "视频生成中..." }),
         summary: "正在生成视频...",
       })
@@ -1596,6 +1676,8 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         const result = await generateVideoFromImage(
           buildVideoGenerationInput({
             imageUrl: sourceImageUrl,
+            requestId: `workflow-video-${runContext?.runId ?? node.id}-${node.id}`,
+            referenceImageUrls: characterReferences.urls,
             motionPrompt: motionPrompt || undefined,
             backend: process.env.NEXT_PUBLIC_VIDEO_BACKEND as VideoGenBackend || undefined,
           }),
@@ -1722,8 +1804,14 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     // TALKING PHOTO STEP (image + text/audio to talking video)
     // ------------------------------------------------------------------
     if (isTalkingPhotoStep(kind)) {
-      let sourceImageUrl: string | undefined
-      let sourceImageAssetId: string | undefined
+      const upstreamImage = selectFirstCanvasImageSource(
+        upstreamEdges
+          .map((edge) => allNodes.find((n) => n.id === edge.source))
+          .filter((candidate): candidate is Node<CanvasNodeData> => Boolean(candidate))
+          .map((candidate) => ({ type: candidate.type, data: candidate.data })),
+      )
+      const sourceImageUrl = upstreamImage.url || upstreamImage.blockedBlobUrl
+      const sourceImageAssetId = upstreamImage.assetId
       let audioUrl: string | undefined
       let audioAssetId: string | undefined
       const textInputs: string[] = []
@@ -1733,14 +1821,6 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         if (!upstreamNode) continue
         const ud = upstreamNode.data as CanvasNodeData | undefined
         const upstreamKind = ud?.nodeKind || upstreamNode.type
-
-        if (!sourceImageUrl) {
-          const imgUrl = ud?.imageUrl || ud?.resultUrl || ud?.assetUrl || ud?.thumbnailUrl
-          if (imgUrl && !String(upstreamKind).includes("video") && !String(upstreamKind).includes("audio")) {
-            sourceImageUrl = imgUrl
-            sourceImageAssetId = ud?.assetId
-          }
-        }
 
         if (!audioUrl && (String(upstreamKind).includes("audio") || upstreamKind === "tts")) {
           const audioData = ud as (CanvasNodeData & {
@@ -1842,28 +1922,19 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     // FOCUS EDIT STEP (masked image edit)
     // ------------------------------------------------------------------
     if (isFocusEditStep(kind)) {
-      let sourceImageUrl: string | undefined
-      let sourceImageAssetId: string | undefined
+      const upstreamImage = selectFirstCanvasImageSource(
+        upstreamEdges
+          .map((edge) => allNodes.find((n) => n.id === edge.source))
+          .filter((candidate): candidate is Node<CanvasNodeData> => Boolean(candidate))
+          .map((candidate) => ({ type: candidate.type, data: candidate.data })),
+      )
+      let sourceImageUrl = upstreamImage.url || upstreamImage.blockedBlobUrl
+      let sourceImageAssetId = upstreamImage.assetId
 
-      for (const edge of upstreamEdges) {
-        if (sourceImageUrl) break
-        const upstreamNode = allNodes.find((n) => n.id === edge.source)
-        if (!upstreamNode) continue
-        const ud = upstreamNode.data as CanvasNodeData | undefined
-        const upstreamKind = String(ud?.nodeKind || upstreamNode.type || "")
-        if (upstreamKind.includes("video") || upstreamKind.includes("audio")) continue
-
-        const candidate = ud?.imageUrl || ud?.resultUrl || ud?.assetUrl || ud?.thumbnailUrl
-        if (candidate) {
-          sourceImageUrl = candidate
-          sourceImageAssetId = ud?.assetId
-        }
-      }
-
-      const ownImageUrl = node.data.imageUrl || node.data.resultUrl || node.data.assetUrl || node.data.thumbnailUrl
-      if (!sourceImageUrl && ownImageUrl) {
-        sourceImageUrl = ownImageUrl
-        sourceImageAssetId = node.data.assetId
+      const ownImage = selectVideoSourceImageUrl(node.data)
+      if (!sourceImageUrl && (ownImage.url || ownImage.blockedBlobUrl)) {
+        sourceImageUrl = ownImage.url || ownImage.blockedBlobUrl
+        sourceImageAssetId = ownImage.assetId
       }
 
       if (!sourceImageUrl) {
@@ -1982,25 +2053,21 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
       let sourceImageUrl: string | undefined
       let sourceImageAssetId: string | undefined
 
-      const ownImageUrl = node.data.imageUrl || node.data.resultUrl || node.data.assetUrl || node.data.thumbnailUrl
-      if (ownImageUrl) {
-        sourceImageUrl = ownImageUrl
-        sourceImageAssetId = node.data.assetId
+      const ownImage = selectVideoSourceImageUrl(node.data)
+      if (ownImage.url || ownImage.blockedBlobUrl) {
+        sourceImageUrl = ownImage.url || ownImage.blockedBlobUrl
+        sourceImageAssetId = ownImage.assetId
       }
 
-      for (const edge of upstreamEdges) {
-        if (sourceImageUrl) break
-        const upstreamNode = allNodes.find((n) => n.id === edge.source)
-        if (!upstreamNode) continue
-        const ud = upstreamNode.data as CanvasNodeData | undefined
-        const upstreamKind = String(ud?.nodeKind || upstreamNode.type || "")
-        if (upstreamKind.includes("video") || upstreamKind.includes("audio")) continue
-
-        const candidate = ud?.imageUrl || ud?.resultUrl || ud?.assetUrl || ud?.thumbnailUrl
-        if (candidate) {
-          sourceImageUrl = candidate
-          sourceImageAssetId = ud?.assetId
-        }
+      if (!sourceImageUrl) {
+        const upstreamImage = selectFirstCanvasImageSource(
+          upstreamEdges
+            .map((edge) => allNodes.find((n) => n.id === edge.source))
+            .filter((candidate): candidate is Node<CanvasNodeData> => Boolean(candidate))
+            .map((candidate) => ({ type: candidate.type, data: candidate.data })),
+        )
+        sourceImageUrl = upstreamImage.url || upstreamImage.blockedBlobUrl
+        sourceImageAssetId = upstreamImage.assetId
       }
 
       if (!sourceImageUrl) {
@@ -2112,10 +2179,11 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         }
 
         if (clips.length === 0) {
+          const message = "合成失败：没有找到可合成的视频片段";
           updateNodeData(node.id, {
-            runMeta: createFailedRunMeta({ error: "合成失败：没有找到可合成的视频片段", runId: runContext?.runId }),
+            runMeta: createFailedRunMeta({ error: message, runId: runContext?.runId }),
           })
-          return ""
+          throw new Error(message)
         }
 
         const result = await composeVideo({
@@ -2136,7 +2204,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         updateNodeData(node.id, {
           runMeta: createFailedRunMeta({ error: `合成失败: ${msg}`, runId: runContext?.runId }),
         })
-        return ""
+        throw err
       }
     }
 
@@ -2190,7 +2258,8 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     const startedAt = new Date().toISOString()
 
     // Resolve model names once for this run (used in catch for usage recording)
-    const runtimeProvider = await getRuntimeProviderState()
+    const runtimeTaskType = resolveProviderTaskTypeForNode(kind, node.data)
+    const runtimeProvider = await getRuntimeProviderState(runtimeTaskType)
     const localModels = resolveLocalModelOverrides(runtimeProvider.overrides ?? undefined)
     const [resolvedTextModel, resolvedImageModel] = await Promise.all([
       localModels.textModel ? Promise.resolve(localModels.textModel) : getDefaultModel(),
@@ -2199,7 +2268,9 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     const provider = runtimeProvider.usageProvider
 
     // ── Inject resolved model info into historyInput.settingsSnapshot ──
-    const activeModel = (isImageModelStep(kind) || isFocusEditStep(kind)) ? resolvedImageModel : resolvedTextModel
+    const activeModel = (isImageModelStep(kind, node.data) || isFocusEditStep(kind))
+      ? resolvedImageModel
+      : resolvedTextModel
     historyInput.settingsSnapshot = {
       ...historyInput.settingsSnapshot,
       model: activeModel,
@@ -2280,13 +2351,18 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
       })
       useRunHistoryStore.getState().append(historyItem)
 
-      // Set currentHistoryId on runMeta
+      // The synchronous node lookup can still observe the pre-step "running"
+      // metadata. Always finalize the success state while attaching history.
       const currentRunMeta = updatedData.runMeta
-      if (currentRunMeta) {
-        updateNodeData(nodeId, {
-          runMeta: { ...currentRunMeta, currentHistoryId: historyItem.id } as NodeRunMeta,
-        })
-      }
+      updateNodeData(nodeId, {
+        runMeta: createSucceededRunMeta({
+          runId,
+          currentHistoryId: historyItem.id,
+          message: currentRunMeta?.runStatus === "succeeded"
+            ? currentRunMeta.message
+            : `${stepLabel} 执行成功`,
+        }),
+      })
 
       setState((prev) => ({
         ...prev,
@@ -2313,7 +2389,9 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
     } catch (err: any) {
       const finishedAt = new Date().toISOString()
       const normalized = err?.generationError || normalizeGenerationError({ error: err, provider })
-      const safeError = formatGenerationErrorForDisplay(normalized)
+      const safeError = kind === "composition"
+        ? `视频合成失败：${err?.message || "未知错误"}`
+        : formatGenerationErrorForDisplay(normalized)
       console.debug("[WorkflowRunner] runNode failed raw:", normalized.raw)
       Sentry.captureException(err)
 
@@ -2360,7 +2438,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
       })
 
       // ── Record failed usage ─────────────────────────────
-      const isImg = isImageModelStep(kind) || isFocusEditStep(kind)
+      const isImg = isImageModelStep(kind, node.data) || isFocusEditStep(kind)
       const taskType: AITaskType = isImg ? "image" : "text"
       appendAIUsageRecord({
         nodeId,
@@ -2518,7 +2596,16 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
         status: "success",
       })
     } catch (err: any) {
-      const workflowProvider = (await getRuntimeProviderState()).usageProvider
+      const failingNode = failingNodeId
+        ? sortedNodes.find((candidate) => candidate.id === failingNodeId)
+        : undefined
+      const workflowProviderTaskType = failingNode
+        ? resolveProviderTaskTypeForNode(
+            (failingNode.data.nodeKind || "script") as CanvasNodeKind,
+            failingNode.data,
+          )
+        : "text"
+      const workflowProvider = (await getRuntimeProviderState(workflowProviderTaskType)).usageProvider
       const normalized = err?.generationError || normalizeGenerationError({ error: err, provider: workflowProvider })
       const safeError = formatGenerationErrorForDisplay(normalized)
       console.debug("[WorkflowRunner] workflow failed raw:", normalized.raw)
@@ -2635,22 +2722,181 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
   // ==========================================================================
 
   const runAgentFromCanvas = useCallback(async (nodeId: string) => {
-    const node = getNodes().find((n) => n.id === nodeId)
+    const allNodes = getNodes()
+    const node = allNodes.find((candidate) => candidate.id === nodeId)
     if (!node) return
-    const content = (node.data as Record<string, unknown>)?.content as string ?? ""
+
+    const content = typeof node.data.content === "string" ? node.data.content : ""
     if (!content.trim()) {
-      setNodes((nds) =>
-        nds.map((n) =>
-          n.id === nodeId
-            ? { ...n, data: { ...n.data, agentStatus: "error" as const, agentOutput: "请先输入剧本内容" } }
-            : n,
-        ),
-      )
+      updateNodeData(nodeId, { agentStatus: "error", agentOutput: "请先输入剧本内容" })
       return
     }
-    // Execute via runNode which handles history/stats/error/usage
-    await runNode(nodeId)
-  }, [getNodes, setNodes, runNode])
+
+    const runId = crypto.randomUUID()
+    const startedAt = new Date().toISOString()
+    const historyInput = buildHistoryInputFromNode(node, allNodes, getEdges())
+    const agentSkillRuntime = createAgentSkillRuntime({
+      orchestrate: orchestrateCrew,
+      createRunId: () => runId,
+    })
+
+    updateNodeData(nodeId, {
+      agentStatus: "running",
+      agentOutput: "导演组执行中",
+      activeRunId: runId,
+    })
+    setState((previous) => ({
+      ...previous,
+      isRunning: true,
+      currentStep: "导演组执行中",
+      error: null,
+      stepStatuses: { ...previous.stepStatuses, [nodeId]: "running" },
+    }))
+    onRunEvent?.({
+      type: "run-started",
+      runId,
+      startedAt,
+      nodes: [{
+        nodeId,
+        nodeType: node.type ?? "agent",
+        ...(typeof node.data.title === "string" ? { title: node.data.title } : {}),
+      }],
+      mode: "film-crew",
+    })
+    onRunEvent?.({
+      type: "node-started",
+      runId,
+      nodeId,
+      startedAt,
+      inputSummary: content.slice(0, 100),
+    })
+
+    try {
+      const result = await agentSkillRuntime.runtime.execute(createFilmCrewRuntimeRequest({
+        nodeId,
+        content,
+        requestId: crypto.randomUUID(),
+      }))
+      const succeeded = result.status === "completed" || result.status === "completed_with_warnings"
+      const finishedAt = new Date().toISOString()
+      const message = result.error?.message ?? result.summary
+      const historyItem = createRunHistoryItem({
+        runId,
+        nodeId,
+        nodeType: node.type ?? "agent",
+        status: succeeded ? "succeeded" : "failed",
+        input: historyInput,
+        ...(succeeded ? { output: { text: result.summary } } : { error: message }),
+        message: succeeded ? "导演组执行成功" : message,
+        startedAt,
+        finishedAt,
+        source: "manual",
+      })
+      useRunHistoryStore.getState().append(historyItem)
+
+      const runtimePatch = mapRunToAgentNodePatch({
+        runId: result.runId,
+        status: result.status,
+        summary: result.summary,
+        data: result.data as {
+          agentStatuses?: import("@/lib/agents").CrewAgentStatus[]
+          executionTrace?: string[]
+        } | undefined,
+      })
+      updateNodeData(nodeId, {
+        ...runtimePatch,
+        runMeta: {
+          ...runtimePatch.runMeta,
+          currentHistoryId: historyItem.id,
+        } as NodeRunMeta,
+      })
+      appendAIUsageRecord({
+        nodeId,
+        runId,
+        provider: "film-crew",
+        model: "film-crew-orchestrator",
+        taskType: "text",
+        estimatedCostUsd: estimateCostUsd({
+          provider: "film-crew",
+          model: "film-crew-orchestrator",
+          taskType: "text",
+        }),
+        startedAt,
+        status: succeeded ? "success" : "failed",
+        ...(succeeded ? {} : { error: message }),
+      })
+
+      setState((previous) => ({
+        ...previous,
+        isRunning: false,
+        currentStep: null,
+        error: succeeded ? null : message,
+        stepStatuses: { ...previous.stepStatuses, [nodeId]: succeeded ? "done" : "error" },
+      }))
+      const endedAt = new Date().toISOString()
+      if (succeeded) {
+        onRunEvent?.({ type: "node-succeeded", runId, nodeId, endedAt, outputSummary: result.summary })
+        onRunEvent?.({ type: "run-finished", runId, endedAt, status: "success" })
+      } else {
+        onRunEvent?.({ type: "node-failed", runId, nodeId, endedAt, error: message })
+        onRunEvent?.({ type: "run-finished", runId, endedAt, status: "failed", error: message })
+      }
+    } catch (error) {
+      const message = error instanceof SkillRuntimeError
+        ? error.skillError.message
+        : error instanceof Error
+          ? error.message
+          : "导演组执行失败"
+      const finishedAt = new Date().toISOString()
+      const historyItem = createRunHistoryItem({
+        runId,
+        nodeId,
+        nodeType: node.type ?? "agent",
+        status: "failed",
+        input: historyInput,
+        error: message,
+        message,
+        startedAt,
+        finishedAt,
+        source: "manual",
+      })
+      useRunHistoryStore.getState().append(historyItem)
+      updateNodeData(nodeId, {
+        agentStatus: "error",
+        agentOutput: message,
+        activeRunId: undefined,
+        runMeta: {
+          ...createFailedRunMeta({ runId, error: message, message }),
+          currentHistoryId: historyItem.id,
+        } as NodeRunMeta,
+      })
+      appendAIUsageRecord({
+        nodeId,
+        runId,
+        provider: "film-crew",
+        model: "film-crew-orchestrator",
+        taskType: "text",
+        estimatedCostUsd: estimateCostUsd({
+          provider: "film-crew",
+          model: "film-crew-orchestrator",
+          taskType: "text",
+        }),
+        startedAt,
+        status: "failed",
+        error: message,
+      })
+      setState((previous) => ({
+        ...previous,
+        isRunning: false,
+        currentStep: null,
+        error: message,
+        stepStatuses: { ...previous.stepStatuses, [nodeId]: "error" },
+      }))
+      const endedAt = new Date().toISOString()
+      onRunEvent?.({ type: "node-failed", runId, nodeId, endedAt, error: message })
+      onRunEvent?.({ type: "run-finished", runId, endedAt, status: "failed", error: message })
+    }
+  }, [getEdges, getNodes, onRunEvent, updateNodeData])
 
   // ==========================================================================
   // P2-2: RUN EXECUTION PLAN — 级联执行

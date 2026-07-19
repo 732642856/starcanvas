@@ -29,6 +29,7 @@ describe("jianyingDraftExport canvas extraction", () => {
           audioUrl: "blob:http://localhost/audio-1",
           audioAssetId: "media-audio-1",
           durationSeconds: 3,
+          startOffsetSeconds: 12.28,
           fileName: "PQ镜头 1-voice.wav",
         },
       },
@@ -56,6 +57,7 @@ describe("jianyingDraftExport canvas extraction", () => {
     assert.equal(audios[0]?.title, "PQ镜头 1 配音");
     assert.equal(audios[0]?.audioUrl, "blob:http://localhost/audio-1");
     assert.equal(audios[0]?.durationSeconds, 3);
+    assert.equal(audios[0]?.startOffsetSeconds, 12.28);
     assert.equal(audios[0]?.fileName, "PQ镜头 1-voice.wav");
 
     assert.equal(subtitles.length, 1);
@@ -80,6 +82,23 @@ describe("jianyingDraftExport canvas extraction", () => {
     assert.equal(audios.length, 1);
     assert.equal(audios[0]?.id, "shot-1");
     assert.equal(audios[0]?.audioUrl, "blob:http://localhost/legacy-shot-audio");
+  });
+
+  it("uses a restored timeline start when an audio node has no explicit export offset", () => {
+    const audios = extractAudioNodesFromCanvas([
+      {
+        id: "audio-restored",
+        data: {
+          title: "镜头 5 配音",
+          nodeKind: "tts-audio",
+          audioUrl: "blob:http://localhost/restored-audio",
+          durationSeconds: 3.16,
+          timelineStartTimeSeconds: 9.12,
+        },
+      },
+    ]);
+
+    assert.equal(audios[0]?.startOffsetSeconds, 9.12);
   });
 
   it("extracts video nodes from assetUrl and imageUrl fallbacks used by preflight", () => {
@@ -144,13 +163,13 @@ describe("jianyingDraftExport canvas extraction", () => {
     assert.equal(subtitles[1]?.segments[0]?.endSeconds, 3);
   });
 
-  it("accepts numeric duration values produced by shot planning bridge flows", () => {
+  it("accepts numeric duration values produced by shot planning video flows", () => {
     const videos = extractVideoNodesFromCanvas([
       {
         id: "shot-planning-image-1",
         data: {
           title: "镜头 1 图",
-          nodeKind: "ai-generated-image",
+          nodeKind: "video-result",
           imageUrl: "data:image/png;base64,AAAA",
           duration: 5,
           fileName: "video_1.mp4",
@@ -162,5 +181,21 @@ describe("jianyingDraftExport canvas extraction", () => {
     assert.equal(videos[0]?.title, "镜头 1 图");
     assert.equal(videos[0]?.durationSeconds, 5);
     assert.equal(videos[0]?.fileName, "video_1.mp4");
+  });
+
+  it("does not export generated image nodes as fake mp4 videos", () => {
+    const videos = extractVideoNodesFromCanvas([
+      {
+        id: "shot-planning-image-1",
+        data: {
+          title: "镜头 1 图",
+          nodeKind: "ai-generated-image",
+          imageUrl: "data:image/png;base64,AAAA",
+          duration: 5,
+        },
+      },
+    ]);
+
+    assert.deepEqual(videos, []);
   });
 });

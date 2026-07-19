@@ -200,7 +200,7 @@ export const NodeContextMenu = memo(function NodeContextMenu({
   const adjustedPosition = { ...position }
   if (typeof window !== "undefined") {
     const menuWidth = 200
-    const menuHeight = isImageNode ? 520 : isRemixAnalysisNode ? 620 : 420
+    const menuHeight = isImageNode ? 520 : isRemixAnalysisNode ? 620 : isStoryboardSource ? 700 : 420
     if (adjustedPosition.x + menuWidth > window.innerWidth) {
       adjustedPosition.x = window.innerWidth - menuWidth - 10
     }

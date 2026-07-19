@@ -29,6 +29,8 @@ const IMAGE_RUNTIME_URL_KEYS = new Set([
   "avatarUrl",
   "referenceImageUrl",
   "sourceImageUrl",
+  "focusEditMaskDataUrl",
+  "maskDataUrl",
   "sourceVideoUrl",
   "videoUrl",
   "audioUrl",
