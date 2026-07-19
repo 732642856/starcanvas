@@ -13,13 +13,13 @@ function getConfig() {
 }
 
 export async function POST(req: NextRequest) {
-  const config = getConfig()
-
   try {
     const { imageUrl } = await req.json()
     if (!imageUrl) {
       return Response.json({ error: "imageUrl required" }, { status: 400 })
     }
+
+    const config = getConfig()
 
     const res = await fetchWithTimeout(`${config.baseUrl}/chat/completions`, {
       method: "POST",

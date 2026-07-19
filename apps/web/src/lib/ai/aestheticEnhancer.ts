@@ -212,18 +212,15 @@ export function enhancePrompt(basePrompt: string, options: EnhanceOptions = {}):
   const selectedKeywords: string[] = []
 
   for (const layer of layers) {
-    // 根据权重随机选择关键词
     const count = Math.max(1, Math.round(layer.weight * maxPerLayer))
-    const shuffled = [...layer.keywords].sort(() => Math.random() - 0.5)
-    selectedKeywords.push(...shuffled.slice(0, count))
+    selectedKeywords.push(...layer.keywords.slice(0, count))
   }
 
   // 场景专项增强
   if (sceneType && SCENE_AESTHETIC_PRESETS[sceneType]) {
     const sceneKW = SCENE_AESTHETIC_PRESETS[sceneType].keywords
     const count = Math.min(3, sceneKW.length)
-    const shuffled = [...sceneKW].sort(() => Math.random() - 0.5)
-    selectedKeywords.push(...shuffled.slice(0, count))
+    selectedKeywords.push(...sceneKW.slice(0, count))
   }
 
   // 去重
