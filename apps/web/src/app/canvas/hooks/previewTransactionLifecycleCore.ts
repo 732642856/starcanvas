@@ -42,4 +42,3 @@ export function collectPreviewTransactionLifecycleOperations(
 
   return operations;
 }
-

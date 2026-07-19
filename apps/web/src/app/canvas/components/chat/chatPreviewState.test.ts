@@ -358,4 +358,3 @@ describe("chat preview state", () => {
     assert.deepEqual(getPendingActionDisplayActions({ actions }, undefined), actions)
   })
 })
-

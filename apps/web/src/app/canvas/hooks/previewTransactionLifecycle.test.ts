@@ -92,4 +92,3 @@ describe("preview transaction lifecycle", () => {
     assert.deepEqual(operations, []);
   });
 });
-

@@ -209,4 +209,3 @@ export function getPendingActionDisplayActions(
 
   return previewTransaction.deferredActions
 }
-

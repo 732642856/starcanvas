@@ -36,4 +36,3 @@ describe("layoutBatchNodePositions", () => {
     assert.ok((positions[3]?.y ?? 0) > (positions[0]?.y ?? 0))
   })
 })
-

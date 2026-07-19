@@ -42,4 +42,3 @@ export function layoutBatchNodePositions(
     y: anchor.y + (node.position.y - firstPosition.y),
   }))
 }
-

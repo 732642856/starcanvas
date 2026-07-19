@@ -24,7 +24,7 @@ export const DraftNodeWrapper = memo(function DraftNodeWrapper({
 
   const handleConfirm = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
-    setNodes((nds) => 
+    setNodes((nds) =>
       nds.map((node) =>
         node.id === props.id
           ? {
@@ -65,13 +65,13 @@ export const DraftNodeWrapper = memo(function DraftNodeWrapper({
       })
     }
   }, [draftSourceChatId, props.id, setEdges, setNodes, settlePreviewDraftNode])
-  
+
   if (!isDraft) return <>{children}</>
 
   return (
     <div className="relative isolate">
       {/* Draft Style Overlay directly applying to the wrapper */}
-      <div 
+      <div
         className="absolute inset-0 z-10 pointer-events-none rounded-xl"
         style={{
           border: `2px dashed ${DESIGN_TOKENS.accent}`,
@@ -79,7 +79,7 @@ export const DraftNodeWrapper = memo(function DraftNodeWrapper({
           boxShadow: `0 0 0 4px ${DESIGN_TOKENS.accent}33`
         }}
       />
-      
+
       {/* Opacity for the actual node content */}
       <div className="opacity-80 transition-opacity hover:opacity-100">
         {children}
