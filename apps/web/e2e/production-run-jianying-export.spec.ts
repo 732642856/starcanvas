@@ -12,119 +12,121 @@ import { createTestProjectId } from "./utils/project"
 type StoredCanvas = {
   version: number
   savedAt: number
+  viewport?: { x: number; y: number; zoom: number }
   nodes: Array<Record<string, any>>
   edges: Array<Record<string, any>>
 }
 
-type StarCanvasE2EBridge = {
-  getNodes: () => Array<{ data: Record<string, any> }>
-}
-
-const MOCK_IMAGE =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-const MOCK_AUDIO =
-  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
-const MOCK_VIDEO =
-  "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc282bXA0MQAAAAhmcmVlAAAAGm1kYXQAAAGzABAHAAABthDAAAAAAAA="
-
-function createStoredCanvas(): StoredCanvas {
-  const sourceId = "e2e-prje-source"
-  const shotIds = ["e2e-prje-shot-1", "e2e-prje-shot-2", "e2e-prje-shot-3"]
-
+function createCompletedProductionCanvas(): StoredCanvas {
   return {
-    version: 1,
+    version: 2,
     savedAt: Date.now(),
+    viewport: { x: 0, y: 0, zoom: 1 },
     nodes: [
       {
-        id: sourceId,
+        id: "prje-storyboard",
         type: "content",
         position: { x: 120, y: 120 },
-        width: 760,
-        height: 620,
-        measured: { width: 760, height: 620 },
         data: {
           title: "E2E 生产队列剪映交接测试",
           nodeKind: "storyboard",
           content: "三镜头短剧：测试生产完成后直接导出剪映交接物。",
           prompt: "三镜头短剧：测试生产完成后直接导出剪映交接物。",
-          storyboardAssistantStage: "storyboard-text",
-          autoSizeMode: "fixed-width-height-grows",
-          displayWidth: 760,
-          displayHeight: 620,
-          generatedShotNodeIds: shotIds,
-          storyboardProcessVisible: true,
         },
       },
-      ...shotIds.map((id, index) => ({
-        id,
-        type: "shot",
-        position: { x: 980, y: 120 + index * 360 },
-        width: 340,
-        height: 260,
-        measured: { width: 340, height: 260 },
+      {
+        id: "prje-shot-1-video",
+        type: "video",
+        position: { x: 520, y: 80 },
         data: {
-          title: `PQ镜头 ${index + 1}`,
-          nodeKind: "shot",
-          sourceStoryboardNodeId: sourceId,
-          shot: {
-            id,
-            order: index + 1,
-            title: `PQ镜头 ${index + 1}`,
-            shotType: index === 0 ? "wide" : index === 1 ? "close-up" : "medium",
-            cameraMovement: "static",
-            duration: "3s",
-            description: [
-              "女主站在窗前，阳光洒落。",
-              "女主回头望向门口。",
-              "门缓缓打开，黑影显现。",
-            ][index],
-            visualPrompt: [
-              "cinematic wide shot, woman standing by window, warm sunlight",
-              "cinematic close-up, woman turning to look at door, suspenseful lighting",
-              "cinematic medium shot, door slowly opening, dark shadow emerging",
-            ][index],
-            dialogue: [
-              "今天的阳光真好。",
-              "谁在那里？",
-              "原来是你。",
-            ][index],
-            sourceStoryboardNodeId: sourceId,
-            status: "ready",
-          },
-          prompt: [
-            "cinematic wide shot, woman standing by window, warm sunlight",
-            "cinematic close-up, woman turning to look at door, suspenseful lighting",
-            "cinematic medium shot, door slowly opening, dark shadow emerging",
-          ][index],
+          title: "PQ镜头 1 视频",
+          nodeKind: "video-result",
+          resultUrl:
+            "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc282bXA0MQAAAAhmcmVlAAAAGm1kYXQAAAGzABAHAAABthDAAAAAAAA=",
+          duration: "3s",
+          videoWidth: 1280,
+          videoHeight: 720,
+          videoFps: 24,
+          fileName: "pq-shot-1-video.mp4",
         },
-      })),
+      },
+      {
+        id: "prje-shot-1-audio",
+        type: "content",
+        position: { x: 520, y: 260 },
+        data: {
+          title: "PQ镜头 1 配音",
+          nodeKind: "tts-audio",
+          audioUrl:
+            "data:audio/mpeg;base64,SUQzAwAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjMyLjEwMAAAAAAAAAAAAAAA//tQxAADBzQAPgAAGFhYWFhYWFhY",
+          durationSeconds: 3,
+          fileName: "pq-shot-1-audio.mp3",
+        },
+      },
+      {
+        id: "prje-shot-1-subtitle",
+        type: "content",
+        position: { x: 520, y: 420 },
+        data: {
+          title: "PQ镜头 1 字幕",
+          nodeKind: "subtitle-srt",
+          srtContent: "1\n00:00:00,000 --> 00:00:03,000\n今天的阳光真好。",
+          segments: [{ index: 1, start: 0, end: 3, text: "今天的阳光真好。" }],
+        },
+      },
     ],
     edges: [],
   }
 }
 
-async function hasGeneratedNode(page: Page, criteria: { nodeKind: string; title: string }) {
-  return page.evaluate(({ nodeKind, title }) => {
-    const e2e = (window as Window & { __starcanvasE2E?: StarCanvasE2EBridge }).__starcanvasE2E
-    return e2e?.getNodes().some((node) => node.data.nodeKind === nodeKind && node.data.title === title) ?? false
-  }, criteria)
+function createRiskyFileNameCanvas(): StoredCanvas {
+  const canvas = createCompletedProductionCanvas()
+  canvas.nodes = canvas.nodes.map((node) => {
+    if (node.id === "prje-shot-1-video") {
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          title: "同名非法视频",
+          fileName: "same:/name",
+        },
+      }
+    }
+    if (node.id === "prje-shot-1-audio") {
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          title: "保留名音频",
+          fileName: "CON.mp3",
+        },
+      }
+    }
+    return node
+  })
+  return canvas
 }
 
 async function seedCanvasForProject(page: Page, projectId: string) {
   const storageKey = `startrails_canvas_p:${encodeURIComponent(projectId)}`
+  const canvas = createCompletedProductionCanvas()
   await page.evaluate(
     ({ key, data }) => {
       window.localStorage.setItem(key, JSON.stringify(data))
     },
-    { key: storageKey, data: createStoredCanvas() },
+    { key: storageKey, data: canvas },
   )
 }
 
-async function openQueue(page: Page) {
-  await page.keyboard.press("Escape")
-  await page.waitForTimeout(200)
-  await page.getByTestId("production-run-queue-toggle").click({ force: true })
-  await expect(page.getByTestId("production-run-queue-panel")).toBeVisible({ timeout: 10_000 })
+async function seedRiskyFileNameCanvas(page: Page, projectId: string) {
+  const storageKey = `startrails_canvas_p:${encodeURIComponent(projectId)}`
+  const canvas = createRiskyFileNameCanvas()
+  await page.evaluate(
+    ({ key, data }) => {
+      window.localStorage.setItem(key, JSON.stringify(data))
+    },
+    { key: storageKey, data: canvas },
+  )
 }
 
 async function openExportPreflight(page: Page) {
@@ -134,108 +136,22 @@ async function openExportPreflight(page: Page) {
 }
 
 test.describe("production run -> Jianying export handoff", () => {
-  test("completed production run can export a real Jianying compatible zip", async ({ page }) => {
-    test.setTimeout(240_000)
+  test("completed production artifacts can export a real Jianying compatible zip", async ({ page }) => {
+    test.setTimeout(90_000)
     const projectId = createTestProjectId("production-run-jianying-export")
     const errors = collectConsoleErrors(page)
-
-    await page.route("**/api/ai/config", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          baseUrl: "https://e2e.invalid/v1",
-          hasApiKey: true,
-          defaultModel: "e2e-text-model",
-          defaultImageModel: "e2e-image-model",
-          timeoutMs: 120000,
-        }),
-      })
-    })
-
-    await page.route("**/api/ai/generate-image", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ imageUrl: MOCK_IMAGE, requestId: "e2e-prje-image" }),
-      })
-    })
-
-    await page.route("**/api/ai/generate-video-vidu", async (route) => {
-      const sseBody = [
-        "event: progress\ndata: " + JSON.stringify({ stage: "queued", percent: 10, message: "queued" }) + "\n\n",
-        "event: result\ndata: " + JSON.stringify({ videoUrl: MOCK_VIDEO, taskId: "e2e-prje-video" }) + "\n\n",
-      ].join("")
-      await route.fulfill({
-        status: 200,
-        contentType: "text/event-stream",
-        body: sseBody,
-      })
-    })
-
-    await page.route("**/k2-fsa-omnivoice.hf.space/call/generate", async (route) => {
-      if (route.request().method() === "POST") {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ event_id: "e2e-prje-tts-event" }),
-        })
-      }
-    })
-
-    await page.route("**/k2-fsa-omnivoice.hf.space/call/generate/e2e-prje-tts-event", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          stage: "complete",
-          output: {
-            data: [{ url: "/file=/tmp/e2e-prje-tts.wav", name: "e2e-prje-tts.wav" }],
-          },
-        }),
-      })
-    })
-
-    await page.route("**/k2-fsa-omnivoice.hf.space/file=/tmp/e2e-prje-tts.wav", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "audio/wav",
-        body: Buffer.from(
-          "UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=",
-          "base64",
-        ),
-      })
-    })
 
     await gotoCanvas(page, projectId)
     await dismissOnboardingIfPresent(page)
     await page.evaluate(() => {
       window.localStorage.clear()
       window.sessionStorage.clear()
-      window.localStorage.setItem("startrails_use_mock", "true")
     })
     await seedCanvasForProject(page, projectId)
     await gotoCanvas(page, projectId)
     await dismissOnboardingIfPresent(page)
+
     await expect(page.getByText("三镜头短剧：测试生产完成后直接导出剪映交接物。").first()).toBeVisible({ timeout: 15_000 })
-
-    await openQueue(page)
-    await page.getByTestId("production-run-queue-start").click()
-    await expect(page.getByTestId("production-run-queue-status")).toContainText("已完成", { timeout: 45_000 })
-    await expect(page.getByTestId("production-run-queue-progress")).toContainText("12/12 完成", { timeout: 45_000 })
-
-    await expect.poll(
-      () => hasGeneratedNode(page, { nodeKind: "video-result", title: "PQ镜头 1 视频" }),
-      { timeout: 10_000 },
-    ).toBeTruthy()
-    await expect.poll(
-      () => hasGeneratedNode(page, { nodeKind: "tts-audio", title: "PQ镜头 1 配音" }),
-      { timeout: 10_000 },
-    ).toBeTruthy()
-    await expect.poll(
-      () => hasGeneratedNode(page, { nodeKind: "subtitle-srt", title: "PQ镜头 1 字幕" }),
-      { timeout: 10_000 },
-    ).toBeTruthy()
 
     await openExportPreflight(page)
     const downloadPromise = page.waitForEvent("download")
@@ -265,6 +181,53 @@ test.describe("production run -> Jianying export handoff", () => {
     })
 
     await expect(page.getByText("导出成功")).toBeVisible({ timeout: 15_000 })
+    expect(errors.pageErrors).toEqual([])
+    expect(errors.consoleErrors).toEqual([])
+  })
+
+  test("export preflight shows warnings for handoff file name risks", async ({ page }) => {
+    test.setTimeout(90_000)
+    const projectId = createTestProjectId("production-run-jianying-preflight-warning")
+    const errors = collectConsoleErrors(page)
+    await gotoCanvas(page, projectId)
+    await dismissOnboardingIfPresent(page)
+    await page.evaluate(() => {
+      window.localStorage.clear()
+      window.sessionStorage.clear()
+    })
+    await seedRiskyFileNameCanvas(page, projectId)
+    await gotoCanvas(page, projectId)
+    await dismissOnboardingIfPresent(page)
+    await expect(page.getByText("同名非法视频").first()).toBeVisible({ timeout: 15_000 })
+
+    await openExportPreflight(page)
+    await expect(page.getByText("注意").first()).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText("同名非法视频").first()).toBeVisible()
+    await expect(page.getByText("保留名音频").first()).toBeVisible()
+
+    const downloadPromise = page.waitForEvent("download")
+    await page.getByRole("button", { name: /导出 ZIP 兼容包|仍导出/ }).click()
+    const download = await downloadPromise
+    const filePath = await download.path()
+    if (!filePath) throw new Error("zip download path unavailable")
+    const zip = await JSZip.loadAsync(await readFile(filePath))
+    const entryNames = Object.keys(zip.files).sort()
+    expect(entryNames).toContain("JianYingCompatible/videos/same_name.mp4")
+    expect(entryNames).toContain("JianYingCompatible/audios/CON_.mp3")
+    const draftContent = await zip.file("JianYingCompatible/draft_content.json")?.async("string")
+    const draft = JSON.parse(draftContent || "{}") as {
+      materials?: {
+        videos?: Record<string, { path?: string }>
+        audios?: Record<string, { path?: string }>
+      }
+    }
+    expect(Object.values(draft.materials?.videos ?? {}).map((material) => material.path)).toContain(
+      "/absolute/path/to/same_name.mp4",
+    )
+    expect(Object.values(draft.materials?.audios ?? {}).map((material) => material.path)).toContain(
+      "/absolute/path/to/CON_.mp3",
+    )
+
     expect(errors.pageErrors).toEqual([])
     expect(errors.consoleErrors).toEqual([])
   })

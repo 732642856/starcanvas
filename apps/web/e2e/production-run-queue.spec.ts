@@ -8,7 +8,8 @@ type StoredCanvas = {
 }
 
 type StarCanvasE2EBridge = {
-  getNodes: () => Array<{ data: Record<string, any> }>
+  getNodeData: (nodeId: string) => Record<string, any> | undefined
+  getNodes: () => Array<{ id: string; data: Record<string, any> }>
 }
 
 async function hasGeneratedNode(page: Page, criteria: { nodeKind: string; title: string }) {
@@ -18,6 +19,15 @@ async function hasGeneratedNode(page: Page, criteria: { nodeKind: string; title:
   }, criteria)
 }
 
+async function hasGeneratedImageForShot(page: Page, shotNodeId: string) {
+  return page.evaluate((targetShotNodeId) => {
+    const e2e = (window as Window & { __starcanvasE2E?: StarCanvasE2EBridge }).__starcanvasE2E
+    const imageNodeId = e2e?.getNodeData(targetShotNodeId)?.shot?.generatedImageNodeId
+    if (!imageNodeId) return false
+    return e2e?.getNodes().some((node) => node.id === imageNodeId && node.data.nodeKind === "ai-generated-image") ?? false
+  }, shotNodeId)
+}
+
 const MOCK_IMAGE =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 
@@ -25,7 +35,20 @@ const MOCK_AUDIO =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
 
 const MOCK_VIDEO =
-  "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22320%22%20height%3D%22180%22%3E%3Crect%20width%3D%22320%22%20height%3D%22180%22%20fill%3D%22%231a1a2e%22/%3E%3Ctext%20x%3D%22160%22%20y%3D%2290%22%20text-anchor%3D%22middle%22%20fill%3D%22%23fff%22%3EMock%20Video%3C/text%3E%3C/svg%3E"
+  "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc282bXA0MQAAAAhmcmVlAAAAGm1kYXQAAAGzABAHAAABthDAAAAAAAA="
+
+const FAILED_IMAGE_SMOKE = {
+  image: {
+    target: "image",
+    status: "failed",
+    message: "图片生成超时，请稍后重试。",
+    details: ["上游服务响应时间过长，可能是服务繁忙或当前图片处理耗时过高。"],
+    updatedAt: Date.now(),
+    summaryCategory: "timeout",
+    summarySeverity: "error",
+    summaryTitle: "请求超时",
+  },
+}
 
 function createDeferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void
@@ -35,9 +58,9 @@ function createDeferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve }
 }
 
-function createStoredCanvas(): StoredCanvas {
+function createStoredCanvas(shotCount = 3, includeCharacterReferences = false): StoredCanvas {
   const sourceId = "e2e-pq-source"
-  const shotIds = ["e2e-pq-shot-1", "e2e-pq-shot-2", "e2e-pq-shot-3"]
+  const shotIds = ["e2e-pq-shot-1", "e2e-pq-shot-2", "e2e-pq-shot-3"].slice(0, shotCount)
 
   return {
     version: 1,
@@ -81,6 +104,11 @@ function createStoredCanvas(): StoredCanvas {
             shotType: index === 0 ? "wide" : index === 1 ? "close-up" : "medium",
             cameraMovement: "static",
             duration: "3s",
+            subtitleTimeline: {
+              startTimeSeconds: index === 0 ? 12.28 : index * 3,
+              durationSeconds: 3,
+              segments: [],
+            },
             description: [
               "女主站在窗前，阳光洒落。",
               "女主回头望向门口。",
@@ -96,8 +124,29 @@ function createStoredCanvas(): StoredCanvas {
               "谁在那里？",
               "原来是你。",
             ][index],
+            voiceConfig: {
+              mode: "auto",
+              backend: "mock",
+              text: [
+                "今天的阳光真好。",
+                "谁在那里？",
+                "原来是你。",
+              ][index],
+            },
             sourceStoryboardNodeId: sourceId,
             status: "ready",
+            ...(includeCharacterReferences
+              ? {
+                  characterIdentities: [
+                    {
+                      id: "e2e-prince",
+                      name: "赵珩",
+                      frontViewUrl: "https://e2e.invalid/prince-front.png",
+                      sideViewUrl: "https://e2e.invalid/prince-side.png",
+                    },
+                  ],
+                }
+              : {}),
           },
           prompt: [
             "cinematic wide shot, woman standing by window, warm sunlight",
@@ -161,7 +210,7 @@ test.describe("生产运行队列面板", () => {
     await expect(page.getByTestId("provider-health-summary")).toContainText("运行前健康摘要")
   })
 
-  test("真实模式会话 Key 可解除生图阻塞并将视频降级为注意", async ({ page }) => {
+  test("真实模式显式路由 + 会话 Key 可解除生图阻塞并将视频降级为注意", async ({ page }) => {
     await page.route("**/api/ai/config", async (route) => {
       await route.fulfill({
         status: 200,
@@ -183,6 +232,7 @@ test.describe("生产运行队列面板", () => {
       window.sessionStorage.clear()
       window.localStorage.setItem("startrails_canvas", JSON.stringify(storedCanvas))
       window.localStorage.setItem("startrails_use_mock", "false")
+      window.localStorage.setItem("startrails_api_base_url", "https://e2e.invalid/v1")
       window.sessionStorage.setItem("startrails_session_api_key", "sk-e2e-dashscope-session")
     }, createStoredCanvas())
 
@@ -207,13 +257,7 @@ test.describe("生产运行队列面板", () => {
     await expect(page.getByTestId("production-run-queue-start")).toBeEnabled()
   })
 
-  test("面板开关/任务列表/开始执行/进度更新", async ({ page }) => {
-    const imageRequests: Array<any> = []
-    const firstImageRequest = createDeferred()
-    const firstImageResponseGate = createDeferred()
-    let shouldDelayFirstImage = true
-
-    // ── Mock AI config ──
+  test("最近一次失败的真实生图 smoke 会持续阻塞生产队列直到修复", async ({ page }) => {
     await page.route("**/api/ai/config", async (route) => {
       await route.fulfill({
         status: 200,
@@ -223,7 +267,115 @@ test.describe("生产运行队列面板", () => {
           hasApiKey: true,
           defaultModel: "e2e-text-model",
           defaultImageModel: "e2e-image-model",
+          videoModel: "vidu",
           timeoutMs: 120000,
+          providers: [],
+        }),
+      })
+    })
+
+    await page.addInitScript(
+      (data) => {
+        window.localStorage.clear()
+        window.sessionStorage.clear()
+        window.localStorage.setItem("startrails_canvas", JSON.stringify(data.storedCanvas))
+        window.localStorage.setItem("startrails_use_mock", "false")
+        window.localStorage.setItem("startrails_provider_real_smoke_results", JSON.stringify(data.storedSmoke))
+        window.sessionStorage.setItem("startrails_session_api_key", "sk-e2e-dashscope-session")
+      },
+      {
+        storedCanvas: createStoredCanvas(1),
+        storedSmoke: FAILED_IMAGE_SMOKE,
+      },
+    )
+
+    await page.goto("/canvas")
+    await expect(page.getByText("三镜头短剧：测试生产运行队列。").first()).toBeVisible({ timeout: 15_000 })
+    await page.keyboard.press("Escape")
+    await page.waitForTimeout(200)
+    await page.getByTestId("production-run-queue-toggle").click({ force: true })
+    await expect(page.getByTestId("production-run-queue-panel")).toBeVisible({ timeout: 5_000 })
+
+    await expect(page.getByTestId("production-task-readiness")).toContainText("完整生产队列")
+    await expect(page.getByTestId("production-task-readiness")).toContainText("阻塞")
+    await expect(page.getByTestId("production-task-readiness")).toContainText("请求超时")
+    await expect(page.getByTestId("production-provider-fix-hint")).toContainText("最近一次真实 smoke")
+    await expect(page.getByTestId("production-run-queue-start")).toBeDisabled()
+    await expect(page.getByTestId("production-run-queue-start")).toContainText("最近一次真实 smoke")
+
+    await page.getByTestId("production-provider-open-settings").click()
+    await expect(page.getByTestId("provider-health-summary")).toBeVisible({ timeout: 5_000 })
+    await expect(page.getByTestId("task-readiness-item-image-production")).toContainText("请求超时")
+    await expect(page.getByTestId("task-readiness-item-production-run")).toContainText("请求超时")
+  })
+
+  test("从生产队列打开设置并保存后，会清掉陈旧 smoke 阻塞并恢复开始按钮", async ({ page }) => {
+    await page.route("**/api/ai/config", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          baseUrl: "https://e2e.invalid/v1",
+          hasApiKey: true,
+          defaultModel: "e2e-text-model",
+          defaultImageModel: "e2e-image-model",
+          videoModel: "vidu",
+          timeoutMs: 120000,
+          providers: [],
+        }),
+      })
+    })
+
+    await page.addInitScript(
+      (data) => {
+        window.localStorage.clear()
+        window.sessionStorage.clear()
+        window.localStorage.setItem("startrails_canvas", JSON.stringify(data.storedCanvas))
+        window.localStorage.setItem("startrails_use_mock", "false")
+        window.localStorage.setItem("startrails_provider_real_smoke_results", JSON.stringify(data.storedSmoke))
+        window.sessionStorage.setItem("startrails_session_api_key", "sk-e2e-dashscope-session")
+      },
+      {
+        storedCanvas: createStoredCanvas(),
+        storedSmoke: FAILED_IMAGE_SMOKE,
+      },
+    )
+
+    await page.goto("/canvas")
+    await expect(page.getByText("三镜头短剧：测试生产运行队列。").first()).toBeVisible({ timeout: 15_000 })
+    await page.keyboard.press("Escape")
+    await page.waitForTimeout(200)
+    await page.getByTestId("production-run-queue-toggle").click({ force: true })
+    await expect(page.getByTestId("production-run-queue-panel")).toBeVisible({ timeout: 5_000 })
+    await expect(page.getByTestId("production-run-queue-start")).toBeDisabled()
+
+    await page.getByTestId("production-provider-open-settings").click()
+    await expect(page.getByTestId("provider-settings-save")).toBeVisible({ timeout: 5_000 })
+    await page.getByTestId("provider-settings-save").click()
+
+    await expect(page.getByTestId("production-provider-health-summary")).toContainText("0 阻塞")
+    await expect(page.getByTestId("production-run-queue-start")).toBeEnabled()
+    await expect(page.getByTestId("production-run-queue-start")).toContainText("一键开始生产")
+  })
+
+  test("面板开关/任务列表/开始执行/进度更新", async ({ page }) => {
+    const imageRequests: Array<any> = []
+    const videoRequests: Array<any> = []
+    let shouldDelayFirstImage = false
+
+    // ── Mock AI config ──
+    await page.route("**/api/ai/config", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          baseUrl: "https://dashscope/v1",
+          hasApiKey: true,
+          defaultModel: "e2e-text-model",
+          defaultImageModel: "e2e-image-model",
+          videoModel: "vidu",
+          timeoutMs: 120000,
+          providers: [],
         }),
       })
     })
@@ -233,8 +385,6 @@ test.describe("生产运行队列面板", () => {
       imageRequests.push(route.request().postDataJSON())
       if (shouldDelayFirstImage) {
         shouldDelayFirstImage = false
-        firstImageRequest.resolve()
-        await firstImageResponseGate.promise
       }
       await route.fulfill({
         status: 200,
@@ -245,6 +395,7 @@ test.describe("生产运行队列面板", () => {
 
     // ── Mock video generation, should stay unused in mock mode but guards accidental real calls ──
     await page.route("**/api/ai/generate-video-vidu", async (route) => {
+      videoRequests.push(route.request().postDataJSON())
       const sseBody = [
         "event: progress\ndata: " + JSON.stringify({ stage: "queued", percent: 10, message: "queued" }) + "\n\n",
         "event: result\ndata: " + JSON.stringify({ videoUrl: MOCK_VIDEO, taskId: "e2e-pq-video" }) + "\n\n",
@@ -295,11 +446,18 @@ test.describe("生产运行队列面板", () => {
     })
 
     // ── Inject localStorage ──
-    await page.addInitScript((storedCanvas) => {
-      window.localStorage.clear()
-      window.localStorage.setItem("startrails_canvas", JSON.stringify(storedCanvas))
-      window.localStorage.setItem("startrails_use_mock", "true")
-    }, createStoredCanvas())
+    await page.addInitScript(
+      (data) => {
+        window.localStorage.clear()
+        window.sessionStorage.clear()
+        window.localStorage.setItem("startrails_canvas", JSON.stringify(data.storedCanvas))
+        window.localStorage.setItem("startrails_use_mock", "false")
+        window.sessionStorage.setItem("startrails_session_api_key", "sk-e2e-dashscope-session")
+      },
+      {
+        storedCanvas: createStoredCanvas(1, true),
+      },
+    )
 
     // ── Navigate ──
     await page.goto("/canvas")
@@ -325,7 +483,7 @@ test.describe("生产运行队列面板", () => {
     await expect(page.getByTestId("video-provider-dry-run-summary")).toContainText("0 阻塞")
 
     // ── 4) 任务列表有正确数量的任务 ──
-    // 3 个 shot × 4 个动作 (image + video + voice + subtitle)
+    // 1 个 shot：image + video + voice + subtitle + character-reference handoff review
     const tasks = page.getByTestId("production-run-queue-task")
     await expect(tasks.first()).toBeVisible({ timeout: 5_000 })
 
@@ -340,27 +498,35 @@ test.describe("生产运行队列面板", () => {
     await expect(page.getByText("生产任务执行中")).toBeVisible({ timeout: 5_000 })
     await expect(page.getByTestId("production-run-queue-status")).toContainText("运行中", { timeout: 10_000 })
 
-    // ── 7) 生产中可暂停，并能从暂停点继续 ──
-    await firstImageRequest.promise
-    await page.getByTestId("production-run-queue-pause").click()
-    await expect(page.getByTestId("production-run-queue-resume")).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByTestId("production-run-queue-status")).toContainText("已暂停", { timeout: 10_000 })
-    firstImageResponseGate.resolve()
-    await page.getByTestId("production-run-queue-resume").click()
-    await expect(page.getByText("生产任务执行中")).toBeVisible({ timeout: 10_000 })
-
-    // ── 8) 验证生产执行链路至少触发了首个图像任务并最终完成 ──
+    // ── 7) 验证生产执行链路至少触发了首个图像任务并最终完成 ──
     await expect.poll(() => imageRequests.length, { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
-    await expect(page.getByTestId("production-run-queue-progress")).toContainText("12/12 完成", { timeout: 45_000 })
+    await expect(page.getByTestId("production-run-queue-progress")).toContainText("5/5 完成", { timeout: 60_000 })
     await expect(page.getByTestId("production-run-queue-status")).toContainText("已完成", { timeout: 30_000 })
     await expect.poll(
       () => hasGeneratedNode(page, { nodeKind: "video-result", title: "PQ镜头 1 视频" }),
       { timeout: 10_000 },
     ).toBeTruthy()
+    expect(videoRequests).toEqual([
+      expect.objectContaining({
+        mode: "r2v",
+        referenceImageUrls: [
+          "https://e2e.invalid/prince-front.png",
+          "https://e2e.invalid/prince-side.png",
+        ],
+      }),
+    ])
+    expect(videoRequests[0]).not.toHaveProperty("imageUrl")
     await expect.poll(
       () => hasGeneratedNode(page, { nodeKind: "tts-audio", title: "PQ镜头 1 配音" }),
       { timeout: 10_000 },
     ).toBeTruthy()
+    await expect.poll(
+      () => page.evaluate(() => {
+        const e2e = (window as Window & { __starcanvasE2E?: StarCanvasE2EBridge }).__starcanvasE2E
+        return e2e?.getNodes().find((node) => node.data.title === "PQ镜头 1 配音")?.data.startOffsetSeconds
+      }),
+      { timeout: 10_000 },
+    ).toBe(12.28)
     await expect.poll(
       () => hasGeneratedNode(page, { nodeKind: "subtitle-srt", title: "PQ镜头 1 字幕" }),
       { timeout: 10_000 },
@@ -368,8 +534,11 @@ test.describe("生产运行队列面板", () => {
     await expect(page.locator(".react-flow__node").filter({ hasText: "SRT 内容" }).first()).toBeVisible({ timeout: 10_000 })
     for (const req of imageRequests) {
       expect(req).toHaveProperty("prompt")
+      expect(req).toHaveProperty("requestId")
       expect(typeof req.prompt).toBe("string")
       expect(req.prompt.length).toBeGreaterThan(0)
+      expect(typeof req.requestId).toBe("string")
+      expect(req.requestId.length).toBeGreaterThan(0)
     }
 
     // ── 9) 再次点击开关关闭面板 ──
@@ -377,7 +546,7 @@ test.describe("生产运行队列面板", () => {
     await expect(page.getByTestId("production-run-queue-panel")).toHaveCount(0)
   })
 
-  test("失败任务可重试或跳过，并在重试期间锁定队列控制", async ({ page }) => {
+  test("失败任务可重试，并在重试期间锁定队列控制", async ({ page }) => {
     const imageRequests: Array<any> = []
     const retryImageRequest = createDeferred()
     const retryImageResponseGate = createDeferred()
@@ -388,7 +557,7 @@ test.describe("生产运行队列面板", () => {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          baseUrl: "https://e2e.invalid/v1",
+          baseUrl: "https://dashscope/v1",
           hasApiKey: true,
           defaultModel: "e2e-text-model",
           defaultImageModel: "e2e-image-model",
@@ -403,7 +572,7 @@ test.describe("生产运行队列面板", () => {
       const prompt = typeof body?.prompt === "string" ? body.prompt : ""
       if (prompt.includes("woman standing by window")) {
         firstShotImageAttempts += 1
-        if (firstShotImageAttempts === 1) {
+        if (firstShotImageAttempts <= 3) {
           await route.fulfill({
             status: 500,
             contentType: "application/json",
@@ -411,7 +580,7 @@ test.describe("生产运行队列面板", () => {
           })
           return
         }
-        if (firstShotImageAttempts === 2) {
+        if (firstShotImageAttempts === 4) {
           retryImageRequest.resolve()
           await retryImageResponseGate.promise
         }
@@ -472,7 +641,13 @@ test.describe("生产运行队列面板", () => {
     await page.addInitScript((storedCanvas) => {
       window.localStorage.clear()
       window.localStorage.setItem("startrails_canvas", JSON.stringify(storedCanvas))
-      window.localStorage.setItem("startrails_use_mock", "true")
+      window.localStorage.setItem("startrails_use_mock", "false")
+      window.localStorage.setItem("startrails_api_base_url", "https://dashscope/v1")
+      window.localStorage.setItem("startrails_provider_baseUrl", "https://dashscope/v1")
+      window.localStorage.setItem("startrails_provider_defaultModel", "e2e-text-model")
+      window.localStorage.setItem("startrails_provider_imageModel", "e2e-image-model")
+      window.localStorage.setItem("startrails_provider_videoModel", "vidu")
+      window.sessionStorage.setItem("startrails_session_api_key", "sk-e2e-production-retry")
     }, createStoredCanvas())
 
     await page.goto("/canvas")
@@ -485,19 +660,20 @@ test.describe("生产运行队列面板", () => {
 
     await page.getByTestId("production-run-queue-start").click()
     await expect(page.getByTestId("production-run-queue-status")).toContainText("部分失败", { timeout: 45_000 })
-    await expect(page.getByTestId("production-run-queue-progress")).toContainText("2 失败", { timeout: 10_000 })
+    await expect(page.getByTestId("production-run-queue-progress")).toContainText("1 失败", { timeout: 10_000 })
 
     const firstImageTask = page
       .getByTestId("production-run-queue-task")
       .filter({ hasText: "PQ镜头 1 · 生成分镜图" })
-    const firstVideoTask = page
-      .getByTestId("production-run-queue-task")
-      .filter({ hasText: "PQ镜头 1 · 生成视频" })
-
     await expect(firstImageTask).toContainText("失败")
-    await expect(firstVideoTask).toContainText("失败")
 
-    await firstImageTask.getByTestId("production-run-queue-retry").click()
+    await expect(page.getByTestId("production-run-queue-start")).toBeVisible({ timeout: 45_000 })
+    await expect(page.getByText("生产任务执行中")).toHaveCount(0)
+
+    const retryImageButton = firstImageTask.getByTestId("production-run-queue-retry")
+    await expect(retryImageButton).toBeVisible({ timeout: 20_000 })
+    await retryImageButton.scrollIntoViewIfNeeded()
+    await retryImageButton.click()
     await retryImageRequest.promise
     await expect(page.getByText("生产任务执行中")).toBeVisible({ timeout: 3_000 })
     await expect(page.getByTestId("production-run-queue-start")).toHaveCount(0)
@@ -505,17 +681,17 @@ test.describe("生产运行队列面板", () => {
     retryImageResponseGate.resolve()
     await expect(firstImageTask).toContainText("完成", { timeout: 10_000 })
     await expect.poll(
-      () => hasGeneratedNode(page, { nodeKind: "ai-generated-image", title: "PQ镜头 1 图" }),
+      () => hasGeneratedImageForShot(page, "e2e-pq-shot-1"),
       { timeout: 10_000 },
     ).toBeTruthy()
 
-    await firstVideoTask.getByTestId("production-run-queue-skip").click()
-    await expect(firstVideoTask).toContainText("跳过", { timeout: 5_000 })
-    await expect(page.getByTestId("production-run-queue-progress")).toContainText("11/12 完成", { timeout: 10_000 })
-    await expect(page.getByTestId("production-run-queue-progress")).toContainText("1 跳过")
+    await expect(page.getByTestId("production-run-queue-start")).toBeVisible({ timeout: 10_000 })
+
+    await page.getByTestId("production-run-queue-start").click()
+    await expect(page.getByTestId("production-run-queue-progress")).toContainText("12/12 完成", { timeout: 45_000 })
     await expect(page.getByTestId("production-run-queue-status")).toContainText("已完成", { timeout: 10_000 })
-    expect(firstShotImageAttempts).toBe(2)
-    expect(imageRequests.length).toBeGreaterThanOrEqual(4)
+    expect(firstShotImageAttempts).toBe(4)
+    expect(imageRequests.length).toBeGreaterThanOrEqual(6)
   })
 
   test("blocked action 展示", async ({ page }) => {

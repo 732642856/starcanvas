@@ -60,6 +60,7 @@ function createStoryboardCanvas(): StoredCanvas {
         measured: { width: 340, height: 260 },
         data: {
           title: `执行桥接镜头 ${index + 1}`,
+          nodeKind: "shot",
           description:
             index === 0
               ? "女主站在窗前，阳光洒落。"
@@ -72,6 +73,25 @@ function createStoryboardCanvas(): StoredCanvas {
             "cinematic wide shot, woman standing by window, warm sunlight",
             "cinematic close-up, woman turning to look at door, suspenseful lighting",
           ][index],
+          shot: {
+            id,
+            order: index + 1,
+            title: `执行桥接镜头 ${index + 1}`,
+            shotType: index === 0 ? "wide" : "close-up",
+            cameraMovement: "static",
+            duration: index === 0 ? "3s" : "2s",
+            description:
+              index === 0
+                ? "女主站在窗前，阳光洒落。"
+                : "女主回头望向门口。",
+            visualPrompt: [
+              "cinematic wide shot, woman standing by window, warm sunlight",
+              "cinematic close-up, woman turning to look at door, suspenseful lighting",
+            ][index],
+            dialogue: index === 0 ? "今天的阳光真好。" : "谁在那里？",
+            sourceStoryboardNodeId: sourceId,
+            status: "ready",
+          },
         },
       })),
     ],
@@ -90,6 +110,7 @@ async function seedCanvasData(page: Page, projectId: string): Promise<void> {
   await page.evaluate(
     ({ key, data }) => {
       window.localStorage.setItem(key, JSON.stringify(data));
+      window.localStorage.setItem("startrails_use_mock", "true");
     },
     { key: storageKey, data: canvas },
   );
@@ -141,6 +162,18 @@ test.describe("Run Queue → Executor Bridge", () => {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({ imageUrl: MOCK_IMAGE, requestId: "e2e-exec-bridge-image" }),
+      });
+    });
+
+    await page.route("**/api/ai/generate-video-vidu", async (route) => {
+      const sseBody = [
+        "event: progress\ndata: " + JSON.stringify({ stage: "queued", percent: 10, message: "queued" }) + "\n\n",
+        "event: result\ndata: " + JSON.stringify({ videoUrl: MOCK_IMAGE, taskId: "e2e-exec-bridge-video" }) + "\n\n",
+      ].join("");
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: sseBody,
       });
     });
 
@@ -225,7 +258,7 @@ test.describe("Run Queue → Executor Bridge", () => {
     const tasks = page.getByTestId("production-run-queue-task");
     await expect(tasks.first()).toBeVisible({ timeout: 5_000 });
     const taskCount = await tasks.count();
-    expect(taskCount).toBe(2);
+    expect(taskCount).toBe(8);
 
     // ── 8. Verify "开始生产" button is present (wired to executor) ──
     const startBtn = page.getByTestId("production-run-queue-start");
@@ -236,7 +269,7 @@ test.describe("Run Queue → Executor Bridge", () => {
     await startBtn.click();
 
     // ── 10. Verify "执行中" state appears (mock has 300ms delay) ──
-    await expect(page.getByText("生产任务执行中…")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("production-run-queue-status")).toContainText("运行中", { timeout: 10_000 });
 
     // ── 11. Wait for execution to complete ──
     await expect(page.getByTestId("production-run-queue-status")).toContainText("已完成", { timeout: 60_000 });

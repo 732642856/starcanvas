@@ -28,7 +28,7 @@ test.describe("Create flow smoke", () => {
     await clearBrowserStorage(page)
   })
 
-  test("AI Script generation → import → shot library → persistence", async ({ page }) => {
+  test("Script import → shot library → persistence", async ({ page }) => {
     const projectId = createTestProjectId("create-flow")
 
     // Step 1: Navigate to canvas
@@ -39,25 +39,18 @@ test.describe("Create flow smoke", () => {
     await expect(page.locator(".react-flow").first()).toBeVisible({ timeout: 90_000 })
     await waitForCanvasInteractive(page)
 
-    // Step 2: Open AI Script panel
-    await page.locator(`[data-testid='${testIds.toolbar.aiScript}']`).click()
-    await expect(page.locator(`[data-testid='${testIds.panels.aiScript}']`)).toBeVisible({
+    // Step 2: Empty canvas exposes the primary script-import entry.
+    await page.getByTestId("empty-guide-import-script").click()
+    await expect(page.getByTestId("script-import-panel")).toBeVisible({
       timeout: 15_000,
     })
 
-    // Step 3: Fill brief and generate
-    await page.locator(`[data-testid='${testIds.aiScript.briefInput}']`).fill(
-      "一个冒险故事：主角穿越沙漠寻找失落的古城",
+    // Step 3: Import a structured script to create the primary canvas nodes.
+    await page.getByPlaceholder("例如：隐门探案 第 1 集").fill("沙漠古城")
+    await page.getByPlaceholder("粘贴剧本、故事梗概、文字分镜或场次文本……").fill(
+      "镜头 1\n画面内容：主角穿越沙漠寻找失落的古城。\n景别：全景\n运镜：缓慢推进",
     )
-    await page.locator(`[data-testid='${testIds.aiScript.generateButton}']`).click()
-
-    // Wait for draft preview to appear
-    await expect(page.locator(`[data-testid='${testIds.aiScript.draftPreview}']`)).toBeVisible({
-      timeout: 15_000,
-    })
-
-    // Step 4: Import shots to canvas
-    await page.locator(`[data-testid='${testIds.aiScript.importButton}']`).click()
+    await page.getByTestId("script-import-submit").click()
 
     // Assert nodes appear on canvas
     await expect.poll(
@@ -65,18 +58,13 @@ test.describe("Create flow smoke", () => {
       { timeout: 15_000 },
     ).toBeGreaterThan(0)
 
-    // Step 5: Close panel, open shot library
-    await page.locator(`[data-testid='${testIds.panels.aiScript}'] button svg.lucide-x`).click()
-    await expect(page.locator(`[data-testid='${testIds.panels.aiScript}']`)).not.toBeVisible({
-      timeout: 5_000,
-    })
-
+    // Step 4: Professional tools become available after nodes exist.
     await page.locator(`[data-testid='${testIds.toolbar.shotLibrary}']`).click()
     await expect(page.locator(`[data-testid='${testIds.panels.shotLibrary}']`)).toBeVisible({
       timeout: 10_000,
     })
 
-    // Step 6: Reload page and verify persistence
+    // Step 5: Reload page and verify persistence
     await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
       waitUntil: "domcontentloaded",
       timeout: 90_000,
@@ -146,6 +134,10 @@ test.describe("Create flow smoke", () => {
       timeout: 180_000,
     })
     await expect(page.locator(".react-flow").first()).toBeVisible({ timeout: 90_000 })
+
+    // Professional tools are intentionally hidden until the canvas has content.
+    await page.getByTestId("empty-guide-create-text").click()
+    await expect.poll(() => page.locator(".react-flow__node").count(), { timeout: 10_000 }).toBeGreaterThan(0)
 
     // Open color grade
     await page.locator(`[data-testid='${testIds.toolbar.colorGrade}']`).click()

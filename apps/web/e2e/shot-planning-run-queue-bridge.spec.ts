@@ -58,6 +58,7 @@ function createStoryboardCanvas(): StoredCanvas {
         height: 260,
         measured: { width: 340, height: 260 },
         data: {
+          nodeKind: "shot",
           title: `镜头 ${index + 1}`,
           description:
             index === 0 ? "城市黄昏全景" : index === 1 ? "主角特写" : "追逐场景",
@@ -71,6 +72,27 @@ function createStoryboardCanvas(): StoredCanvas {
           shotPresetId: index === 0 ? "preset-wide" : "preset-closeup",
           stylePresetId: "style-noir",
           image: MOCK_IMAGE,
+          sourceStoryboardNodeId: sourceId,
+          shot: {
+            id,
+            order: index + 1,
+            title: `镜头 ${index + 1}`,
+            shotType: index === 0 ? "wide" : index === 1 ? "close-up" : "medium",
+            cameraMovement: "static",
+            duration: `${index === 0 ? 5 : index === 1 ? 3 : 4}s`,
+            description:
+              index === 0 ? "城市黄昏全景" : index === 1 ? "主角特写" : "追逐场景",
+            visualPrompt:
+              index === 0
+                ? "电影感分镜图，黄昏城市全景，霓虹初亮，黑色电影风格"
+                : index === 1
+                  ? "电影感分镜图，主角面部特写，侧逆光，黑色电影风格"
+                  : "电影感分镜图，街头追逐场景，中景，黑色电影风格",
+            dialogue:
+              index === 0 ? "夜色快落下了。" : index === 1 ? "他就在前面。" : "别跟丢。",
+            sourceStoryboardNodeId: sourceId,
+            status: "ready",
+          },
         },
       })),
     ],
@@ -148,7 +170,7 @@ test.describe("Shot Planning → Run Queue bridge e2e", () => {
     await createBtn.click();
 
     // 5. Success message should appear
-    await expect(panel).toContainText("Created 2 queue tasks", { timeout: 5_000 });
+    await expect(panel).toContainText("Created 8 queue tasks", { timeout: 5_000 });
 
     // 6. Production Run Queue panel should auto-open
     const queuePanel = page.locator("[data-testid='production-run-queue-panel']");
@@ -208,10 +230,10 @@ test.describe("Shot Planning → Run Queue bridge e2e", () => {
 
     await page.getByTestId("production-run-queue-start").click();
     await expect(page.getByTestId("production-run-queue-status")).toContainText("已完成", {
-      timeout: 45_000,
+      timeout: 90_000,
     });
-    await expect(page.getByTestId("production-run-queue-progress")).toContainText("2/2 完成", {
-      timeout: 45_000,
+    await expect(page.getByTestId("production-run-queue-progress")).toContainText("8/8 完成", {
+      timeout: 90_000,
     });
 
     await openExportPreflight(page);
@@ -231,8 +253,13 @@ test.describe("Shot Planning → Run Queue bridge e2e", () => {
     expect(entryNames).toContain("JianYingCompatible/README.txt");
     expect(entryNames).toContain("JianYingCompatible/subtitles.srt");
     expect(entryNames).toContain("JianYingCompatible/draft_content.json");
-    expect(entryNames).toContain("JianYingCompatible/videos/video_1.mp4");
-    expect(entryNames).toContain("JianYingCompatible/videos/video_2.mp4");
+    const videoEntries = entryNames.filter(
+      (name) => /^JianYingCompatible\/videos\/[^/]+\.mp4$/.test(name),
+    );
+    expect(videoEntries).toHaveLength(2);
+    for (const name of videoEntries) {
+      expect((await zip.file(name)?.async("uint8array"))?.length).toBeGreaterThan(0);
+    }
 
     await expect(page.getByText("导出成功")).toBeVisible({ timeout: 15_000 });
     expect(errors.pageErrors).toEqual([]);
