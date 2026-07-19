@@ -33,6 +33,7 @@ export type ProductionRunQueueTask = {
   shotId: string;
   order: number;
   title: string;
+  detail?: string;
   action: ProductionRunQueueAction;
   status: ProductionRunQueueTaskStatus;
   progress: number;
@@ -251,6 +252,10 @@ export function buildProductionRunQueue(
           shotId: plan.shotId,
           order: plan.order,
           title: plan.title,
+          detail:
+            action === "review-handoff-warnings" && plan.videoReferenceAudit
+              ? `${plan.videoReferenceAudit.mode.toUpperCase()} · 已用 ${plan.videoReferenceAudit.usedCount}/${plan.videoReferenceAudit.configuredCount} · 跳过 ${plan.videoReferenceAudit.skippedCount}`
+              : undefined,
           action,
           status: "queued",
           progress: 0,

@@ -85,6 +85,7 @@ export type ProjectPackageProductionRunManifest = {
     audioIntent: number;
     handoffNotes: number;
     warnings: number;
+    previsPlans: number;
   };
   shotBriefIndex: Array<{
     shotId: string;
@@ -102,12 +103,22 @@ export type ProjectPackageProductionRunManifest = {
     title: string;
     requiredAssets: Array<"visual" | "video" | "voice" | "subtitle" | "handoff-review">;
     nextActions: string[];
+    videoReferenceAudit?: NonNullable<ShotProductionBrief["handoff"]["videoReferenceAudit"]>;
   }>;
   handoffWarnings: Array<{
     shotId: string;
     order: number;
     title: string;
     warning: string;
+  }>;
+  previsPlans: Array<{
+    shotId: string;
+    order: number;
+    title: string;
+    status: "not-required" | "recommended";
+    pose: boolean;
+    depth: boolean;
+    splitShotRecommended: boolean;
   }>;
   productionPreflight: ProductionPreflightReport;
   videoProviderDryRun: ProjectPackageVideoProviderDryRunReport;
@@ -366,6 +377,7 @@ export function buildProjectPackageManifest({
       audioIntent: audioIntent.length,
       handoffNotes: handoffNotes.length,
       warnings: handoffWarnings.length,
+      previsPlans: orderedBriefs.filter((brief) => brief.handoff.previs?.status === "recommended").length,
     },
     shotBriefIndex: orderedBriefs.map((brief) => ({
       shotId: brief.shotId,
@@ -383,8 +395,20 @@ export function buildProjectPackageManifest({
       title: brief.title,
       requiredAssets: buildRequiredAssets(brief),
       nextActions: buildNextActions(brief),
+      videoReferenceAudit: brief.handoff.videoReferenceAudit,
     })),
     handoffWarnings,
+    previsPlans: orderedBriefs
+      .filter((brief) => brief.handoff.previs?.status === "recommended")
+      .map((brief) => ({
+        shotId: brief.shotId,
+        order: brief.order,
+        title: brief.title,
+        status: brief.handoff.previs!.status,
+        pose: brief.handoff.previs!.pose,
+        depth: brief.handoff.previs!.depth,
+        splitShotRecommended: brief.handoff.previs!.splitShotRecommended,
+      })),
     productionPreflight,
     videoProviderDryRun,
     sourceReferences: orderedBriefs

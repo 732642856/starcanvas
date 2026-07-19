@@ -102,14 +102,13 @@ export function useProductionRunExecutor({
   // 更新单个任务状态
   const updateTaskState = useCallback(
     (taskId: string, patch: Partial<TaskExecState>) => {
-      setExecState((prev) => {
-        const next = {
-          ...prev,
-          [taskId]: { ...(prev[taskId] ?? { status: "queued" }), ...patch },
-        };
-        execStateRef.current = next;
-        return next;
-      });
+      const prev = execStateRef.current;
+      const next = {
+        ...prev,
+        [taskId]: { ...(prev[taskId] ?? { status: "queued" }), ...patch },
+      };
+      execStateRef.current = next;
+      setExecState(next);
     },
     [],
   );
@@ -135,10 +134,10 @@ export function useProductionRunExecutor({
     abortRef.current = new AbortController();
     const { signal } = abortRef.current;
 
-    for (let i = 0; i < runnableTasks.length; i++) {
+    while (!signal.aborted) {
+      const task = selectRunnableProductionRunTasks(queue.tasks, execStateRef.current)[0];
+      if (!task) break;
       if (signal.aborted) break;
-
-      const task = runnableTasks[i]!;
 
       // 跳过已完成或已跳过的任务
       if (

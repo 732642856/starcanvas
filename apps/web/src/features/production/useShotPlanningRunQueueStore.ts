@@ -15,7 +15,10 @@ import {
   retryProductionRunTask,
   skipProductionRunTask,
 } from "../../lib/storyboard/productionRunQueue.ts";
-import { createProductionRunQueueFromReadyShots } from "./shotPlanningRunQueueAdapter.ts";
+import {
+  createProductionRunQueueFromReadyShots,
+  type ShotPlanningSourceNode,
+} from "./shotPlanningRunQueueAdapter.ts";
 import type { ShotPlanningBoard } from "./shotPlanningTypes.ts";
 
 // ============================================================================
@@ -33,7 +36,7 @@ export interface ShotPlanningRunQueueState {
 
 export interface ShotPlanningRunQueueActions {
   /** Create a run queue from a ShotPlanningBoard's ready items */
-  buildFromBoard: (board: ShotPlanningBoard, projectId: string) => void;
+  buildFromBoard: (board: ShotPlanningBoard, projectId: string, sourceNodes?: ShotPlanningSourceNode[]) => void;
   /** Directly set a queue built outside the planning board */
   setQueue: (queue: ProductionRunQueue | null, projectId?: string | null) => void;
   /** Mark a task as completed (recomputes queue status) */
@@ -65,16 +68,15 @@ const initialState: ShotPlanningRunQueueState = {
 export const useShotPlanningRunQueueStore = create<ShotPlanningRunQueueStore>()((set) => ({
   ...initialState,
 
-  buildFromBoard: (board: ShotPlanningBoard, projectId: string) => {
-    const queue = createProductionRunQueueFromReadyShots({ board, projectId });
-    const readyCount = board.items.filter((item) => item.status === "ready").length;
+  buildFromBoard: (board: ShotPlanningBoard, projectId: string, sourceNodes?: ShotPlanningSourceNode[]) => {
+    const queue = createProductionRunQueueFromReadyShots({ board, projectId, sourceNodes });
 
     set({
       queue,
       projectId,
       lastMessage:
         queue !== null
-          ? `Created ${readyCount} queue task${readyCount > 1 ? "s" : ""}`
+          ? `Created ${queue.tasks.length} queue task${queue.tasks.length > 1 ? "s" : ""}`
           : "No ready shots to queue",
     });
   },

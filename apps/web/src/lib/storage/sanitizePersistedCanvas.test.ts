@@ -21,6 +21,19 @@ describe("sanitizePersistedCanvas", () => {
     assert.equal(clean.title, "kept");
   });
 
+  it("removes focus-edit mask runtime data while keeping its asset identity", () => {
+    const clean = sanitizePersistedNodeData({
+      focusEditMaskAssetId: "focus-mask-1",
+      focusEditMaskDataUrl: "data:image/png;base64,MASK",
+      maskDataUrl: "data:image/png;base64,LEGACY_MASK",
+    });
+
+    assert.equal(clean.focusEditMaskAssetId, "focus-mask-1");
+    assert.equal(clean.focusEditMaskDataUrl, undefined);
+    assert.equal(clean.maskDataUrl, undefined);
+    assert.deepEqual(findRuntimeUrlLeaks(clean), []);
+  });
+
   it("removes nested generated and grid runtime urls", () => {
     const clean = sanitizePersistedNodeData({
       shot: {

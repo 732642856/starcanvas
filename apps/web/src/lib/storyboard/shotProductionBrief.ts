@@ -3,7 +3,9 @@ import type {
   CanvasNodeData,
   CharacterIdentityAsset,
   StoryboardShotData,
+  VideoReferenceAudit,
 } from "@/app/canvas/components/canvas/types";
+import { buildVideoPromptDirection } from "./videoPromptDirector.ts";
 
 export type ShotProductionBrief = {
   shotId: string;
@@ -30,6 +32,13 @@ export type ShotProductionBrief = {
   handoff: {
     notes?: string;
     warnings?: string[];
+    videoReferenceAudit?: VideoReferenceAudit;
+    previs?: {
+      status: "not-required" | "recommended";
+      pose: boolean;
+      depth: boolean;
+      splitShotRecommended: boolean;
+    };
     source?: {
       type?: string;
       videoName?: string;
@@ -80,6 +89,21 @@ function getDialogue(shot: StoryboardShotData): string | undefined {
   ], "\n");
 }
 
+function buildPrevisPlan(shot: StoryboardShotData): NonNullable<ShotProductionBrief["handoff"]["previs"]> {
+  const controlPlan = buildVideoPromptDirection({
+    action: cleanText(shot.description) || cleanText(shot.visualPrompt),
+    shotType: cleanText(shot.cinematicShot?.shotSize) || cleanText(shot.shotType),
+    cameraMovement: cleanText(shot.cinematicShot?.cameraMovement) || cleanText(shot.cameraMovement),
+    hasReferenceFrame: Boolean(shot.generatedImageUrl || shot.generatedImageAssetId || shot.generatedImageNodeId),
+  }).controlPlan;
+  return {
+    status: controlPlan.whiteboxPrevisRecommended ? "recommended" : "not-required",
+    pose: controlPlan.pose,
+    depth: controlPlan.depth,
+    splitShotRecommended: controlPlan.splitShotRecommended,
+  };
+}
+
 function getSuggestedVoiceText(shot: StoryboardShotData, dialogue?: string): string | undefined {
   return cleanText(shot.voiceConfig?.text) || dialogue;
 }
@@ -101,6 +125,19 @@ function collectWarnings(shot: StoryboardShotData): string[] | undefined {
 
   if (!getVisualPrompt(shot)) {
     warnings.push("Missing visual prompt for shot generation");
+  }
+  const referenceAudit = shot.videoReferenceAudit;
+  if (referenceAudit && referenceAudit.skippedCount > 0) {
+    warnings.push(
+      `视频参考审计：${referenceAudit.mode.toUpperCase()}，已使用 ${referenceAudit.usedCount}/${referenceAudit.configuredCount} 张，跳过 ${referenceAudit.skippedCount} 张。${referenceAudit.reason ? ` ${referenceAudit.reason}` : ""}`,
+    );
+  }
+  const previs = buildPrevisPlan(shot);
+  if (previs.status === "recommended") {
+    warnings.push(`建议白模预演：${previs.pose ? "姿态" : ""}${previs.pose && previs.depth ? " + " : ""}${previs.depth ? "深度" : ""} 控制图。`);
+  }
+  if (previs.splitShotRecommended) {
+    warnings.push("检测到连续动作，建议拆成多个单动作镜头后再生成视频。");
   }
 
   return warnings.length ? [...new Set(warnings)] : undefined;
@@ -152,6 +189,7 @@ export function buildShotProductionBrief(shot: StoryboardShotData): ShotProducti
     shot.cinematicShot?.soundCue,
     shot.cinematicShot?.musicMood ? `music mood: ${shot.cinematicShot.musicMood}` : undefined,
   ], "; ");
+  const previs = buildPrevisPlan(shot);
 
   return {
     shotId: cleanText(shot.id) || `shot-${shot.order}`,
@@ -178,6 +216,8 @@ export function buildShotProductionBrief(shot: StoryboardShotData): ShotProducti
     handoff: {
       notes: buildHandoffNotes(shot),
       warnings: collectWarnings(shot),
+      videoReferenceAudit: shot.videoReferenceAudit,
+      previs,
       source: buildSourceMeta(shot),
     },
   };

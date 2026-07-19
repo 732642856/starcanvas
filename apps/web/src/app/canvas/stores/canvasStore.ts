@@ -5,6 +5,7 @@ import { create } from 'zustand'
 import { devtools } from 'zustand/middleware'
 import { getItem, setItem } from '../utils/canvasIndexedDB'
 import type { Node, Viewport } from '@xyflow/react'
+import type { ApplyActionsReport, ChatCanvasAction } from '../features/canvas/actions/chatActions'
 import type {
   CanvasNodeKind,
   ChatMode,
@@ -45,6 +46,21 @@ export const VIEWPORT_CONSTRAINTS = {
 const ASSETS_STORAGE_KEY = 'startrails_assets'
 const AI_AUTO_RUN_KEY = 'startrails_ai_auto_run'
 const CANVAS_STORAGE_KEY = 'startrails_canvas'
+
+export type PreviewDraftNodeState = 'pending' | 'confirmed' | 'discarded'
+export type PreviewTransactionPhase = 'preview' | 'deferred_applied' | 'cancelled'
+
+export type PreviewTransaction = {
+  id: string
+  conversationId?: string
+  expectedDraftCount?: number
+  draftNodes: Record<string, PreviewDraftNodeState>
+  deferredActions: ChatCanvasAction[]
+  previewReport?: ApplyActionsReport
+  commitReport?: ApplyActionsReport
+  phase: PreviewTransactionPhase
+  createdAt: number
+}
 
 interface CanvasStore {
   // Viewport
@@ -107,6 +123,29 @@ interface CanvasStore {
   // AI auto-run safety
   allowAIAutoRun: boolean
   setAllowAIAutoRun: (value: boolean) => void
+
+  previewTransactions: Record<string, PreviewTransaction>
+  stagePreviewTransaction: (params: {
+    txId: string
+    conversationId?: string
+    expectedDraftCount?: number
+    deferredActions: ChatCanvasAction[]
+  }) => void
+  recordPreviewPass: (params: {
+    txId: string
+    previewReport?: ApplyActionsReport
+  }) => void
+  settlePreviewDraftNode: (params: {
+    txId: string
+    nodeId: string
+    disposition: 'confirm' | 'discard'
+  }) => void
+  commitPreviewTransaction: (params: {
+    txId: string
+    report: ApplyActionsReport
+  }) => void
+  cancelPreviewTransaction: (txId: string) => void
+  clearPreviewTransaction: (txId: string) => void
 
   // === Bible System ===
   bibleCharacters: CharacterBibleData[]
@@ -267,6 +306,104 @@ export const useCanvasStore = create<CanvasStore>()(
         setPersistedFlag(AI_AUTO_RUN_KEY, String(value))
         set({ allowAIAutoRun: value }, false, 'setAllowAIAutoRun')
       },
+
+      previewTransactions: {},
+      stagePreviewTransaction: ({ txId, conversationId, expectedDraftCount, deferredActions }) =>
+        set((state) => ({
+          previewTransactions: {
+            ...state.previewTransactions,
+            [txId]: {
+              id: txId,
+              conversationId,
+              expectedDraftCount:
+                expectedDraftCount ?? state.previewTransactions[txId]?.expectedDraftCount,
+              draftNodes: state.previewTransactions[txId]?.draftNodes ?? {},
+              deferredActions,
+              previewReport: state.previewTransactions[txId]?.previewReport,
+              commitReport: state.previewTransactions[txId]?.commitReport,
+              phase: state.previewTransactions[txId]?.phase ?? 'preview',
+              createdAt: state.previewTransactions[txId]?.createdAt ?? Date.now(),
+            },
+          },
+        }), false, 'stagePreviewTransaction'),
+      recordPreviewPass: ({ txId, previewReport }) =>
+        set((state) => {
+          const existing = state.previewTransactions[txId]
+          const draftNodeIds = previewReport?.results
+            .filter((result) => result.action === 'create_node' && result.status === 'applied' && result.nodeId)
+            .map((result) => result.nodeId as string) ?? []
+          const draftNodes = { ...(existing?.draftNodes ?? {}) }
+          for (const nodeId of draftNodeIds) {
+            draftNodes[nodeId] = draftNodes[nodeId] ?? 'pending'
+          }
+          return {
+            previewTransactions: {
+              ...state.previewTransactions,
+              [txId]: {
+                id: txId,
+                conversationId: existing?.conversationId,
+                draftNodes,
+                deferredActions: existing?.deferredActions ?? [],
+                previewReport,
+                commitReport: existing?.commitReport,
+                phase: existing?.phase ?? 'preview',
+                createdAt: existing?.createdAt ?? Date.now(),
+              },
+            },
+          }
+        }, false, 'recordPreviewPass'),
+      settlePreviewDraftNode: ({ txId, nodeId, disposition }) =>
+        set((state) => {
+          const existing = state.previewTransactions[txId]
+          if (!existing) return state
+          return {
+            previewTransactions: {
+              ...state.previewTransactions,
+              [txId]: {
+                ...existing,
+                draftNodes: {
+                  ...existing.draftNodes,
+                  [nodeId]: disposition === 'confirm' ? 'confirmed' : 'discarded',
+                },
+              },
+            },
+          }
+        }, false, 'settlePreviewDraftNode'),
+      commitPreviewTransaction: ({ txId, report }) =>
+        set((state) => {
+          const existing = state.previewTransactions[txId]
+          if (!existing) return state
+          return {
+            previewTransactions: {
+              ...state.previewTransactions,
+              [txId]: {
+                ...existing,
+                commitReport: report,
+                phase: 'deferred_applied',
+              },
+            },
+          }
+        }, false, 'commitPreviewTransaction'),
+      cancelPreviewTransaction: (txId) =>
+        set((state) => {
+          const existing = state.previewTransactions[txId]
+          if (!existing) return state
+          return {
+            previewTransactions: {
+              ...state.previewTransactions,
+              [txId]: {
+                ...existing,
+                phase: 'cancelled',
+              },
+            },
+          }
+        }, false, 'cancelPreviewTransaction'),
+      clearPreviewTransaction: (txId) =>
+        set((state) => {
+          const nextTransactions = { ...state.previewTransactions }
+          delete nextTransactions[txId]
+          return { previewTransactions: nextTransactions }
+        }, false, 'clearPreviewTransaction'),
 
       // === Bible System ===
       bibleCharacters: [],

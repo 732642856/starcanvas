@@ -17,7 +17,7 @@ import {
   formatSrtTimecode,
   convertSrtToVtt,
   type SubtitleSegment,
-} from "./subtitleFormatter";
+} from "./subtitleFormatter.ts";
 
 // ============================================================================
 // Types

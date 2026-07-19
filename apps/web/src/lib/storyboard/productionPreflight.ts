@@ -62,6 +62,9 @@ function hasReference(brief: ShotProductionBrief): boolean {
     hasText(brief.handoff.source?.referenceImageUrl) ||
       brief.visual.characterIdentities.some((character) =>
         hasText(character.referenceAssetId) ||
+        hasText(character.frontViewAssetId) ||
+        hasText(character.sideViewAssetId) ||
+        hasText(character.backViewAssetId) ||
         hasText(character.frontViewUrl) ||
         hasText(character.sideViewUrl) ||
         hasText(character.backViewUrl),
@@ -80,6 +83,9 @@ function characterAnchorIssues(brief: ShotProductionBrief): ProductionPreflightI
     const hasVisualSignature = hasText(character.visualSignature);
     const hasCostume = hasText(character.costume);
     const hasReferenceAsset = hasText(character.referenceAssetId) ||
+      hasText(character.frontViewAssetId) ||
+      hasText(character.sideViewAssetId) ||
+      hasText(character.backViewAssetId) ||
       hasText(character.frontViewUrl) ||
       hasText(character.sideViewUrl) ||
       hasText(character.backViewUrl);

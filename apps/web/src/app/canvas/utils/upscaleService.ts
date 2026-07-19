@@ -1,5 +1,7 @@
 "use client";
 
+import { assetUrlToDataUrl } from "./providerMediaDataUrl.ts";
+
 export const UPSCALE_CLIENT_TIMEOUT_MS = 90_000;
 type ImageUrlToBase64Fn = (imageUrl: string, assetId?: string) => Promise<string>;
 
@@ -57,8 +59,7 @@ async function readJsonSafely(res: Response): Promise<UpscalePayload | null> {
 }
 
 async function defaultImageUrlToBase64(imageUrl: string, assetId?: string): Promise<string> {
-  const { imageUrlToBase64 } = await import("./imagePromptReverser.ts");
-  return imageUrlToBase64(imageUrl, assetId);
+  return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" });
 }
 
 export async function requestImageUpscale(input: {

@@ -43,6 +43,8 @@ import {
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
 import { FILM_CREW_ROLES } from "@/lib/agents/film-crew-agents"
 import type { FilmCrewRoleId, CrewAgentStatus } from "@/lib/agents"
+import { suggestLocalSkillsForCrew } from "@/lib/local-skills/crew-skill-selection"
+import type { LocalSkillAuditRecord, LocalSkillMetadata } from "@/lib/local-skills/contracts"
 
 // ── 类型 ──────────────────────────────────────────────
 
@@ -107,14 +109,43 @@ export function CrewAgentPanel({
   const [script, setScript] = useState(currentScript || "")
   const [genre, setGenre] = useState("drama")
   const [style, setStyle] = useState("cinematic")
+  const [localSkills, setLocalSkills] = useState<LocalSkillMetadata[]>([])
+  const [selectedLocalSkillIds, setSelectedLocalSkillIds] = useState<string[]>([])
+  const [localSkillContentEnabled, setLocalSkillContentEnabled] = useState(false)
+  const [sendLocalSkillContent, setSendLocalSkillContent] = useState(false)
+  const [lastLocalSkillAudit, setLastLocalSkillAudit] = useState<LocalSkillAuditRecord[]>([])
   const eventSourceRef = useRef<EventSource | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const traceEndRef = useRef<HTMLDivElement>(null)
+  const localSkillSelectionInitializedRef = useRef(false)
 
   // 自动滚到最新 trace
   useEffect(() => {
     traceEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [trace])
+
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    void fetch("/api/ai/local-skills")
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((snapshot: { enabled?: boolean; contentInjectionEnabled?: boolean; skills?: LocalSkillMetadata[] } | null) => {
+        if (cancelled || !snapshot?.enabled) return
+        const skills = snapshot.skills || []
+        setLocalSkills(skills)
+        setLocalSkillContentEnabled(Boolean(snapshot.contentInjectionEnabled))
+        if (!localSkillSelectionInitializedRef.current) {
+          setSelectedLocalSkillIds(suggestLocalSkillsForCrew(skills, script))
+          localSkillSelectionInitializedRef.current = true
+        }
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [isOpen, script])
+
+  useEffect(() => {
+    if (!isOpen) localSkillSelectionInitializedRef.current = false
+  }, [isOpen])
 
   // 清理 SSE 连接
   useEffect(() => {
@@ -130,6 +161,7 @@ export function CrewAgentPanel({
 
     setIsRunning(true)
     setTrace([])
+    setLastLocalSkillAudit([])
     setAgents((prev) =>
       prev.map((a) => ({ ...a, status: "idle" as const, output: undefined, error: undefined })),
     )
@@ -152,6 +184,8 @@ export function CrewAgentPanel({
           targetPlatform: "short-drama",
           shotDensity: "normal",
           mode: "ask",
+          localSkillIds: selectedLocalSkillIds,
+          localSkillContent: localSkillContentEnabled && sendLocalSkillContent,
         }),
         signal: abortCtrl.signal,
       })
@@ -191,6 +225,10 @@ export function CrewAgentPanel({
           }
 
           switch (eventType) {
+            case "local_skill_context": {
+              setLastLocalSkillAudit((data.skills as LocalSkillAuditRecord[]) || [])
+              break
+            }
             case "agent_start": {
               const agentId = data.agentId as string
               setAgents((prev) =>
@@ -229,6 +267,7 @@ export function CrewAgentPanel({
             case "crew_complete": {
               const traceData = data.trace as string[]
               if (traceData) setTrace(traceData)
+              if (Array.isArray(data.localSkillAudit)) setLastLocalSkillAudit(data.localSkillAudit as LocalSkillAuditRecord[])
               setIsRunning(false)
               // 将结果应用到画布
               onApplyResults?.(outputByAgent)
@@ -408,6 +447,60 @@ export function CrewAgentPanel({
                   <option value="minimalist">极简</option>
                 </select>
               </div>
+
+              {localSkills.length > 0 && (
+                <div className="mt-3 rounded-lg border p-2.5" data-testid="crew-local-skills">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px]" style={{ color: DESIGN_TOKENS.textMuted }}>本机 Skill 参考</span>
+                    <span className="text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                      {selectedLocalSkillIds.length} 已选 · 默认仅摘要
+                    </span>
+                  </div>
+                  <div className="mt-2 max-h-28 space-y-1 overflow-y-auto">
+                    {localSkills.map((skill) => {
+                      const selected = selectedLocalSkillIds.includes(skill.skillId)
+                      return (
+                        <label key={skill.skillId} className="flex cursor-pointer items-start gap-2 text-[11px]" style={{ color: DESIGN_TOKENS.text }}>
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() => setSelectedLocalSkillIds((current) => selected
+                              ? current.filter((skillId) => skillId !== skill.skillId)
+                              : [...current, skill.skillId])}
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate">{skill.name}</span>
+                            <span className="block truncate text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                              {skill.source} · {skill.riskFlags.length ? "正文已安全阻断" : "摘要参考"}
+                            </span>
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                  {localSkillContentEnabled && selectedLocalSkillIds.length > 0 && (
+                    <label className="mt-2 flex items-center gap-2 text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                      <input
+                        type="checkbox"
+                        checked={sendLocalSkillContent}
+                        onChange={(event) => setSendLocalSkillContent(event.target.checked)}
+                      />
+                      本次允许发送受限 Skill 正文
+                    </label>
+                  )}
+                  {lastLocalSkillAudit.length > 0 && (
+                    <div className="mt-2 space-y-1 text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                      {lastLocalSkillAudit.map((skill) => (
+                        <div key={`${skill.skillId}-${skill.contentHash}`}>
+                          {skill.skillId} · {skill.injection === "content" ? "正文" : "摘要"}
+                          {skill.truncated ? " · 已截断" : ""}
+                          {skill.skillBodySent ? " · 正文已发送" : " · 正文未发送"}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* 运行按钮 */}

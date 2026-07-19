@@ -63,6 +63,13 @@ export async function hydrateCanvasMediaNodes(
   const hydrateImageAssetForNode = deps.hydrateImageAssetFn ?? hydrateImageAsset;
   const hydrateMediaAssetForNode = deps.hydrateMediaAssetFn ?? hydrateMediaAsset;
   const persistImageDataUrlForNode = deps.persistImageDataUrlFn ?? persistImageDataUrl;
+  const videoNodeKinds = new Set([
+    "uploaded-video",
+    "video",
+    "video-generation",
+    "video-result",
+    "talking-photo",
+  ])
   const hydrated = await Promise.all(
     nodes.map(async (node) => {
       const data = node.data;
@@ -73,11 +80,22 @@ export async function hydrateCanvasMediaNodes(
       // Remove deprecated marker
       delete clean._imageStripped;
 
+      if (clean.focusEditMaskAssetId) {
+        const objectUrl = await hydrateImageAssetForNode(clean.focusEditMaskAssetId);
+        if (objectUrl) {
+          clean.focusEditMaskDataUrl = objectUrl;
+          delete clean.maskDataUrl;
+        } else {
+          delete clean.focusEditMaskDataUrl;
+          delete clean.maskDataUrl;
+        }
+      }
+
       // --- Case 1a: Modern IDB video asset ---
       if (
-        clean.nodeKind === "uploaded-video" &&
         clean.assetId &&
-        clean.persistence === "indexeddb"
+        clean.persistence === "indexeddb" &&
+        videoNodeKinds.has(clean.nodeKind || "")
       ) {
         const objectUrl = await hydrateMediaAssetForNode(clean.assetId);
         if (objectUrl) {
@@ -124,6 +142,35 @@ export async function hydrateCanvasMediaNodes(
           clean.loadError = "asset-not-found";
         }
         return { ...node, data: clean };
+      }
+
+      if (Array.isArray(clean.shot?.characterIdentities) && clean.shot.characterIdentities.length > 0) {
+        const characterIdentities = await Promise.all(
+          clean.shot.characterIdentities.map(async (identity) => {
+            if (!identity) return identity;
+            const nextIdentity = { ...identity };
+            const viewFields = [
+              { urlKey: "frontViewUrl", assetKey: "frontViewAssetId" },
+              { urlKey: "sideViewUrl", assetKey: "sideViewAssetId" },
+              { urlKey: "backViewUrl", assetKey: "backViewAssetId" },
+            ] as const;
+
+            for (const field of viewFields) {
+              if (typeof nextIdentity[field.urlKey] === "string" && nextIdentity[field.urlKey]) {
+                continue;
+              }
+              const assetId = nextIdentity[field.assetKey];
+              if (typeof assetId !== "string" || !assetId) continue;
+              const objectUrl = await hydrateImageAssetForNode(assetId);
+              if (objectUrl) {
+                nextIdentity[field.urlKey] = objectUrl;
+              }
+            }
+
+            return nextIdentity;
+          }),
+        );
+        clean.shot = { ...clean.shot, characterIdentities };
       }
 
       // --- Case 1b: Modern IDB image asset (has assetId + persistence = "indexeddb") ---
@@ -447,7 +494,34 @@ export function useCanvasPersistence({
 
     debounceRef.current = setTimeout(async () => {
       try {
-        const sanitizedNodes = sanitizeNodesForPersistence(nodes);
+        const nodesWithPersistedMasks = await Promise.all(
+          nodes.map(async (node) => {
+            const data = node.data;
+            const maskDataUrl = data?.focusEditMaskDataUrl || data?.maskDataUrl;
+            if (
+              !data?.focusEditMaskAssetId &&
+              typeof maskDataUrl === "string" &&
+              maskDataUrl.startsWith("data:image")
+            ) {
+              const persisted = await persistImageDataUrl(maskDataUrl, {
+                fileName: "focus-edit-mask.png",
+              });
+              return {
+                ...node,
+                data: {
+                  ...data,
+                  focusEditMaskAssetId: persisted.assetId,
+                  focusEditMaskDataUrl: maskDataUrl,
+                },
+              };
+            }
+            return node;
+          }),
+        );
+        if (nodesWithPersistedMasks.some((node, index) => node !== nodes[index])) {
+          setNodes(nodesWithPersistedMasks);
+        }
+        const sanitizedNodes = sanitizeNodesForPersistence(nodesWithPersistedMasks);
 
         // Dev-only health check: warn if any runtime URL survived sanitization.
         if (process.env.NODE_ENV === "development") {
@@ -495,7 +569,7 @@ export function useCanvasPersistence({
         clearTimeout(debounceRef.current);
       }
     };
-  }, [nodes, edges, storageKey]);
+  }, [nodes, edges, currentViewport, storageKey]);
 
   // ==========================================================================
   // CLEAR persisted canvas

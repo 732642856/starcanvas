@@ -23,7 +23,10 @@ import type {
 } from "../../../../lib/ai/providerSmoke"
 import { getProviderRealSmokeConfirmationText } from "../../../../lib/ai/providerSmoke"
 import {
+  loadStoredProviderSmokeResults,
+  saveStoredProviderSmokeResult,
   summarizeProviderSmokeResult,
+  type StoredProviderSmokeResult,
   type ProviderSmokeRunResultLike,
 } from "../../../../lib/ai/providerSmokeResult"
 import {
@@ -141,13 +144,8 @@ export function SettingsPanel({ isOpen, onClose, onImportProviderSmokeArtifact }
   const providerHealthSummary = useMemo(
     () =>
       buildProviderHealthSummary({
-        serverConfig: serverConfig
-          ? {
-              ...serverConfig,
-              baseUrl: useLocalOverride && apiBaseUrl ? apiBaseUrl : serverConfig.baseUrl,
-              hasApiKey: Boolean(serverConfig.hasApiKey || sessionApiKey.trim()),
-            }
-          : null,
+        serverConfig,
+        apiBaseUrl,
         sessionApiKey,
         useLocalOverride,
         useMock,
@@ -176,8 +174,9 @@ export function SettingsPanel({ isOpen, onClose, onImportProviderSmokeArtifact }
     () => buildTaskReadinessSummary({
       providerHealthSummary,
       providerSmokeReport: providerSmoke,
+      storedProviderSmokeResults: realSmokeResults as Partial<Record<ProviderRealSmokeTarget, StoredProviderSmokeResult>>,
     }),
-    [providerHealthSummary, providerSmoke],
+    [providerHealthSummary, providerSmoke, realSmokeResults],
   )
 
   // ── Load from localStorage ──────────────────────────
@@ -202,6 +201,7 @@ export function SettingsPanel({ isOpen, onClose, onImportProviderSmokeArtifact }
       setImageModel(settings.imageModel)
       setVideoModel(settings.videoModel)
       setTimeoutMs(settings.timeoutMs)
+      setRealSmokeResults(loadStoredProviderSmokeResults() as Record<string, RealSmokeDisplayResult>)
     } catch { /* ignore */ }
   }, [isOpen])
 
@@ -304,17 +304,18 @@ export function SettingsPanel({ isOpen, onClose, onImportProviderSmokeArtifact }
         waitForResult: target === "video",
         overrides,
       })
+      const stored = saveStoredProviderSmokeResult(target, result)
       const summary = summarizeProviderSmokeResult(result)
 
       setRealSmokeResults((prev) => ({
         ...prev,
         [target]: {
-          status: result.status,
-          message: result.message,
-          details: result.details,
+          status: stored.status,
+          message: stored.message,
+          details: stored.details,
           artifact: result.artifact,
-          summaryTitle: summary.title,
-          hints: summary.hints,
+          summaryTitle: stored.summaryTitle || summary.title,
+          hints: stored.hints || summary.hints,
         },
       }))
     } finally {
@@ -332,6 +333,14 @@ export function SettingsPanel({ isOpen, onClose, onImportProviderSmokeArtifact }
           target,
           title: "确认真实生图 smoke",
           description: "这会发起一次单张最小规格真实生图请求，可能消耗图片额度。请输入指定短语后继续。",
+          confirmLabel: "确认试跑",
+          requiredText,
+        }
+      case "image-edit":
+        return {
+          target,
+          title: "确认参考图编辑 smoke",
+          description: "这会用一张极小测试参考图发起真实 images/edits 请求，可能消耗图片额度。普通生图通过不代表此路径可用；请输入指定短语后继续。",
           confirmLabel: "确认试跑",
           requiredText,
         }
@@ -425,6 +434,7 @@ export function SettingsPanel({ isOpen, onClose, onImportProviderSmokeArtifact }
       timeoutMs,
     })
 
+    setRealSmokeResults({})
     onClose()
   }
 
@@ -1208,6 +1218,7 @@ export function SettingsPanel({ isOpen, onClose, onImportProviderSmokeArtifact }
             onClick={handleSave}
             className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium text-white"
             style={{ backgroundColor: T.accent }}
+            data-testid="provider-settings-save"
           >
             <Save size={12} strokeWidth={1.5} /> 保存
           </button>

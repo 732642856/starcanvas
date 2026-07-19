@@ -16,6 +16,7 @@ import {
   ImageIcon,
   PlusCircle,
   Wand2,
+  Eye,
 } from "lucide-react"
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
 import { useChatAttachments, type ChatAttachment } from "../../hooks/useChatAttachments"
@@ -42,8 +43,12 @@ import {
   isAskClarificationAction,
   normalizeAskClarificationAction,
   shouldClearPendingClarificationAfterAnswer,
+  splitPreviewActions,
+  transformActionsForAgentMode,
 } from "../../features/canvas/actions/chatActions"
+import { useCanvasStore } from "../../stores/canvasStore"
 import { generateImageFromPrompt } from "../../utils/imageGeneration"
+import { buildUnknownImageResultMessage, isUnknownImageResultError } from "../../utils/productionImageRetry"
 import { generateId } from "../../utils/generateId"
 import { parseProviderSetupIntent } from "../../../../lib/ai/provider-setup-intent"
 import {
@@ -270,6 +275,22 @@ interface GeneratedImage {
   prompt: string
   model: string
   revisedPrompt?: string
+  assetId?: string
+  addedToCanvas?: boolean
+}
+
+function toGeneratedImageAttachment(image: GeneratedImage): ChatAttachment {
+  return {
+    id: generateId(),
+    type: "image",
+    name: `AI生成-${image.model}`,
+    src: image.imageUrl,
+    assetId: image.assetId,
+    size: 0,
+    mimeType: "image/png",
+    width: 1024,
+    height: 1024,
+  }
 }
 
 interface Message {
@@ -386,7 +407,10 @@ interface ChatPanelProps {
   canvasNodes?: Node[] // 画布上所有节点，用于AI感知
   assets?: AssetItem[] // 素材库资产，用于 @asset_ 引用
   onAddImageToCanvas: (attachment: ChatAttachment) => void
-  onApplyChatActions?: (actions: ChatCanvasAction[]) => ApplyActionsReport // 返回执行报告
+  onApplyChatActions?: (
+    actions: ChatCanvasAction[],
+    options?: { allowRunNodeExecution?: boolean }
+  ) => ApplyActionsReport // 返回执行报告
   showHistoryFromOutside?: boolean
   onHistoryPanelClosed?: () => void
   agentMode?: "ask" | "max" | "preview"
@@ -413,8 +437,10 @@ export function ChatPanel({
   const [conversationId, setConversationId] = useState(() => readCurrentConversationId() ?? generateId())
   const [selectedModel, setSelectedModel] = useState<string>("gpt-5.5")
   const [showHistory, setShowHistory] = useState(false)
+  const previewTransactions = useCanvasStore((state) => state.previewTransactions)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const thinkingStartRef = useRef<number | null>(null)
+  const activeAssistantMessageIdRef = useRef<string | null>(null)
   const pendingClarificationRef = useRef<PendingClarificationSnapshot | null>(null)
   const [pendingClarification, setPendingClarification] = useState<PendingClarificationSnapshot | null>(null)
 
@@ -457,6 +483,57 @@ export function ChatPanel({
 
   // Chat 附件 hook
   const attachmentsState = useChatAttachments()
+
+  const applyAgentModeActions = useCallback(
+    (
+      messageId: string,
+      actions: ChatCanvasAction[],
+      options?: { forceAutoApply?: boolean },
+    ): ApplyActionsReport | undefined => {
+      const transformedActions = transformActionsForAgentMode(actions, agentMode, messageId)
+      if (agentMode === "preview" && onApplyChatActions) {
+        const { previewActions, deferredActions } = splitPreviewActions(transformedActions)
+        const previewStore = useCanvasStore.getState()
+        previewStore.stagePreviewTransaction({
+          txId: messageId,
+          conversationId,
+          expectedDraftCount: previewActions.length,
+          deferredActions,
+        })
+        const previewReport =
+          previewActions.length > 0 ? onApplyChatActions(previewActions) : undefined
+        previewStore.recordPreviewPass({ txId: messageId, previewReport })
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === messageId ? { ...message, actions: transformedActions } : message,
+          ),
+        )
+        return previewReport
+      }
+
+      const shouldAutoApply =
+        options?.forceAutoApply === true ||
+        shouldAutoApplyAutoAgentActions(agentMode, transformedActions)
+      const report =
+        shouldAutoApply && onApplyChatActions
+          ? onApplyChatActions(transformedActions)
+          : undefined
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                actions: transformedActions,
+                actionsApplied: Boolean(report),
+                actionsReport: report,
+              }
+            : message,
+        ),
+      )
+      return report
+    },
+    [agentMode, conversationId, onApplyChatActions],
+  )
 
   // SSE Chat hook
   const { sendMessage, isStreaming, abort } = useChatSSE({
@@ -535,12 +612,13 @@ export function ChatPanel({
       })
     },
     onComplete: (fullContent) => {
+      const parsedActions = parseCanvasActions(fullContent)
       if (thinkingStartRef.current) {
         const elapsed = Math.round((Date.now() - thinkingStartRef.current) / 1000)
         setMessages((prev) => {
           const lastIdx = prev.length - 1
           if (lastIdx >= 0 && prev[lastIdx].role === "assistant") {
-            const actions = parseCanvasActions(fullContent)
+            const actions = parsedActions
             const updated = [...prev]
             updated[lastIdx] = {
               ...updated[lastIdx],
@@ -557,7 +635,7 @@ export function ChatPanel({
         thinkingStartRef.current = null
       } else {
         // no thinking time tracked, still parse actions
-        const actions = parseCanvasActions(fullContent)
+        const actions = parsedActions
         if (actions && actions.length > 0) {
           setMessages((prev) => {
             const lastIdx = prev.length - 1
@@ -573,6 +651,9 @@ export function ChatPanel({
             return prev
           })
         }
+      }
+      if (parsedActions?.length && activeAssistantMessageIdRef.current) {
+        applyAgentModeActions(activeAssistantMessageIdRef.current, parsedActions)
       }
     },
     onError: (error) => {
@@ -611,6 +692,7 @@ export function ChatPanel({
     }
 
     const assistantMessageId = generateId()
+    activeAssistantMessageIdRef.current = assistantMessageId
 
     setMessages((prev) => [...prev, userMessage])
     setInput("")
@@ -788,6 +870,7 @@ export function ChatPanel({
         let fallbackChatSent = false
 
         await processWithAutoAgent(expandedContent, {
+          expandStoryboard: true,
           canvasContext: {
             selectedNode: selectedNode ? toCanvasNodeContext(selectedNode) : undefined,
             nodes: canvasContext,
@@ -803,7 +886,6 @@ export function ChatPanel({
             },
             pendingClarificationAnswer: clarificationResumePayload,
           },
-          imageModel: model,
           onProgress: (status) => {
             setMessages((prev) =>
               prev.map((message) =>
@@ -829,19 +911,23 @@ export function ChatPanel({
           },
           onImageGenerated: (data) => {
             handledByAutoAgent = true
+            const generatedImage: GeneratedImage = {
+              imageUrl: data.imageUrl,
+              prompt: data.prompt,
+              model: data.model,
+              revisedPrompt: data.revisedPrompt,
+              assetId: data.assetId,
+              addedToCanvas: true,
+            }
+            onAddImageToCanvas(toGeneratedImageAttachment(generatedImage))
             setMessages((prev) =>
               prev.map((message) =>
                 message.id === assistantMessageId
                   ? {
                       ...message,
-                      content: "✅ 图片生成完成。点击下方按钮可添加到画布。",
+                      content: "✅ 图片生成完成，已自动添加到画布。",
                       thinkingTime: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
-                      generatedImage: {
-                        imageUrl: data.imageUrl,
-                        prompt: data.prompt,
-                        model: data.model,
-                        revisedPrompt: data.revisedPrompt,
-                      },
+                      generatedImage,
                     }
                   : message,
               ),
@@ -849,19 +935,15 @@ export function ChatPanel({
           },
           onActions: (actions) => {
             handledByAutoAgent = true
-            const shouldAutoApply = shouldAutoApplyAutoAgentActions(agentMode, actions)
-            let report: ApplyActionsReport | undefined
-            if (shouldAutoApply && onApplyChatActions) {
-              report = onApplyChatActions(actions)
-            }
+            const forceAutoApply = actions.some((action) =>
+              action.action === "create_node" && Boolean(action.data?.imageGenerationDeferred),
+            )
+            const report = applyAgentModeActions(assistantMessageId, actions, { forceAutoApply })
             setMessages((prev) =>
               prev.map((message) =>
                 message.id === assistantMessageId
                   ? {
                       ...message,
-                      actions,
-                      actionsApplied: Boolean(report),
-                      actionsReport: report,
                       thinkingTime: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
                     }
                   : message,
@@ -900,7 +982,9 @@ export function ChatPanel({
           message.id === assistantMessageId
             ? {
                 ...message,
-                content: error?.message || "生成失败，请稍后重试。",
+                content: isUnknownImageResultError(error)
+                  ? buildUnknownImageResultMessage(error)
+                  : error?.message || "生成失败，请稍后重试。",
               }
             : message,
         ),
@@ -913,8 +997,11 @@ export function ChatPanel({
     selectedNode,
     canvasNodes,
     sendMessage,
+    applyAgentModeActions,
     agentMode,
+    conversationId,
     onApplyChatActions,
+    onAddImageToCanvas,
   ])
 
   // 停止生成
@@ -957,7 +1044,7 @@ export function ChatPanel({
             })
           : action,
       )
-      const report = onApplyChatActions(normalizedActions)
+      const report = onApplyChatActions(normalizedActions, { allowRunNodeExecution: true })
       const clarification = normalizedActions.find(isAskClarificationAction)
       if (clarification) {
         const snapshot = buildPendingClarificationSnapshot({
@@ -984,7 +1071,7 @@ export function ChatPanel({
       let report: ApplyActionsReport | undefined
       const shouldAutoApply = shouldAutoApplyClarificationSelection(agentMode, nextActions)
       if (shouldAutoApply && onApplyChatActions) {
-        report = onApplyChatActions(nextActions)
+        report = onApplyChatActions(nextActions, { allowRunNodeExecution: true })
       }
 
       setMessages((prev) =>
@@ -1347,17 +1434,7 @@ export function ChatPanel({
                         </div>
                         <button
                           onClick={() => {
-                            const img = msg.generatedImage!
-                            onAddImageToCanvas({
-                              id: generateId(),
-                              type: "image",
-                              name: `AI生成-${img.model}`,
-                              src: img.imageUrl,
-                              size: 0,
-                              mimeType: "image/png",
-                              width: 1024,
-                              height: 1024,
-                            })
+                            onAddImageToCanvas(toGeneratedImageAttachment(msg.generatedImage!))
                           }}
                           className="flex items-center gap-2 self-start rounded-lg px-3 py-1.5 text-xs transition-colors"
                           style={{
@@ -1367,7 +1444,7 @@ export function ChatPanel({
                           }}
                         >
                           <PlusCircle size={14} strokeWidth={1.5} />
-                          添加到画布
+                          {msg.generatedImage.addedToCanvas ? "再次添加到画布" : "添加到画布"}
                         </button>
                       </div>
                     )}
@@ -1380,7 +1457,31 @@ export function ChatPanel({
                       {msg.actions && msg.actions.length > 0 && onApplyChatActions && (
                         <div className="flex flex-col gap-1">
                           {/* 状态A：已取消 */}
-                          {msg.actionsCancelled ? (
+                          {previewTransactions[msg.id] ? (() => {
+                            const transaction = previewTransactions[msg.id]!
+                            const draftStates = Object.values(transaction.draftNodes)
+                            const handledDrafts = draftStates.filter((state) => state !== "pending").length
+                            const totalDrafts = transaction.expectedDraftCount ?? draftStates.length
+                            const label = transaction.phase === "cancelled"
+                              ? "草稿已丢弃"
+                              : transaction.phase === "deferred_applied"
+                                ? "草稿已落地，后续操作已执行"
+                                : `草稿 ${handledDrafts}/${totalDrafts} 已处理`
+                            return (
+                              <div
+                                data-testid="chat-preview-transaction-status"
+                                className="flex items-center gap-2 self-start rounded-lg px-3 py-1.5 text-xs font-medium"
+                                style={{
+                                  color: DESIGN_TOKENS.accent,
+                                  backgroundColor: DESIGN_TOKENS.accentSoft,
+                                  border: `1px solid ${DESIGN_TOKENS.borderAccent}`,
+                                }}
+                              >
+                                <Eye size={13} strokeWidth={1.7} />
+                                <span>{label}</span>
+                              </div>
+                            )
+                          })() : msg.actionsCancelled ? (
                             <div
                               className="flex items-center gap-2 self-start rounded-lg px-3 py-1.5 text-xs font-medium"
                               style={{

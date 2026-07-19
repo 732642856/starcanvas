@@ -497,3 +497,82 @@ export function getPendingActionSummaries(actions: ChatCanvasAction[]): Array<Ch
     _index: i,
   }))
 }
+export function transformActionsForAgentMode(
+  actions: ChatCanvasAction[],
+  mode: "ask" | "max" | "preview",
+  messageId: string,
+): ChatCanvasAction[] {
+  if (mode !== "preview") return actions
+
+  return actions.map((action) => {
+    if (action.action !== "create_node") return action
+    return {
+      ...action,
+      data: {
+        ...action.data,
+        isDraft: true,
+        draftSourceChatId: messageId,
+        runMeta: {
+          runStatus: "pending",
+          source: "ai",
+          message: "AI 预览草稿，确认后继续运行。",
+          pendingReason: "chat-preview",
+        },
+      },
+    }
+  })
+}
+
+export function splitPreviewActions(actions: ChatCanvasAction[]): {
+  previewActions: ChatCanvasAction[]
+  deferredActions: ChatCanvasAction[]
+} {
+  const previewActions: ChatCanvasAction[] = []
+  const deferredActions: ChatCanvasAction[] = []
+
+  for (const action of actions) {
+    if (action.action === "create_node") {
+      previewActions.push(action)
+      continue
+    }
+    deferredActions.push(action)
+  }
+
+  return { previewActions, deferredActions }
+}
+
+export function resolveDeferredPreviewActions(
+  actions: ChatCanvasAction[],
+  aliasMap: Record<string, string>,
+): ChatCanvasAction[] {
+  return actions.map((action) => {
+    if (action.action === "run_node") {
+      if (action.nodeId || action.id || !action.title) return action
+      const resolvedNodeId = aliasMap[action.title]
+      if (!resolvedNodeId) return action
+      return {
+        ...action,
+        nodeId: resolvedNodeId,
+      }
+    }
+
+    if (action.action === "connect_nodes") {
+      const resolvedSourceId = aliasMap[action.sourceId] ?? action.sourceId
+      const resolvedTargetId = aliasMap[action.targetId] ?? action.targetId
+      return {
+        ...action,
+        sourceId: resolvedSourceId,
+        targetId: resolvedTargetId,
+      }
+    }
+
+    return action
+  })
+}
+
+export function getAppliedNodeIds(report?: ApplyActionsReport): string[] {
+  if (!report) return []
+  return report.results
+    .filter((result) => result.action === "create_node" && result.status === "applied" && result.nodeId)
+    .map((result) => result.nodeId as string)
+}

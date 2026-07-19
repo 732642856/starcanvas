@@ -1,8 +1,10 @@
 "use client";
 
+import type { Node } from "@xyflow/react";
 import React, { useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { X, ClipboardList, Download, Plus, Loader2, Play } from "lucide-react";
+import type { CanvasNodeData } from "@/app/canvas/components/canvas/types";
 import { useShotPlanningStore } from "./useShotPlanningStore.ts";
 import { useShotPlanningRunQueueStore } from "./useShotPlanningRunQueueStore.ts";
 import { exportShotPlanningBoardToMarkdown } from "./shotPlanningExport.ts";
@@ -46,6 +48,8 @@ interface ShotPlanningPanelProps {
   projectTitle?: string;
   /** Canvas nodes to generate planning from */
   nodes: CreateShotPlanningBoardInput["nodes"];
+  /** Raw canvas nodes used when bridging to production queue */
+  sourceNodes?: Array<Pick<Node<CanvasNodeData>, "id" | "data">>;
 }
 
 // ============================================================================
@@ -246,6 +250,7 @@ export function ShotPlanningPanel({
   projectId,
   projectTitle,
   nodes,
+  sourceNodes,
 }: ShotPlanningPanelProps) {
   const board = useShotPlanningStore((s) => s.board);
   const isLoaded = useShotPlanningStore((s) => s.isLoaded);
@@ -270,7 +275,7 @@ export function ShotPlanningPanel({
     }
   }, [projectId, isOpen, loadBoard]);
 
-  const summary = useMemo(() => getSummary(), [getSummary, board]);
+  const summary = useMemo(() => getSummary(), [getSummary]);
 
   const sortedItems = useMemo(
     () => (board ? [...board.items].sort((a, b) => a.order - b.order) : []),
@@ -309,8 +314,8 @@ export function ShotPlanningPanel({
 
   const handleCreateRunQueue = useCallback(() => {
     if (!board || !projectId) return;
-    buildRunQueue(board, projectId);
-  }, [board, projectId, buildRunQueue]);
+    buildRunQueue(board, projectId, sourceNodes);
+  }, [board, projectId, sourceNodes, buildRunQueue]);
 
   // Handle status change
   const handleStatusChange = useCallback(

@@ -6,6 +6,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import type { Node } from "@xyflow/react";
+import type { CanvasNodeData } from "../../../app/canvas/components/canvas/types";
 import {
   createRunQueueTasksFromReadyShots,
   createProductionRunQueueFromReadyShots,
@@ -46,6 +48,29 @@ function makeBoard(
     updatedAt: overrides.updatedAt ?? "2026-06-17T00:00:00Z",
     ...overrides,
   } satisfies ShotPlanningBoard;
+}
+
+function makeSourceNode(
+  order: number,
+  overrides: Partial<NonNullable<CanvasNodeData["shot"]>> = {},
+): Pick<Node<CanvasNodeData>, "id" | "data"> {
+  return {
+    id: `node-shot-${order}`,
+    data: {
+      nodeKind: "shot",
+      title: `Shot ${order}`,
+      shot: {
+        id: `node-shot-${order}`,
+        order,
+        title: `Shot ${order}`,
+        description: `Shot ${order} desc`,
+        visualPrompt: `visual prompt ${order}`,
+        dialogue: `dialogue ${order}`,
+        sourceStoryboardNodeId: "storyboard-1",
+        ...overrides,
+      },
+    } as CanvasNodeData,
+  };
 }
 
 // ============================================================================
@@ -101,6 +126,29 @@ describe("createRunQueueTasksFromReadyShots", () => {
     assert.equal(tasks[0]!.title, "Hero Shot");
     // task.id now built from canonical shotId
     assert.match(tasks[0]!.id, /^node-abc:generate-storyboard-image$/);
+  });
+
+  it("expands matched shot source nodes into full production actions", () => {
+    const board = makeBoard({
+      items: [makeItem({ id: "a", order: 1, shotId: "node-shot-1", sourceNodeId: "node-shot-1" })],
+    });
+
+    const tasks = createRunQueueTasksFromReadyShots({
+      board,
+      projectId: "p1",
+      sourceNodes: [makeSourceNode(1)],
+    });
+
+    assert.deepEqual(
+      tasks.map((task) => task.action),
+      [
+        "generate-storyboard-image",
+        "generate-video-clip",
+        "generate-voice-track",
+      "create-subtitle-track",
+      "review-handoff-warnings",
+      ],
+    );
   });
 
   it("returns empty array when no ready shots", () => {
@@ -170,6 +218,23 @@ describe("createProductionRunQueueFromReadyShots", () => {
     assert.equal(queue!.progress, 0);
     assert.equal(queue!.tasks.length, 2);
     assert.equal(queue!.blockedActions.length, 0);
+  });
+
+  it("keeps blocked actions when a ready shot lacks visual prompt", () => {
+    const board = makeBoard({
+      items: [makeItem({ id: "a", order: 1, shotId: "node-shot-1", sourceNodeId: "node-shot-1" })],
+    });
+
+    const queue = createProductionRunQueueFromReadyShots({
+      board,
+      projectId: "p1",
+      sourceNodes: [makeSourceNode(1, { visualPrompt: "" })],
+    });
+
+    assert.ok(queue);
+    assert.equal(queue.tasks.length, 0);
+    assert.ok(queue.blockedActions.length > 0);
+    assert.ok(queue.blockedActions.some((action) => action.action === "preflight:strengthen-visual-prompt"));
   });
 
   it("returns null for null board items", () => {

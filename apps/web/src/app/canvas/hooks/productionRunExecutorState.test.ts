@@ -10,12 +10,13 @@ function makeTask(
   id: string,
   status: ProductionRunQueueTask["status"] = "queued",
 ): ProductionRunQueueTask {
+  const action = id.split(":")[1] as ProductionRunQueueTask["action"] | undefined;
   return {
     id,
     shotId: id.split(":")[0] ?? id,
     order: 1,
     title: id,
-    action: "generate-storyboard-image",
+    action: action ?? "generate-storyboard-image",
     status,
     progress: status === "completed" || status === "skipped" ? 1 : 0,
   };
@@ -67,6 +68,50 @@ describe("productionRunExecutorState", () => {
       "shot-1:generate-video-clip": { status: "skipped" },
       "shot-1:generate-voice-track": { status: "queued" },
       "shot-1:create-subtitle-track": { status: "completed" },
+    });
+
+    assert.deepEqual(
+      runnable.map((task) => task.id),
+      ["shot-1:generate-voice-track"],
+    );
+  });
+
+  it("does not run later tasks for the same shot until earlier production actions are terminal", () => {
+    const tasks = [
+      makeTask("shot-1:generate-storyboard-image"),
+      makeTask("shot-1:generate-video-clip"),
+      makeTask("shot-1:generate-voice-track"),
+      makeTask("shot-2:generate-storyboard-image"),
+    ];
+
+    assert.deepEqual(
+      selectRunnableProductionRunTasks(tasks, buildInitialProductionRunExecState(tasks, {})).map((task) => task.id),
+      ["shot-1:generate-storyboard-image", "shot-2:generate-storyboard-image"],
+    );
+
+    const afterImage = buildInitialProductionRunExecState(tasks, {
+      "shot-1:generate-storyboard-image": { status: "completed" },
+    });
+
+    assert.deepEqual(
+      selectRunnableProductionRunTasks(tasks, afterImage).map((task) => task.id),
+      ["shot-1:generate-video-clip", "shot-2:generate-storyboard-image"],
+    );
+  });
+
+  it("continues to voice work after image and video are completed for the same shot", () => {
+    const tasks = [
+      makeTask("shot-1:generate-storyboard-image"),
+      makeTask("shot-1:generate-video-clip"),
+      makeTask("shot-1:generate-voice-track"),
+      makeTask("shot-1:create-subtitle-track"),
+    ];
+
+    const runnable = selectRunnableProductionRunTasks(tasks, {
+      "shot-1:generate-storyboard-image": { status: "completed" },
+      "shot-1:generate-video-clip": { status: "completed" },
+      "shot-1:generate-voice-track": { status: "queued" },
+      "shot-1:create-subtitle-track": { status: "queued" },
     });
 
     assert.deepEqual(

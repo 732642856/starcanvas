@@ -108,6 +108,7 @@ import { hydrateCanvasMediaNodes } from "./hooks/useCanvasPersistence";
 import { EmptyCanvasGuide } from "./components/canvas/EmptyCanvasGuide";
 import { CanvasDropOverlay } from "./components/canvas/CanvasDropOverlay";
 import { ProductionRunQueuePanel } from "./components/canvas/ProductionRunQueuePanel";
+import { CanvasIssueCenterPanel } from "./components/canvas/CanvasIssueCenterPanel";
 import { ShotPlanningPanel } from "@/features/production/ShotPlanningPanel";
 import { useShotPlanningRunQueueStore } from "@/features/production/useShotPlanningRunQueueStore";
 import { useProductionRunExecutor } from "./hooks/useProductionRunExecutor";
@@ -192,6 +193,7 @@ import ImageNode, {
   unregisterImageHoverHandlers,
 } from "./components/nodes/ImageNode";
 import ContentNode from "./components/nodes/ContentNode";
+import { DraftNodeWrapper } from "./components/nodes/DraftNodeWrapper";
 import { ContinuityReportNode } from "./components/nodes/ContinuityReportNode";
 import SketchNode from "./components/nodes/SketchNode";
 import WorkflowNode from "./components/nodes/WorkflowNode";
@@ -200,13 +202,19 @@ import StoryboardGridNode from "./components/nodes/StoryboardGridNode";
 import VideoNode from "./components/nodes/VideoNode";
 import AgentNode from "./components/nodes/AgentNode";
 import { generateId } from "./utils/generateId";
+import { layoutBatchNodePositions } from "./utils/chatActionNodePlacement";
 import { createRemixAnalysisArtifacts } from "./utils/remixAnalysisArtifacts";
 import { quickLayout } from "./utils/dagre-layout";
 import { parseStoryboardTextToShots } from "./utils/storyboardParser";
 import BatchProgressBar, {
   type BatchProgressHandle,
 } from "./components/nodes/BatchProgressBar";
-import { generateImageFromPrompt, friendlyErrorMessage, retryWithBackoff, ImageGenerationError } from "./utils/imageGeneration";
+import { generateImageFromPrompt, friendlyErrorMessage, retryWithBackoff } from "./utils/imageGeneration";
+import {
+  buildUnknownImageResultMessage,
+  isUnknownImageResultError,
+  shouldRetryProductionImageError,
+} from "./utils/productionImageRetry";
 import {
   resolveProviderBatchConcurrency,
   runWithConcurrency,
@@ -217,8 +225,12 @@ import {
   videoResultToNodeData,
   type VideoGenBackend,
 } from "./utils/videoGenerationService";
-import { resolveProviderReadableVideoSourceImage } from "./utils/videoSourceImage";
-import { imageUrlToBase64 } from "./utils/imagePromptReverser";
+import {
+  describeVideoReferenceAvailability,
+  resolveProviderReadableCharacterReferenceImages,
+  resolveProviderReadableVideoSourceImage,
+} from "./utils/videoSourceImage";
+import { assetUrlToDataUrl } from "./utils/providerMediaDataUrl";
 import { shouldExposeStarCanvasE2EBridge } from "./utils/e2eBridge";
 import { composeStoryboardGrid } from "./utils/storyboardGridComposer";
 import { buildVideoWorkflowTemplate } from "./utils/videoWorkflowTemplate";
@@ -226,10 +238,15 @@ import {
   buildVideoWorkflowChain,
   createUploadedVideoNode,
 } from "./utils/videoWorkflowChain";
-import { buildProjectPackageCanvasNodes } from "./utils/projectPackageExport";
+import {
+  buildProjectPackageAssetsWithLocalBytes,
+  buildProjectPackageCanvasNodes,
+  getProjectPackageExportWarning,
+} from "./utils/projectPackageExport";
 import type { ProjectPackageCanvasImport } from "./utils/projectPackageImport";
 import { applyShotParameterPatchToNode } from "./utils/shotParameterPatch";
 import { useWorkflowRunner } from "./hooks/useWorkflowRunner";
+import { usePreviewTransactionLifecycle } from "./hooks/previewTransactionLifecycle";
 import { buildExecutionPlan } from "./utils/execution-plan";
 import { requestImageUpscale } from "./utils/upscaleService";
 import { useCanvasPersistence } from "./hooks/useCanvasPersistence";
@@ -245,12 +262,15 @@ import {
   persistImageDataUrl,
   hydrateImageAsset,
   getLocalImageAsset,
+  saveLocalImageAsset,
+  dataUrlToBlob,
   revokeAllTrackedObjectUrls,
 } from "@/lib/assets/localImageStore";
 import {
   persistMediaFile,
   persistMediaBlob,
   hydrateMediaAsset,
+  saveLocalMediaAsset,
   revokeAllTrackedMediaObjectUrls,
 } from "@/lib/assets/localMediaStore";
 import {
@@ -272,6 +292,7 @@ import type { ProviderSmokeRunResultLike } from "@/lib/ai/providerSmokeResult";
 import { createImageGenerationSnapshot } from "@/lib/ai/createGenerationSnapshot";
 import { getDefaultImageModel } from "@/lib/ai/client";
 import { createShotImageNode } from "@/lib/storyboard/createShotImageNode";
+import { createShotImageArtifacts } from "@/lib/storyboard/createShotImageArtifacts";
 import {
   STORYBOARD_SHOT_LAYOUT,
   createNormalizedShotTitle,
@@ -322,8 +343,11 @@ import {
 import { buildCharacterConsistencyPrompt } from "@/lib/storyboard/characterIdentitySummary";
 import { buildStoryboardImagePrompt } from "@/lib/storyboard/storyboardImagePrompt";
 import { buildShotProductionBriefs, buildShotProductionBrief } from "@/lib/storyboard/shotProductionBrief";
+import { resolveShotTimelineStart } from "@/lib/storyboard/shotTimelineStart";
+import { buildVideoPromptDirection } from "@/lib/storyboard/videoPromptDirector";
 import { buildProjectPackageManifest } from "@/lib/storyboard/projectPackageManifest";
 import { buildProductionRunQueue } from "@/lib/storyboard/productionRunQueue";
+import { buildCanvasIssues } from "@/lib/storyboard/canvasIssueCenter";
 import { useAIUsageStore } from "./features/canvas/usage/useAIUsageStore";
 import { buildProductionTaskUsageRecord } from "./features/canvas/usage/productionTaskUsage";
 import { buildProductionPreflightFixOutcome } from "@/lib/storyboard/productionPreflightFix";
@@ -645,18 +669,28 @@ const AudioNodeRenderer = memo(function AudioNodeRenderer(props: any) {
 })
 AudioNodeRenderer.displayName = "AudioNodeRenderer"
 
+const withDraftWrapper = (Component: React.ComponentType<any>) => {
+  const WrappedWithDraft = (props: any) => (
+    <DraftNodeWrapper props={props}>
+      <Component {...props} />
+    </DraftNodeWrapper>
+  );
+  WrappedWithDraft.displayName = `WithDraftWrapper(${Component.displayName || Component.name || "Node"})`;
+  return WrappedWithDraft;
+};
+
 const nodeTypes = {
-  image: ImageNode,
-  content: ContentNode,
-  text: ContentNode,
-  sketch: SketchNode,
-  "continuity-report": ContinuityReportNode,
-  workflow: WorkflowNode,
-  shot: ShotNode,
-  storyboardGrid: StoryboardGridNode,
-  video: VideoNodeRenderer,
-  audio: AudioNodeRenderer,
-  agent: AgentNodeRenderer,
+  image: withDraftWrapper(ImageNode),
+  content: withDraftWrapper(ContentNode),
+  text: withDraftWrapper(ContentNode),
+  sketch: withDraftWrapper(SketchNode),
+  "continuity-report": withDraftWrapper(ContinuityReportNode),
+  workflow: withDraftWrapper(WorkflowNode),
+  shot: withDraftWrapper(ShotNode),
+  storyboardGrid: withDraftWrapper(StoryboardGridNode),
+  video: withDraftWrapper(VideoNodeRenderer),
+  audio: withDraftWrapper(AudioNodeRenderer),
+  agent: withDraftWrapper(AgentNodeRenderer),
 };
 
 const edgeTypes = { creative: CreativeEdge };
@@ -823,6 +857,32 @@ function StarCanvasInner({
     promptPreviewNodeId,
     closePromptPreview,
   } = useCanvasStore();
+
+  const syncImageNodeToAssetLibrary = useCallback(
+    (node: Node<CanvasNodeData>) => {
+      const isImageNode = node.type === "image" || node.data.nodeKind === "ai-generated-image";
+      if (!isImageNode) return;
+      let src = node.data.sketchImageDataUrl || node.data.imageUrl || node.data.assetUrl;
+      if (src && !node.data.sketchImageDataUrl && (src.startsWith("blob:") || src.startsWith("data:"))) {
+        src = undefined;
+      }
+      addAsset({
+        id: `asset_${generateId()}`,
+        type: "image",
+        name: node.data.fileName || node.data.title || "Untitled",
+        src,
+        folder: "Others",
+        createdAt: Date.now(),
+        metadata: {
+          assetId: node.data.assetId,
+          persistence: node.data.persistence,
+          source: node.data.source,
+          sourceShotId: node.data.sourceShotId,
+        },
+      });
+    },
+    [addAsset],
+  );
 
   const [showPropertyPanel, setShowPropertyPanel] = useState(false);
   const [selectionCount, setSelectionCount] = useState(0);
@@ -1019,6 +1079,7 @@ function StarCanvasInner({
   const [showBgRemover, setShowBgRemover] = useState(false);
   const [showBgm, setShowBgm] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showIssueCenter, setShowIssueCenter] = useState(false);
   const [showCinemaLab, setShowCinemaLab] = useState(false);
   const [showTransitionPicker, setShowTransitionPicker] = useState(false);
   const [transitionState, setTransitionState] = useState<{ effect: string; duration: number }>({
@@ -1145,18 +1206,18 @@ function StarCanvasInner({
   const handleCreatePromptFromRemix = useCallback((nodeId: string) => {
     const artifacts = getRemixArtifacts(nodeId);
     if (!artifacts) return;
-    setNodes((nds) => [...nds, artifacts.promptNode]);
-    setEdges((eds) => [...eds, artifacts.promptEdge]);
+    applyNodeUpdates((nds) => [...nds, artifacts.promptNode]);
+    applyEdgeUpdates((eds) => [...eds, artifacts.promptEdge]);
     showCanvasNotice("success", "已生成复刻提示词", "结构拆解已转成可继续编辑的提示词节点。");
-  }, [getRemixArtifacts, setEdges, setNodes, showCanvasNotice]);
+  }, [applyEdgeUpdates, applyNodeUpdates, getRemixArtifacts, showCanvasNotice]);
 
   const handleCreateStoryboardFromRemix = useCallback((nodeId: string) => {
     const artifacts = getRemixArtifacts(nodeId);
     if (!artifacts) return;
-    setNodes((nds) => [...nds, ...artifacts.storyboardNodes]);
-    setEdges((eds) => [...eds, ...artifacts.storyboardEdges]);
+    applyNodeUpdates((nds) => [...nds, ...artifacts.storyboardNodes]);
+    applyEdgeUpdates((eds) => [...eds, ...artifacts.storyboardEdges]);
     showCanvasNotice("success", "已拆成参考分镜", `已生成 ${artifacts.storyboardNodes.length} 个参考分镜节点。`);
-  }, [getRemixArtifacts, setEdges, setNodes, showCanvasNotice]);
+  }, [applyEdgeUpdates, applyNodeUpdates, getRemixArtifacts, showCanvasNotice]);
 
   const handleQueueProductionFromRemix = useCallback((nodeId: string) => {
     const artifacts = getRemixArtifacts(nodeId);
@@ -1458,6 +1519,13 @@ function StarCanvasInner({
     () => planningRunQueue ?? productionRunQueue,
     [planningRunQueue, productionRunQueue],
   );
+  const canvasIssues = useMemo(
+    () => buildCanvasIssues({
+      productionPreflight: activeProductionQueue?.productionPreflight,
+      queue: activeProductionQueue,
+    }),
+    [activeProductionQueue],
+  );
 
   // Derive project title from storyboard content node
   const projectTitle = useMemo(() => {
@@ -1562,7 +1630,7 @@ function StarCanvasInner({
             }
 
             // 标记 shotNode 为 generating
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) =>
                 n.id === shotNode.id
                   ? { ...n, data: { ...n.data, generationStatus: "generating" as const } }
@@ -1572,17 +1640,40 @@ function StarCanvasInner({
 
             try {
               const model = await getDefaultImageModel();
-              const result = await generateImageFromPrompt({
-                prompt,
-                model,
-                size: "1792x1024",
-              });
+              const requestId = `production-queue-image-${task.id}-${Date.now()}`;
+              const result = await retryWithBackoff(
+                async () => {
+                  if (signal.aborted) {
+                    throw new Error("生产任务已取消");
+                  }
+                  return generateImageFromPrompt({
+                    prompt,
+                    model,
+                    size: "1792x1024",
+                    requestId,
+                  });
+                },
+                {
+                  maxRetries: 2,
+                  shouldRetry: (error) => shouldRetryProductionImageError(error, signal.aborted),
+                  onRetry: () => {
+                    applyNodeUpdates((nds) =>
+                      nds.map((n) =>
+                        n.id === shotNode.id
+                          ? { ...n, data: { ...n.data, generationStatus: "retrying" as const } }
+                          : n,
+                      ),
+                    );
+                  },
+                },
+              );
 
               const imageNodeId = generateId();
               const generatedAt = new Date().toISOString();
+              let generatedImageNode: Node<CanvasNodeData> | null = null;
 
-              setNodes((nds) => {
-                const { imageNode } = createShotImageNode({
+              applyNodeUpdates((nds) => {
+                const { shotNode: updatedShotNode, imageNode } = createShotImageArtifacts({
                   shotNode,
                   existingNodes: nds as Node<CanvasNodeData>[],
                   existingEdges: edgesRef.current,
@@ -1595,30 +1686,18 @@ function StarCanvasInner({
                   },
                   prompt,
                   generatedAt,
+                  generationFinishedAt: Date.now(),
                   imageNodeId,
                 });
                 const updated = [
-                  ...nds.map((n) =>
-                    n.id === shotNode.id
-                      ? {
-                          ...n,
-                          data: {
-                            ...n.data,
-                            generationStatus: "succeeded" as const,
-                            imageUrl: result.imageUrl,
-                            generatedImageUrl: result.imageUrl,
-                            errorMessage: undefined,
-                          },
-                        }
-                      : n,
-                  ),
+                  ...nds.map((n) => (n.id === shotNode.id ? updatedShotNode : n)),
                   imageNode,
                 ];
-                nodesRef.current = updated;
+                generatedImageNode = imageNode;
                 return updated;
               });
 
-              setEdges((eds) => {
+              applyEdgeUpdates((eds) => {
                 const { edge } = createShotImageNode({
                   shotNode,
                   existingNodes: nodesRef.current as Node<CanvasNodeData>[],
@@ -1638,9 +1717,11 @@ function StarCanvasInner({
                   ...eds,
                   edge,
                 ];
-                edgesRef.current = updated;
                 return updated;
               });
+              if (generatedImageNode) {
+                syncImageNodeToAssetLibrary(generatedImageNode);
+              }
               recordProductionUsage({
                 provider: "copse",
                 model,
@@ -1648,7 +1729,7 @@ function StarCanvasInner({
                 imageSize: "1792x1024",
               });
             } catch (err: any) {
-              setNodes((nds) =>
+              applyNodeUpdates((nds) =>
                 nds.map((n) =>
                   n.id === shotNode.id
                     ? {
@@ -1677,7 +1758,7 @@ function StarCanvasInner({
           case "generate-video-clip": {
             const selected = await resolveProviderReadableVideoSourceImage(shotNode.data, {
               bridgeLocalAssetToProviderUrl: async ({ assetId, imageUrl }) => {
-                return imageUrlToBase64(imageUrl, assetId)
+                return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" })
               },
             });
             const imageUrl = selected.url?.trim() || "";
@@ -1689,7 +1770,44 @@ function StarCanvasInner({
               );
             }
 
-            const motionPrompt =
+            const characterReferences = await resolveProviderReadableCharacterReferenceImages(
+              shotNode.data.shot?.characterIdentities,
+              {
+                bridgeLocalAssetToProviderUrl: async ({ assetId, imageUrl }) => {
+                  return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" });
+                },
+              },
+            );
+            const videoReferenceWarning = describeVideoReferenceAvailability(characterReferences);
+            const videoReferenceAudit = {
+              mode: characterReferences.urls.length > 0 ? "r2v" as const : "i2v" as const,
+              configuredCount: characterReferences.candidateCount,
+              usedCount: characterReferences.urls.length,
+              skippedCount: characterReferences.unavailableReferenceCount,
+              reason: videoReferenceWarning,
+            };
+            const useMockVideo = readUseMockPreference();
+            if (!useMockVideo && videoReferenceWarning && characterReferences.urls.length === 0) {
+              applyNodeUpdates((nds) =>
+                nds.map((n) =>
+                  n.id === shotNode.id && n.data.shot
+                    ? {
+                        ...n,
+                        data: {
+                          ...n.data,
+                          shot: {
+                            ...n.data.shot,
+                            videoReferenceWarning,
+                            videoReferenceAudit,
+                          },
+                        },
+                      }
+                    : n,
+                ),
+              );
+              throw new Error(videoReferenceWarning);
+            }
+            const sourceMotionPrompt =
               shotNode.data.shot?.visualPrompt?.trim() ||
               shotNode.data.prompt?.trim() ||
               shotNode.data.shot?.description?.trim() ||
@@ -1698,15 +1816,29 @@ function StarCanvasInner({
             const durationSeconds =
               parseDurationToSeconds(rawDuration) ??
               (typeof rawDuration === "number" ? rawDuration : 5);
-            const useMockVideo = readUseMockPreference();
+            const motionPrompt = buildVideoPromptDirection({
+              action: shotNode.data.shot?.description?.trim() || sourceMotionPrompt,
+              shotType: shotNode.data.shot?.shotType,
+              cameraMovement: shotNode.data.shot?.cameraMovement,
+              hasReferenceFrame: true,
+            }).prompt;
             const backend = useMockVideo
               ? "mock"
               : (process.env.NEXT_PUBLIC_VIDEO_BACKEND as VideoGenBackend | undefined);
 
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) =>
                 n.id === shotNode.id
-                  ? { ...n, data: { ...n.data, generationStatus: "generating" as const } }
+                  ? {
+                      ...n,
+                      data: {
+                        ...n.data,
+                        generationStatus: "generating" as const,
+                        shot: n.data.shot
+                          ? { ...n.data.shot, videoReferenceWarning, videoReferenceAudit }
+                          : n.data.shot,
+                      },
+                    }
                   : n,
               ),
             );
@@ -1715,6 +1847,8 @@ function StarCanvasInner({
               const result = await generateVideoFromImage(
                 buildVideoGenerationInput({
                   imageUrl,
+                  requestId: `production-queue-video-${task.id}`,
+                  referenceImageUrls: characterReferences.urls,
                   motionPrompt,
                   durationSeconds,
                   backend,
@@ -1726,7 +1860,7 @@ function StarCanvasInner({
               const nodeWidth =
                 typeof shotNode.width === "number" ? shotNode.width : 320;
 
-              setNodes((nds) => {
+              applyNodeUpdates((nds) => {
                 const updated = [
                   ...nds.map((n) =>
                     n.id === shotNode.id
@@ -1762,11 +1896,10 @@ function StarCanvasInner({
                     },
                   } as any,
                 ];
-                nodesRef.current = updated;
                 return updated;
               });
 
-              setEdges((eds) => {
+              applyEdgeUpdates((eds) => {
                 const updated = [
                   ...eds,
                   {
@@ -1778,7 +1911,6 @@ function StarCanvasInner({
                     style: { stroke: "rgba(14, 165, 233, 0.35)", strokeWidth: 1.5 },
                   },
                 ];
-                edgesRef.current = updated;
                 return updated;
               });
               recordProductionUsage({
@@ -1789,7 +1921,7 @@ function StarCanvasInner({
                 videoResolution: "720p",
               });
             } catch (err: any) {
-              setNodes((nds) =>
+              applyNodeUpdates((nds) =>
                 nds.map((n) =>
                   n.id === shotNode.id
                     ? {
@@ -1848,8 +1980,15 @@ function StarCanvasInner({
               const audioNodeId = generateId();
               const nodeWidth =
                 typeof shotNode.width === "number" ? shotNode.width : 320;
+              const sourceTimelineStart = resolveShotTimelineStart({
+                explicitTimelineStart: shotNode.data.timelineStartTimeSeconds,
+                persistedSubtitleStart:
+                  shotNode.data.shot?.subtitleTimeline?.startTimeSeconds,
+                briefs: buildShotProductionBriefs(nodesRef.current),
+                shotId: shotNode.id,
+              });
 
-              setNodes((nds) => [
+              applyNodeUpdates((nds) => [
                 ...nds,
                 {
                   id: audioNodeId,
@@ -1865,6 +2004,8 @@ function StarCanvasInner({
                     audioUrl: persistedAudio.objectUrl,
                     audioAssetId: persistedAudio.assetId,
                     durationSeconds: Math.max(1, Math.round(dialogue.length * 0.18)),
+                    startOffsetSeconds: sourceTimelineStart,
+                    timelineStartTimeSeconds: sourceTimelineStart,
                     nodeKind: "tts-audio",
                     sourceShotId: shotNode.id,
                     sourceType: "shot",
@@ -1875,7 +2016,7 @@ function StarCanvasInner({
                 } as any,
               ]);
 
-              setEdges((eds) => [
+              applyEdgeUpdates((eds) => [
                 ...eds,
                 {
                   id: `edge-tts-${shotNode.id}-${audioNodeId}`,
@@ -1946,7 +2087,7 @@ function StarCanvasInner({
               ),
             ].join("\n");
 
-            setNodes((nds) => [
+            applyNodeUpdates((nds) => [
               ...nds,
               {
                 id: subtitleNodeId,
@@ -1973,7 +2114,7 @@ function StarCanvasInner({
               } as any,
             ]);
 
-            setEdges((eds) => [
+            applyEdgeUpdates((eds) => [
               ...eds,
               {
                 id: `edge-sub-${shotNode.id}-${subtitleNodeId}`,
@@ -2067,7 +2208,7 @@ function StarCanvasInner({
               Infinity,
             );
 
-            setNodes((nds) => [
+            applyNodeUpdates((nds) => [
               ...nds,
               {
                 id: reportNodeId,
@@ -2106,7 +2247,7 @@ function StarCanvasInner({
             }));
 
             if (reportEdges.length > 0) {
-              setEdges((eds) => [...eds, ...reportEdges]);
+              applyEdgeUpdates((eds) => [...eds, ...reportEdges]);
             }
             break;
           }
@@ -2115,7 +2256,7 @@ function StarCanvasInner({
             throw new Error(`未知的生产任务动作: ${(task as any).action}`);
         }
       },
-      [setNodes, setEdges],
+      [applyNodeUpdates, applyEdgeUpdates, syncImageNodeToAssetLibrary],
     ),
     onTaskCompleted: useCallback(
       (taskId: string) => {
@@ -2131,7 +2272,10 @@ function StarCanvasInner({
       (taskId: string, error: Error) => {
         const store = useShotPlanningRunQueueStore.getState();
         if (store.queue) {
-          store.markTaskFailed(taskId, error.message);
+          store.markTaskFailed(
+            taskId,
+            isUnknownImageResultError(error) ? buildUnknownImageResultMessage(error) : error.message,
+          );
         }
       },
       [],
@@ -2147,7 +2291,37 @@ function StarCanvasInner({
     ),
   });
 
-  const handleApplyCharacterAssetPatch = useCallback((assetKey: string, patch: CharacterAssetLibraryPatch) => {
+  const persistCharacterViewPatch = useCallback(async (patch: CharacterAssetLibraryPatch) => {
+    const fields = [
+      { urlKey: "frontViewUrl", assetKey: "frontViewAssetId", fileName: "character-front-view.png" },
+      { urlKey: "sideViewUrl", assetKey: "sideViewAssetId", fileName: "character-side-view.png" },
+      { urlKey: "backViewUrl", assetKey: "backViewAssetId", fileName: "character-back-view.png" },
+    ] as const;
+    const nextPatch: CharacterAssetLibraryPatch = { ...patch };
+
+    for (const field of fields) {
+      const imageUrl = nextPatch[field.urlKey];
+      if (
+        typeof imageUrl !== "string" ||
+        !imageUrl.startsWith("data:image") ||
+        typeof nextPatch[field.assetKey] === "string"
+      ) {
+        continue;
+      }
+      try {
+        const persisted = await persistImageDataUrl(imageUrl, { fileName: field.fileName });
+        nextPatch[field.urlKey] = persisted.objectUrl;
+        nextPatch[field.assetKey] = persisted.assetId;
+      } catch (error) {
+        console.error("[CharacterView] Failed to persist generated view", error);
+      }
+    }
+
+    return nextPatch;
+  }, []);
+
+  const handleApplyCharacterAssetPatch = useCallback(async (assetKey: string, patch: CharacterAssetLibraryPatch) => {
+    const persistedPatch = await persistCharacterViewPatch(patch);
     pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "bible-patch");
     setNodes((nds) => {
       const shotNodeIndexes: number[] = [];
@@ -2156,7 +2330,7 @@ function StarCanvasInner({
         shotNodeIndexes.push(index);
         return [node.data.shot];
       });
-      const syncedShots = applyCharacterAssetLibraryPatchToShots(shots, assetKey, patch);
+      const syncedShots = applyCharacterAssetLibraryPatchToShots(shots, assetKey, persistedPatch);
       let shotIndex = 0;
       const updated = nds.map((node, index) => {
         if (!shotNodeIndexes.includes(index)) return node;
@@ -2174,7 +2348,7 @@ function StarCanvasInner({
       nodesRef.current = updated;
       return updated;
     });
-  }, [setNodes]);
+  }, [persistCharacterViewPatch, setNodes]);
 
   const handleApplySceneBiblePatch = useCallback((sceneId: string, patch: ProjectSceneBiblePatch) => {
     pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "bible-patch");
@@ -2990,6 +3164,7 @@ function StarCanvasInner({
           edgesRef.current = nextEdges;
           return nextEdges;
         });
+        syncImageNodeToAssetLibrary(imageNode);
         addWorkspaceHistoryEvent({
           id: generateId(),
           type: "image-generated",
@@ -3079,7 +3254,7 @@ function StarCanvasInner({
         }
       }
     },
-    [setNodes, setEdges, addWorkspaceHistoryEvent],
+    [setNodes, setEdges, addWorkspaceHistoryEvent, syncImageNodeToAssetLibrary],
   );
 
   const finalizeStoryboardResult = useCallback(
@@ -3664,8 +3839,8 @@ function StarCanvasInner({
           }
           return node;
         });
-        setNodes(() => updatedNodes);
         nodesRef.current = updatedNodes;
+        setNodes(() => updatedNodes);
       }
       if (shotNodes.length === 0) {
         updateSourceRunMeta({
@@ -3820,11 +3995,10 @@ function StarCanvasInner({
             },
           };
 
-          setNodes((nds) => [...nds, newImageNode]);
-          nodesRef.current = [...nodesRef.current, newImageNode];
+          applyNodeUpdates((nds) => [...nds, newImageNode]);
 
           // 更新源节点记录输出
-          setNodes((nds) => {
+          applyNodeUpdates((nds) => {
             const updated = nds.map((node) =>
               node.id === nodeId
                 ? {
@@ -3839,13 +4013,12 @@ function StarCanvasInner({
                   }
                 : node,
             );
-            nodesRef.current = updated;
             return updated;
           });
 
           // 创建源→最终图的边
           const sourceToFinalEdgeId = `edge-${nodeId}-${imageNodeId}`;
-          setEdges((eds) => {
+          applyEdgeUpdates((eds) => {
             const filtered = eds.filter(
               (e) =>
                 e.id !== sourceToFinalEdgeId &&
@@ -4153,8 +4326,8 @@ function StarCanvasInner({
           height: 360,
           measured: { width: 360, height: 360 },
         };
-        setNodes((nds) => [...nds, newGridNode]);
-        setEdges((eds) => [
+        applyNodeUpdates((nds) => [...nds, newGridNode]);
+        applyEdgeUpdates((eds) => [
           ...eds,
           ...candidateShotNodes.map((shotNode) => ({
             hidden: !processVisible,
@@ -4555,7 +4728,7 @@ function StarCanvasInner({
             _fallbackComposite: true,
           },
         };
-        setNodes((nds) => [...nds, fallbackNode]);
+        applyNodeUpdates((nds) => [...nds, fallbackNode]);
         console.warn(
           "[handleComposeSelectedShots] compose failed, fallback to shot image:",
           fallbackShot.id,
@@ -4563,7 +4736,7 @@ function StarCanvasInner({
         );
       } else {
         // 没有任何可用镜头图 → 标记 error
-        setNodes((nds) =>
+        applyNodeUpdates((nds) =>
           nds.map((node) =>
             shotNodeIds.includes(node.id) && node.data.shot
               ? {
@@ -4589,7 +4762,7 @@ function StarCanvasInner({
         );
       }
     } finally {
-      setNodes((nds) =>
+      applyNodeUpdates((nds) =>
         nds.map((node) => {
           if (!shotNodeIds.includes(node.id) || !node.data.shot) return node;
           if (
@@ -4625,8 +4798,8 @@ function StarCanvasInner({
     isComposingSelectedShots,
     storyboardCompositeSettings,
     getStoryboardCompositeImageSize,
-    setNodes,
-    setEdges,
+    applyEdgeUpdates,
+    applyNodeUpdates,
     addWorkspaceHistoryEvent,
   ]);
 
@@ -4758,10 +4931,10 @@ function StarCanvasInner({
     const entry = _undoStack.pop();
     if (entry) {
       _redoStack.push({ nodes: nodesRef.current, edges: edgesRef.current });
-      setNodes(entry.nodes);
-      setEdges(entry.edges);
       nodesRef.current = entry.nodes;
       edgesRef.current = entry.edges;
+      setNodes(entry.nodes);
+      setEdges(entry.edges);
       // Clear selection to avoid referencing a node that may no longer exist
       setSelectedNodeId(null);
       closeFloatingToolbar();
@@ -4771,10 +4944,10 @@ function StarCanvasInner({
     const entry = _redoStack.pop();
     if (entry) {
       _undoStack.push({ nodes: nodesRef.current, edges: edgesRef.current });
-      setNodes(entry.nodes);
-      setEdges(entry.edges);
       nodesRef.current = entry.nodes;
       edgesRef.current = entry.edges;
+      setNodes(entry.nodes);
+      setEdges(entry.edges);
       // Clear selection to avoid referencing a node that may no longer exist
       setSelectedNodeId(null);
       closeFloatingToolbar();
@@ -5060,6 +5233,8 @@ function StarCanvasInner({
         );
         if (!ok) return;
       }
+      nodesRef.current = template.nodes;
+      edgesRef.current = template.edges;
       setNodes(template.nodes);
       setEdges(template.edges);
       setFitViewOnce(true);
@@ -5133,7 +5308,12 @@ function StarCanvasInner({
       if (!detail?.title) return;
       showCanvasNotice(detail.kind ?? "info", detail.title, detail.description);
     };
+    const handleOpenJianyingExport = () => {
+      setExportPreflightType("zip");
+      setShowExportPreflight(true);
+    };
     window.addEventListener("startrails-open-settings", handleOpenSettings);
+    window.addEventListener("starcanvas:open-jianying-export", handleOpenJianyingExport);
     window.addEventListener("startrails-run-node", handleRunNode);
     window.addEventListener("starcanvas:generate-shot", handleGenerateShot);
     window.addEventListener("starcanvas:generate-grid", handleGenerateGrid);
@@ -5157,6 +5337,7 @@ function StarCanvasInner({
         "startrails-open-settings",
         handleOpenSettings,
       );
+      window.removeEventListener("starcanvas:open-jianying-export", handleOpenJianyingExport);
       window.removeEventListener("startrails-run-node", handleRunNode);
       window.removeEventListener(
         "starcanvas:generate-shot",
@@ -5290,12 +5471,38 @@ function StarCanvasInner({
         if (!ok) return;
       }
 
+      await Promise.all(
+        projectPackage.assets.map(async (asset) => {
+          const blob = dataUrlToBlob(asset.dataUrl);
+          if (blob.type.startsWith("image/")) {
+            await saveLocalImageAsset({
+              id: asset.id,
+              blob,
+              mimeType: blob.type,
+              size: blob.size,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            });
+            return;
+          }
+          await saveLocalMediaAsset({
+            id: asset.id,
+            blob,
+            kind: blob.type.startsWith("audio/") ? "audio" : "video",
+            mimeType: blob.type || "application/octet-stream",
+            size: blob.size,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+        }),
+      );
+
       const hydratedNodes = await hydrateCanvasMediaNodes(projectPackage.nodes);
 
-      setNodes(hydratedNodes);
-      setEdges(projectPackage.edges);
       nodesRef.current = hydratedNodes;
       edgesRef.current = projectPackage.edges;
+      setNodes(hydratedNodes);
+      setEdges(projectPackage.edges);
       setSelectedNodeId(null);
       if (projectPackage.viewport) {
         setViewport(projectPackage.viewport);
@@ -6038,23 +6245,21 @@ function StarCanvasInner({
       }
 
       if (newNodes.length > 0) {
-        setNodes((nds) => [...nds, ...newNodes]);
+        applyNodeUpdates((nds) => [...nds, ...newNodes]);
         dismissCanvasHint();
       }
 
       if (newVideoNodes.length > 0) {
-        setNodes((nds) => {
-          const nextNodes = [...nds, ...newVideoNodes];
-          nodesRef.current = nextNodes;
-          return nextNodes;
-        });
+        const nextNodes = [...nodesRef.current, ...newVideoNodes];
+        nodesRef.current = nextNodes;
+        setNodes(nextNodes);
         appendVideoAnalysisChains(newVideoNodes);
         dismissCanvasHint();
       }
 
       e.target.value = "";
     },
-    [appendVideoAnalysisChains, getCenteredFlowPosition, setNodes, dismissCanvasHint],
+    [appendVideoAnalysisChains, applyNodeUpdates, getCenteredFlowPosition, setNodes, dismissCanvasHint],
   );
 
   const handleUploadClick = useCallback(() => {
@@ -6115,7 +6320,10 @@ function StarCanvasInner({
         return;
       }
 
-      setNodes(applyCanvasVisibilityAndLayoutRecovery(safeSnapshot.nodes));
+      const recoveredNodes = applyCanvasVisibilityAndLayoutRecovery(safeSnapshot.nodes);
+      nodesRef.current = recoveredNodes;
+      edgesRef.current = safeSnapshot.edges;
+      setNodes(recoveredNodes);
       setEdges(safeSnapshot.edges);
       setSelectedNodeId(null);
       setFitViewOnce(true);
@@ -6165,7 +6373,7 @@ function StarCanvasInner({
       }
 
       if (newNodes.length > 0) {
-        setNodes((nds) => [...nds, ...newNodes]);
+        applyNodeUpdates((nds) => [...nds, ...newNodes]);
         newNodes.forEach((node) => {
           addWorkspaceHistoryEvent({
             id: generateId(),
@@ -6184,9 +6392,10 @@ function StarCanvasInner({
     [getCenteredFlowPosition, setNodes, dismissCanvasHint, addWorkspaceHistoryEvent],
   );
 
-  const buildProjectPackage = useCallback(() => {
+  const buildProjectPackage = useCallback(async () => {
     const now = new Date().toISOString();
     const plainNodes = buildProjectPackageCanvasNodes(nodes);
+    const assets = await buildProjectPackageAssetsWithLocalBytes(nodes);
 
     const shots = plainNodes
       .filter((node) =>
@@ -6288,6 +6497,7 @@ function StarCanvasInner({
       visualReferences,
       audioIntent,
       handoffNotes,
+      assets,
       canvas: {
         viewport,
         nodes: plainNodes,
@@ -6304,9 +6514,11 @@ function StarCanvasInner({
     };
   }, [nodes, edges, viewport, canvasProductionBriefs]);
 
-  const handleExportProjectPackage = useCallback(() => {
-    const projectPackage = buildProjectPackage();
+  const handleExportProjectPackage = useCallback(async () => {
+    const projectPackage = await buildProjectPackage();
     const json = JSON.stringify(projectPackage, null, 2);
+    const warning = getProjectPackageExportWarning(json);
+    if (warning && !window.confirm(warning)) return;
     const blob = new Blob([json], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -6835,10 +7047,10 @@ function StarCanvasInner({
         console.debug("[DEBUG_NODE] Creating node:", newNode);
       }
 
-      setNodes((nds) => [...nds, newNode]);
+      applyNodeUpdates((nds) => [...nds, newNode]);
       dismissCanvasHint();
     },
-    [getCenteredFlowPosition, setNodes, dismissCanvasHint],
+    [applyNodeUpdates, getCenteredFlowPosition, dismissCanvasHint],
   );
 
   const handleImportScript = useCallback((payload: ScriptImportPayload) => {
@@ -7038,9 +7250,9 @@ function StarCanvasInner({
   const deleteEdge = useCallback(
     (edgeId: string) => {
       pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "delete");
-      setEdges((eds) => eds.filter((e) => e.id !== edgeId));
+      applyEdgeUpdates((eds) => eds.filter((e) => e.id !== edgeId));
     },
-    [setEdges],
+    [applyEdgeUpdates],
   );
 
   const duplicateNode = useCallback(
@@ -7059,9 +7271,9 @@ function StarCanvasInner({
         selected: false,
       };
 
-      setNodes((nds) => [...nds, newNode]);
+      applyNodeUpdates((nds) => [...nds, newNode]);
     },
-    [setNodes],
+    [applyNodeUpdates],
   );
 
   const copyNode = useCallback(
@@ -7103,15 +7315,19 @@ function StarCanvasInner({
       selected: false,
     };
 
-    setNodes((nds) => [...nds, newNode]);
+    applyNodeUpdates((nds) => [...nds, newNode]);
     setClipboardNode(null);
-  }, [clipboardNode, reactFlowInstance, setNodes, setClipboardNode]);
+  }, [applyNodeUpdates, clipboardNode, reactFlowInstance, setClipboardNode]);
 
   // ========================================================================
   // APPLY CHAT ACTIONS - AI 画布操作执行器（返回结构化报告）
   // ========================================================================
   const applyChatActions = useCallback(
-    (actions: ChatCanvasAction[]): ApplyActionsReport => {
+    (
+      actions: ChatCanvasAction[],
+      options?: { allowRunNodeExecution?: boolean },
+    ): ApplyActionsReport => {
+      const allowRunNodeExecution = options?.allowRunNodeExecution === true;
       const results: ApplyActionResult[] = [];
       const aliasMap: Record<string, string> = {};
       const resolveActionNodeId = (params: { nodeId?: string; id?: string; title?: string }) =>
@@ -7120,6 +7336,49 @@ function StarCanvasInner({
           aliasMap,
           nodes: nodesRef.current,
         });
+      const getCreateActionDefaultSize = (
+        action?: Extract<ChatCanvasAction, { action: "create_node" }>,
+      ) => {
+        const requestedType = action?.nodeType ?? "content";
+        if (requestedType === "agent") return NODE_DEFAULT_SIZE.agent;
+        if (requestedType === "workflow") return NODE_DEFAULT_SIZE.workflow;
+        if (requestedType === "image") return NODE_DEFAULT_SIZE.image;
+        if (requestedType === "sketch") return NODE_DEFAULT_SIZE.sketch;
+        return NODE_DEFAULT_SIZE.content;
+      };
+      const pendingAutoPositionCreateIndices = actions.reduce<number[]>((indices, action, index) => {
+        if (action.action === "create_node" && !action.position) indices.push(index);
+        return indices;
+      }, []);
+      const firstAutoPositionCreateAction = pendingAutoPositionCreateIndices
+        .map((actionIndex) => actions[actionIndex])
+        .find(
+          (action): action is Extract<ChatCanvasAction, { action: "create_node" }> =>
+            action?.action === "create_node",
+        );
+      const batchCreateNodePositions =
+        pendingAutoPositionCreateIndices.length > 1
+          ? layoutBatchNodePositions(
+              pendingAutoPositionCreateIndices.map((actionIndex) => {
+                const action = actions[actionIndex];
+                return action?.action === "create_node"
+                  ? getCreateActionDefaultSize(action)
+                  : NODE_DEFAULT_SIZE.content;
+              }),
+              getCenteredFlowPosition(getCreateActionDefaultSize(firstAutoPositionCreateAction)),
+            )
+          : null;
+      const batchCreateNodePositionMap = new Map<number, { x: number; y: number }>(
+        pendingAutoPositionCreateIndices.map((actionIndex, layoutIndex) => [
+          actionIndex,
+          batchCreateNodePositions?.[layoutIndex] ??
+            getCenteredFlowPosition(
+              actions[actionIndex]?.action === "create_node"
+                ? getCreateActionDefaultSize(actions[actionIndex])
+                : NODE_DEFAULT_SIZE.content,
+            ),
+        ]),
+      );
 
       for (let i = 0; i < actions.length; i++) {
         const act = actions[i];
@@ -7150,7 +7409,7 @@ function StarCanvasInner({
                       ? NODE_DEFAULT_SIZE.image
                       : NODE_DEFAULT_SIZE.content;
               const position =
-                act.position ?? getCenteredFlowPosition(defaultSize);
+                act.position ?? batchCreateNodePositionMap.get(i) ?? getCenteredFlowPosition(defaultSize);
               const nodeId = generateId();
               const newNode: Node<CanvasNodeData> = {
                 id: nodeId,
@@ -7682,7 +7941,7 @@ function StarCanvasInner({
                 break;
               }
               // Safety: only auto-run if user explicitly allowed it
-              if (!allowAIAutoRun) {
+              if (!allowAIAutoRun && !allowRunNodeExecution) {
                 // Mark node as pending confirmation via runMeta
                 setNodes((nds) => {
                   const nextNodes = nds.map((n) =>
@@ -7770,6 +8029,10 @@ function StarCanvasInner({
         aliasMap,
       };
 
+      if (pendingAutoPositionCreateIndices.length > 1) {
+        setTimeout(() => fitViewToVisibleCanvas(450), 80);
+      }
+
       return report;
     },
     [
@@ -7786,6 +8049,8 @@ function StarCanvasInner({
       workflowRunner,
     ],
   );
+
+  usePreviewTransactionLifecycle(applyChatActions);
 
   // ========================================================================
   // ADD IMAGE FROM CHAT ATTACHMENT
@@ -7837,7 +8102,12 @@ function StarCanvasInner({
         assetId?: string;
         objectUrl?: string;
       }> =
-        isImage && attachment.file
+        isImage && attachment.assetId
+          ? Promise.resolve({
+              assetId: attachment.assetId,
+              objectUrl: attachment.src,
+            })
+          : isImage && attachment.file
           ? persistImageFile(attachment.file, {
               width: attachment.width,
               height: attachment.height,
@@ -7863,6 +8133,7 @@ function StarCanvasInner({
               : Promise.resolve({});
 
       assetInfoPromise.then(({ assetId, objectUrl }) => {
+        const imageUrl = objectUrl ?? attachment.src;
         const newNode: Node<CanvasNodeData> = isImage
           ? {
               id: generateId(),
@@ -7870,7 +8141,8 @@ function StarCanvasInner({
               position,
               data: {
                 title: attachment.name,
-                imageUrl: attachment.src,
+                imageUrl,
+                assetUrl: imageUrl,
                 assetId,
                 fileName: attachment.name,
                 fileSize: attachment.size,
@@ -7935,7 +8207,23 @@ function StarCanvasInner({
               },
               };
 
-        setNodes((nds) => [...nds, newNode]);
+        if (isImage) {
+          addAsset({
+            id: `asset_${generateId()}`,
+            type: "image",
+            name: attachment.name,
+            src: imageUrl,
+            thumbnail: imageUrl,
+            folder: "Others",
+            createdAt: Date.now(),
+            metadata: {
+              assetId,
+              persistence: assetId ? "indexeddb" : "remote",
+              source: isAiGenerated ? "chat-generated" : "chat-attachment",
+            },
+          });
+        }
+        applyNodeUpdates((nds) => [...nds, newNode]);
         if (isVideo) {
           appendVideoAnalysisChains([newNode]);
         }
@@ -7946,7 +8234,7 @@ function StarCanvasInner({
         }
       }); // end assetInfoPromise.then
     },
-    [appendVideoAnalysisChains, getCenteredFlowPosition, setNodes, dismissCanvasHint],
+    [addAsset, appendVideoAnalysisChains, applyNodeUpdates, getCenteredFlowPosition, dismissCanvasHint],
   );
 
   const handleImportProviderSmokeArtifact = useCallback(
@@ -8089,30 +8377,9 @@ function StarCanvasInner({
       const node = nodesRef.current.find((n) => n.id === nodeId);
       if (!node) return;
 
-      // Don't persist runtime-only URLs to localStorage, except sketchImageDataUrl:
-      // sketches are intentionally used as lightweight image-to-image references.
-      let src = node.data.sketchImageDataUrl || node.data.imageUrl || node.data.assetUrl;
-      if (src && !node.data.sketchImageDataUrl && (src.startsWith("blob:") || src.startsWith("data:"))) {
-        src = undefined;
-      }
-
-      const asset: AssetItem = {
-        id: `asset_${generateId()}`,
-        type: "image",
-        name: node.data.fileName || node.data.title || "Untitled",
-        src,
-        folder: "Others",
-        createdAt: Date.now(),
-        metadata: {
-          assetId: node.data.assetId,
-          persistence: node.data.persistence,
-          source: node.data.source,
-        },
-      };
-
-      addAsset(asset);
+      syncImageNodeToAssetLibrary(node);
     },
-    [addAsset],
+    [syncImageNodeToAssetLibrary],
   );
 
   // ========================================================================
@@ -8120,46 +8387,80 @@ function StarCanvasInner({
   // ========================================================================
   const handleRegenerateShot = useCallback(
     async (nodeId: string) => {
-      const node = nodes.find((n) => n.id === nodeId);
-      if (!node) return;
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      if (!node?.data.shot) return;
       const data = node.data as Record<string, unknown>;
-      const prompt = (data.prompt as string) || (data.content as string) || "";
+      const prompt =
+        (data.prompt as string) ||
+        node.data.shot.visualPrompt ||
+        (data.content as string) ||
+        "";
       if (!prompt) return;
 
       try {
-        const res = await fetch("/api/ai/generate-image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, size: "1024x1024" }),
+        const result = await generateImageFromPrompt({
+          prompt,
+          size: "1024x1024",
+        });
+        const latestNode = nodesRef.current.find((n) => n.id === nodeId);
+        if (!latestNode?.data.shot) return;
+        const generatedAt = new Date().toISOString();
+        const { shotNode, imageNode, edge } = createShotImageArtifacts({
+          shotNode: latestNode,
+          existingNodes: nodesRef.current as Node<CanvasNodeData>[],
+          existingEdges: edgesRef.current,
+          generationResult: {
+            imageUrl: result.imageUrl,
+            assetId: result.assetId,
+            model: result.model,
+            generationId: result.requestId,
+            enhancedPrompt: result.prompt,
+          },
+          prompt,
+          generatedAt,
+          generationFinishedAt: Date.now(),
+          imageNodeId: latestNode.data.shot.generatedImageNodeId || generateId(),
         });
 
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        const result = await res.json();
-        const imageUrl = result.imageUrl || result.data?.[0]?.b64_json;
+        setNodes((nds) => {
+          const imageExists = nds.some((item) => item.id === imageNode.id);
+          const updated = nds.map((item) => {
+            if (item.id === nodeId) return shotNode;
+            if (item.id === imageNode.id) return imageNode;
+            return item;
+          });
+          const nextNodes = imageExists ? updated : [...updated, imageNode];
+          nodesRef.current = nextNodes;
+          return nextNodes;
+        });
 
-        if (imageUrl) {
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === nodeId
-                ? {
-                    ...n,
-                    data: {
-                      ...n.data,
-                      imageUrl: imageUrl.startsWith("data:")
-                        ? imageUrl
-                        : `data:image/png;base64,${imageUrl}`,
-                      regeneratedAt: Date.now(),
-                    },
-                  }
-                : n,
-            ),
+        setEdges((eds) => {
+          const filtered = eds.filter(
+            (existingEdge) =>
+              existingEdge.id !== edge.id &&
+              !(
+                existingEdge.source === nodeId &&
+                existingEdge.target === imageNode.id &&
+                (existingEdge.data as Record<string, unknown> | undefined)
+                  ?.relation === "generated-image"
+              ),
           );
-        }
+          const nextEdges = [
+            ...filtered,
+            {
+              ...edge,
+              style: { stroke: DESIGN_TOKENS.nodeEdge, strokeWidth: 1.5 },
+            },
+          ];
+          edgesRef.current = nextEdges;
+          return nextEdges;
+        });
+        syncImageNodeToAssetLibrary(imageNode);
       } catch (err) {
         console.error("[RegenerateShot] Failed:", err);
       }
     },
-    [nodes, setNodes],
+    [setEdges, setNodes, syncImageNodeToAssetLibrary],
   );
 
   // ========================================================================
@@ -8241,7 +8542,7 @@ function StarCanvasInner({
           referenceImage,
         });
 
-        setNodes((nds) =>
+        applyNodeUpdates((nds) =>
           nds.map((item) =>
             item.id === nodeId
               ? { ...item, data: { ...item.data, generation } }
@@ -8333,8 +8634,8 @@ function StarCanvasInner({
           },
         };
 
-        setNodes((nds) => [...nds, newNode]);
-        setEdges((eds) => [
+        applyNodeUpdates((nds) => [...nds, newNode]);
+        applyEdgeUpdates((eds) => [
           ...eds,
           {
             id: `edge-${nodeId}-${newNode.id}`,
@@ -8346,7 +8647,7 @@ function StarCanvasInner({
           },
         ]);
 
-        setNodes((nds) =>
+        applyNodeUpdates((nds) =>
           nds.map((item) =>
             item.id === nodeId && item.data.generation?.requestId === requestId
               ? {
@@ -8580,7 +8881,7 @@ function StarCanvasInner({
           const selected = nodes.filter((n) => n.selected);
           if (selected.length > 0) {
             const layouted = quickLayout(selected, [], 3);
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 const laid = layouted.find((l: any) => l.id === n.id);
                 return laid ? { ...n, position: laid.position } : n;
@@ -9069,7 +9370,7 @@ function StarCanvasInner({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={(connection) => {
-            setEdges((eds) =>
+            applyEdgeUpdates((eds) =>
               addEdge(
                 {
                   ...connection,
@@ -9238,6 +9539,7 @@ function StarCanvasInner({
         onOpenReverseStoryboard={openReferenceVideoEntry}
         onOpenShotLibrary={() => setShowShotLibrary(true)}
         onOpenAIScript={() => setShowAIScript(true)}
+        onOpenIssueCenter={() => setShowIssueCenter(true)}
         onOpenOnboarding={onboarding.toggle}
         onOpenFileUpload={() => setShowFileUpload(true)}
       />
@@ -9469,7 +9771,7 @@ function StarCanvasInner({
         {/* 布局视图 - 使用 dagre 算法 */}
         <button
           onClick={() => {
-            setNodes((nds) => {
+            applyNodeUpdates((nds) => {
               const layoutedNodes = quickLayout(nds, edges, 3);
               // 布局后自动适应当前可见画布区域，避免被右侧聊天面板遮挡
               fitViewToVisibleCanvas();
@@ -9947,7 +10249,7 @@ function StarCanvasInner({
           onClose={() => setShowCinematicParams(false)}
           selectedNodeId={selectedNodeId}
           onApplyToNode={(nodeId: string, prompt: string, params: CinematicParams) => {
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 if (n.id !== nodeId) return n;
                 const previousPrompt = n.data.prompt || n.data.content || "";
@@ -9966,7 +10268,7 @@ function StarCanvasInner({
           onClose={() => setShowColorGrade(false)}
           selectedNodeId={selectedNodeId}
           onApplyToNode={(nodeId: string, promptSuffix: string) => {
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 if (n.id !== nodeId) return n;
                 const previousPrompt = n.data.prompt || n.data.content || "";
@@ -9985,7 +10287,7 @@ function StarCanvasInner({
           onClose={() => setShowReverseStoryboard(false)}
           selectedNodeId={selectedNodeId}
           onImportShots={(shots, videoMeta) => {
-            setNodes((nds) => {
+            applyNodeUpdates((nds) => {
               const nodes = importStoryboardDraftToCanvas(
                 shots.map((s) => ({
                   id: s.id,
@@ -10016,7 +10318,7 @@ function StarCanvasInner({
               .join("\n")
             const summary = `${payload.result.template.name}\n${payload.result.template.hookPattern}\n${structure}`.trim()
             const id = `node-remix-${Date.now()}`
-            setNodes((nds) => [
+            applyNodeUpdates((nds) => [
               ...nds,
               {
                 id,
@@ -10068,7 +10370,7 @@ function StarCanvasInner({
           onClose={() => setShowShotLibrary(false)}
           selectedNodeId={selectedNodeId}
           onApplyToNode={(nodeId: string, shotPrompt: string) => {
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 if (n.id !== nodeId) return n
                 const previousPrompt = n.data.prompt || n.data.content || ""
@@ -10089,7 +10391,7 @@ function StarCanvasInner({
           onClose={() => setShowAIScript(false)}
           selectedNodeId={selectedNodeId}
           onImportShots={(shots) => {
-            setNodes((nds) => {
+            applyNodeUpdates((nds) => {
               const nodes = importStoryboardDraftToCanvas(
                 shots.map((s) => ({
                   id: s.id,
@@ -10143,7 +10445,7 @@ function StarCanvasInner({
           isPlaying={isTimelinePlaying}
           onTogglePlay={toggleTimelinePlay}
           onClipMove={(clipId, newStartTime) => {
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) =>
                 `tl-clip-${n.id}` === clipId
                   ? { ...n, data: { ...n.data, timelineStartTimeSeconds: newStartTime } }
@@ -10167,7 +10469,7 @@ function StarCanvasInner({
               : undefined
           }
           onApplyToNode={(nodeId: string, panoramaPrompt: string) => {
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 if (n.id !== nodeId) return n;
                 const previousPrompt = n.data.prompt || n.data.content || "";
@@ -10257,13 +10559,13 @@ function StarCanvasInner({
             if (!targetId) return
             if (selectedNode?.data?.shot) {
               const shotPatch = { visualPrompt: enhancedPrompt }
-              setNodes((nds) =>
+              applyNodeUpdates((nds) =>
                 nds.map((n) =>
                   n.id === targetId ? { ...n, data: { ...n.data, shot: { ...n.data.shot!, ...shotPatch } } } : n,
                 ),
               )
             } else {
-              setNodes((nds) =>
+              applyNodeUpdates((nds) =>
                 nds.map((n) =>
                   n.id === targetId ? { ...n, data: { ...n.data, prompt: enhancedPrompt, visualPrompt: enhancedPrompt } } : n,
                 ),
@@ -10294,7 +10596,7 @@ function StarCanvasInner({
             characterImageUrl={selectedNode?.data?.resultUrl || selectedNode?.data?.shot?.generatedImageUrl || undefined}
             onChange={(angle) => {
               if (selectedNodeId) {
-                setNodes((nds) => nds.map((n) =>
+                applyNodeUpdates((nds) => nds.map((n) =>
                   n.id === selectedNodeId ? { ...n, data: { ...n.data, characterFacingAngle: angle } } : n
                 ))
               }
@@ -10313,6 +10615,8 @@ function StarCanvasInner({
           onRestore={(snapshotId: string) => {
             const snap = snapshotStoreSnapshots.find((s) => s.id === snapshotId)
             if (snap) {
+              nodesRef.current = snap.nodes
+              edgesRef.current = snap.edges
               setNodes(snap.nodes)
               setEdges(snap.edges)
             }
@@ -10346,7 +10650,7 @@ function StarCanvasInner({
             }
             Object.entries(results).forEach(([roleId, output]) => {
               if (!output) return
-              setNodes((nds) => [
+              applyNodeUpdates((nds) => [
                 ...nds,
                 {
                   id: `crew-${roleId}-${Date.now()}`,
@@ -10401,7 +10705,7 @@ function StarCanvasInner({
               },
               position,
             });
-            setNodes((nds) => [...nds, docNode]);
+            applyNodeUpdates((nds) => [...nds, docNode]);
           }}
           onVideoImported={(video, position) => {
             const videoNode = createUploadedVideoNode({
@@ -10418,11 +10722,9 @@ function StarCanvasInner({
               persistence: "indexeddb",
               position,
             });
-            setNodes((nds) => {
-              const nextNodes = [...nds, videoNode];
-              nodesRef.current = nextNodes;
-              return nextNodes;
-            });
+            const nextNodes = [...nodesRef.current, videoNode];
+            nodesRef.current = nextNodes;
+            setNodes(nextNodes);
             appendVideoAnalysisChains([videoNode]);
           }}
           onProjectPackageImported={handleImportProjectPackage}
@@ -10440,6 +10742,17 @@ function StarCanvasInner({
           scriptImportOpen={showScriptImportPanel}
           showRunPanel={showRunPanel}
           runEventCount={nodes.filter((n: any) => n.data?.runMeta?.runStatus).length}
+        />
+      )}
+      {showIssueCenter && (
+        <CanvasIssueCenterPanel
+          isOpen={showIssueCenter}
+          issues={canvasIssues}
+          onClose={() => setShowIssueCenter(false)}
+          onResolveIssue={(issue) => {
+            setShowIssueCenter(false);
+            handleResolveProductionIssue(issue.shotId, issue.action);
+          }}
         />
       )}
 
@@ -10496,6 +10809,7 @@ function StarCanvasInner({
             projectId={projectId ?? null}
             projectTitle={projectTitle}
             nodes={planningNodes}
+            sourceNodes={nodes}
           />,
           document.body,
         )}
@@ -10634,10 +10948,10 @@ function StarCanvasInner({
                   position,
                   source: "generated",
                 });
-                setNodes((nds) => [...nds, videoNode]);
+                applyNodeUpdates((nds) => [...nds, videoNode]);
                 appendVideoAnalysisChains([videoNode]);
               } else {
-                setNodes((nds) => [...nds, newNode]);
+                applyNodeUpdates((nds) => [...nds, newNode]);
               }
               closeAssetLibrary();
             }}
@@ -10846,8 +11160,8 @@ function StarCanvasInner({
           if (selectedIds.length < 2) return
           switch (action) {
             case "delete-selected":
-              setNodes((nds) => nds.filter((n) => !n.selected))
-              setEdges((eds) => eds.filter((e) => {
+              applyNodeUpdates((nds) => nds.filter((n) => !n.selected))
+              applyEdgeUpdates((eds) => eds.filter((e) => {
                 const ns = nodes.filter(n => n.selected)
                 return !ns.some(n => n.id === e.source || n.id === e.target)
               }))
@@ -10862,7 +11176,7 @@ function StarCanvasInner({
                 selected: false,
                 position: { x: n.position.x + offset.x, y: n.position.y + offset.y }
               }))
-              setNodes((nds) => nds.map(n => ({ ...n, selected: false })).concat(newNodes))
+              applyNodeUpdates((nds) => nds.map(n => ({ ...n, selected: false })).concat(newNodes))
               break
             }
             case "generate-all-images":
@@ -10914,7 +11228,7 @@ function StarCanvasInner({
             // Create an image node on the canvas with the edited poster
             const now = Date.now()
             const nodeId = `poster-${now}`
-            setNodes((nds) => [
+            applyNodeUpdates((nds) => [
               ...nds,
               {
                 id: nodeId,

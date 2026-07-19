@@ -83,10 +83,17 @@ function completeCharacterAnchors(
 
   return identities.map((identity, index) => {
     const name = cleanText(identity.name) || `角色 ${index + 1}`;
-    const visualSignature = hasText(identity.visualSignature) || hasText(identity.referenceAssetId)
+    const hasReferenceAnchor = hasText(identity.referenceAssetId) ||
+      hasText(identity.frontViewAssetId) ||
+      hasText(identity.sideViewAssetId) ||
+      hasText(identity.backViewAssetId) ||
+      hasText(identity.frontViewUrl) ||
+      hasText(identity.sideViewUrl) ||
+      hasText(identity.backViewUrl);
+    const visualSignature = hasText(identity.visualSignature) || hasReferenceAnchor
       ? identity.visualSignature
       : `待确认：${name} 的脸型、发型、年龄感和独特轮廓，需要与本项目其他镜头保持一致。`;
-    const costume = hasText(identity.costume) || hasText(identity.referenceAssetId)
+    const costume = hasText(identity.costume) || hasReferenceAnchor
       ? identity.costume
       : `待确认：${name} 在「${cleanText(shot.title) || `镜头 ${shot.order}`}」中的服装、主色和关键道具。`;
 

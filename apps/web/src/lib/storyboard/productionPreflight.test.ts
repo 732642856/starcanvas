@@ -81,6 +81,33 @@ describe("productionPreflight", () => {
     assert.ok(preflight.requiredActions.includes("complete-character-anchor"));
   });
 
+  it("treats restored character view asset ids as valid reference anchors", () => {
+    const preflight = buildShotProductionPreflight(
+      makeBrief({
+        handoff: {
+          source: {
+            type: "reference-video",
+            timeSec: undefined,
+            referenceImageUrl: "",
+          },
+        },
+        visual: {
+          characterIdentities: [
+            {
+              id: "char-1",
+              name: "林夏",
+              role: "主角",
+              frontViewAssetId: "front-asset-1",
+            },
+          ],
+        },
+      }),
+    );
+
+    assert.equal(preflight.status, "needs-review");
+    assert.ok(!preflight.issues.some((issue) => issue.code === "missing-character-anchor"));
+  });
+
   it("warns about dialogue without voice intent", () => {
     const preflight = buildShotProductionPreflight(
       makeBrief({
@@ -90,6 +117,18 @@ describe("productionPreflight", () => {
 
     assert.equal(preflight.status, "needs-review");
     assert.ok(preflight.issues.some((issue) => issue.code === "missing-voice-intent"));
+  });
+
+  it("routes a split-shot handoff warning to production review", () => {
+    const preflight = buildShotProductionPreflight(makeBrief({
+      handoff: {
+        warnings: ["检测到连续动作，建议拆成多个单动作镜头后再生成视频。"],
+      },
+    }));
+
+    assert.equal(preflight.status, "needs-review");
+    assert.ok(preflight.issues.some((issue) => issue.code === "handoff-warning"));
+    assert.ok(preflight.requiredActions.includes("review-handoff-warning"));
   });
 
   it("summarizes ready, review, and blocked shots", () => {

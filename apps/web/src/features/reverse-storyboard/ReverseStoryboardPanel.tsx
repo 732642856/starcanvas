@@ -179,7 +179,10 @@ function ReverseStoryboardPanelInner({
               重置
             </button>
             <button
+              type="button"
               onClick={onClose}
+              aria-label="关闭"
+              title="关闭"
               className="p-1.5 rounded-lg hover:bg-[var(--color-hover)] transition-colors text-[var(--color-text-secondary)]"
             >
               <X size={16} />

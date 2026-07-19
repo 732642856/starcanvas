@@ -11,6 +11,7 @@ export interface ChatAttachment {
   type: "image" | "video" | "audio" | "file"
   file?: File // Optional for AI-generated images that don't have a File object
   src: string
+  assetId?: string
   name: string
   size: number
   mimeType: string

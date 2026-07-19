@@ -321,10 +321,14 @@ export function ExportPreflightPanel({
                   key={`${check.type}:${check.nodeId}`}
                   className="flex items-center gap-3 rounded-lg border px-3 py-2"
                   style={{
-                    borderColor: check.hasContent
+                    borderColor: check.warningReason
+                      ? "rgba(250,204,21,0.28)"
+                      : check.hasContent
                       ? "rgba(34,197,94,0.2)"
                       : "rgba(239,68,68,0.2)",
-                    backgroundColor: check.hasContent
+                    backgroundColor: check.warningReason
+                      ? "rgba(250,204,21,0.06)"
+                      : check.hasContent
                       ? "rgba(34,197,94,0.05)"
                       : "rgba(239,68,68,0.05)",
                   }}
@@ -340,7 +344,12 @@ export function ExportPreflightPanel({
                       {check.label}
                     </span>
                   </div>
-                  {check.hasContent ? (
+                  {check.hasContent && check.warningReason ? (
+                    <span className="text-[10px] flex items-center gap-1" style={{ color: "#facc15", flexShrink: 0 }}>
+                      <AlertTriangle size={12} />
+                      注意
+                    </span>
+                  ) : check.hasContent ? (
                     <CheckCircle2 size={14} style={{ color: "#22c55e", flexShrink: 0 }} />
                   ) : (
                     <span className="text-[10px] flex items-center gap-1" style={{ color: "#ef4444", flexShrink: 0 }}>
@@ -348,12 +357,12 @@ export function ExportPreflightPanel({
                       缺失
                     </span>
                   )}
-                  {check.missingReason && (
+                  {(check.missingReason || check.warningReason) && (
                     <span
                       className="text-[10px] hidden group-hover:block"
                       style={{ color: DESIGN_TOKENS.textMuted }}
                     >
-                      {check.missingReason}
+                      {check.missingReason || check.warningReason}
                     </span>
                   )}
                 </div>

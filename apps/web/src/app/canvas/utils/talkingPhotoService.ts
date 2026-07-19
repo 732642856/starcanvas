@@ -1,5 +1,7 @@
 "use client";
 
+import { assetUrlToDataUrl } from "./providerMediaDataUrl.ts";
+
 export const TALKING_PHOTO_CLIENT_TIMEOUT_MS = 120_000;
 type ImageUrlToBase64Fn = (imageUrl: string, assetId?: string) => Promise<string>;
 type AudioUrlToBase64Fn = (audioUrl: string, assetId?: string) => Promise<string>;
@@ -70,33 +72,11 @@ function resolveVideoUrl(payload: TalkingPhotoPayload): string | undefined {
 }
 
 async function defaultImageUrlToBase64(imageUrl: string, assetId?: string): Promise<string> {
-  const { imageUrlToBase64 } = await import("./imagePromptReverser.ts");
-  return imageUrlToBase64(imageUrl, assetId);
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(new Error("Failed to read audio blob as base64"));
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function fetchAudioAsBase64(audioUrl: string): Promise<string> {
-  const res = await fetch(audioUrl);
-  if (!res.ok) throw new Error(`Failed to fetch audio (${res.status})`);
-  return blobToBase64(await res.blob());
+  return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" });
 }
 
 async function defaultAudioUrlToBase64(audioUrl: string, assetId?: string): Promise<string> {
-  if (audioUrl.startsWith("data:audio")) return audioUrl;
-  if (assetId) {
-    const { getLocalMediaAsset } = await import("../../../lib/assets/localMediaStore.ts");
-    const asset = await getLocalMediaAsset(assetId);
-    if (asset?.blob) return blobToBase64(asset.blob);
-  }
-  return fetchAudioAsBase64(audioUrl);
+  return assetUrlToDataUrl(audioUrl, { assetId, mediaKind: "audio" });
 }
 
 export async function requestTalkingPhoto(input: {
