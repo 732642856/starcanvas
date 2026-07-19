@@ -1,6 +1,7 @@
 "use client"
 
 import type { AiProviderOverrides } from "./provider-config"
+import { clearStoredProviderSmokeResults } from "./providerSmokeResult"
 import {
   clearLocalProviderOverrides,
   getLocalProviderOverrides,
@@ -207,6 +208,7 @@ export function saveProviderSettings(input: SaveProviderSettingsInput): void {
     }
   }
 
+  clearStoredProviderSmokeResults()
   window.dispatchEvent(new CustomEvent("startrails-models-updated"))
   window.dispatchEvent(
     new CustomEvent("startrails-settings-updated", {

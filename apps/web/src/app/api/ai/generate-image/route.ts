@@ -7,6 +7,9 @@ import { normalizeGenerationError } from "@/lib/ai/normalizeGenerationError"
 import { getImageProviderCapability } from "@/lib/ai/imageProviderCapabilities"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
 import { getProvider, mergeProviderConfig, type AiProviderOverrides } from "@/lib/ai/provider-registry"
+import { buildImageEditFormData } from "./image-edit-form"
+import { resolveImageRetryAttempts } from "./retry-attempts"
+import { shouldRetryImageUpstreamStatus } from "./retry-policy"
 
 // ── Config ──────────────────────────────────────────────────────────────────
 // 通过 Provider Registry 统一读取，不再直接读 process.env
@@ -38,14 +41,8 @@ const IS_DEV = process.env.NODE_ENV !== "production"
 /** 仅在开发环境输出日志 */
 function devLog(...args: unknown[]) { if (IS_DEV) console.log(...args) }
 function devDebug(...args: unknown[]) { if (IS_DEV) console.debug(...args) }
-const RETRYABLE_UPSTREAM_STATUSES = new Set([429, 500, 502, 503, 504])
-
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function shouldRetryUpstreamStatus(status: number): boolean {
-  return RETRYABLE_UPSTREAM_STATUSES.has(status)
 }
 
 function getRetryDelayMs(attempt: number): number {
@@ -141,40 +138,6 @@ function buildMultimodalImageMessage(prompt: string, dataUrl: string) {
   }]
 }
 
-function dataUrlToBlob(dataUrl: string): Blob {
-  const [header, base64] = dataUrl.split(",")
-  const mimeType = header.match(/data:(.*?);base64/)?.[1] || "image/png"
-  const binary = atob(base64 || "")
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i)
-  }
-  return new Blob([bytes], { type: mimeType })
-}
-
-function buildImageEditFormData(params: {
-  model: string
-  prompt: string
-  size: string
-  sourceImageValues: string[]
-}): FormData {
-  const { model, prompt, size, sourceImageValues } = params
-  const form = new FormData()
-  form.append("model", model)
-  form.append("prompt", prompt)
-  form.append("size", size)
-  form.append("n", "1")
-  form.append("response_format", "b64_json")
-
-  sourceImageValues.forEach((sourceImage, index) => {
-    const blob = dataUrlToBlob(sourceImage)
-    const ext = blob.type.includes("jpeg") ? "jpg" : blob.type.includes("webp") ? "webp" : "png"
-    form.append("image", blob, `reference-${index}.${ext}`)
-  })
-
-  return form
-}
-
 function buildImageGenerationPayload(params: {
   model: string
   prompt: string
@@ -256,6 +219,7 @@ export async function POST(request: NextRequest) {
       model = "gpt-image-2",
       size = "1024x1024",
       sourceImage,
+      retryAttempts,
       requestId,
     } = body
 
@@ -419,10 +383,11 @@ export async function POST(request: NextRequest) {
         }
     const upstreamBodyPayload = upstreamBody instanceof FormData ? upstreamBody : JSON.stringify(upstreamBody)
 
-    for (let attempt = 1; attempt <= config.retryAttempts; attempt += 1) {
+    const effectiveRetryAttempts = resolveImageRetryAttempts(retryAttempts, config.retryAttempts)
+    for (let attempt = 1; attempt <= effectiveRetryAttempts; attempt += 1) {
       attemptsUsed = attempt
       try {
-        devLog("[generate-image]", requestId || "no-request-id", "upstream attempt", attempt, "/", config.retryAttempts)
+        devLog("[generate-image]", requestId || "no-request-id", "upstream attempt", attempt, "/", effectiveRetryAttempts)
         imageRes = await fetchWithTimeout(upstreamUrl, {
           method: "POST",
           headers: upstreamHeaders,
@@ -434,18 +399,18 @@ export async function POST(request: NextRequest) {
 
         const errorText = await imageRes.text()
         lastFailure = { status: imageRes.status, body: errorText }
-        if (!shouldRetryUpstreamStatus(imageRes.status) || attempt >= config.retryAttempts) {
+        if (!shouldRetryImageUpstreamStatus(imageRes.status) || attempt >= effectiveRetryAttempts) {
           imageRes = null
           break
         }
       } catch (error) {
         lastFailure = { error }
         console.warn("[generate-image]", requestId || "no-request-id", "upstream request failed on attempt", attempt, error)
-        if (attempt >= config.retryAttempts) break
+        if (attempt >= effectiveRetryAttempts) break
       }
 
       const delayMs = getRetryDelayMs(attempt)
-      devLog("[generate-image]", requestId || "no-request-id", "retrying upstream request:", attempt + 1, "/", config.retryAttempts, "after", delayMs, "ms")
+      devLog("[generate-image]", requestId || "no-request-id", "retrying upstream request:", attempt + 1, "/", effectiveRetryAttempts, "after", delayMs, "ms")
       await sleep(delayMs)
     }
 

@@ -7,6 +7,10 @@
 
 import type { NormalizedAiError } from "./errors"
 import type { AiProviderOverrides } from "./provider-config"
+import {
+  shouldApplySessionApiKeyForTask,
+  type ProviderSessionTaskType,
+} from "./providerSessionScope.ts"
 import type {
   ProviderRealSmokeTarget,
   ProviderSmokeReport,
@@ -326,13 +330,20 @@ async function inferUsageProvider(baseUrl?: string): Promise<string> {
   return "default"
 }
 
-export async function getRuntimeProviderState(): Promise<RuntimeProviderState> {
+export async function getRuntimeProviderState(
+  taskType: ProviderSessionTaskType = "text",
+): Promise<RuntimeProviderState> {
   const overrides = getLocalProviderOverrides()
   const sessionApiKey = getStoredSessionApiKey()
-  const mergedOverrides = overrides || sessionApiKey
+  const shouldAttachSessionApiKey = shouldApplySessionApiKeyForTask({
+    taskType,
+    sessionApiKey,
+    routeHint: overrides,
+  })
+  const mergedOverrides = overrides || shouldAttachSessionApiKey
     ? {
         ...(overrides || {}),
-        ...(sessionApiKey ? { sessionApiKey } : {}),
+        ...(shouldAttachSessionApiKey ? { sessionApiKey } : {}),
       }
     : null
 

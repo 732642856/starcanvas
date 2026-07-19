@@ -1,3 +1,5 @@
+import type { ProviderRealSmokeTarget } from "./providerSmoke.ts";
+
 export type ProviderSmokeRunStatus = "passed" | "failed" | "blocked";
 
 export interface ProviderSmokeRunResultLike {
@@ -28,6 +30,17 @@ export interface ProviderSmokeResultSummary {
   title: string;
   hints: string[];
 }
+
+export interface StoredProviderSmokeResult extends ProviderSmokeRunResultLike {
+  target: ProviderRealSmokeTarget;
+  updatedAt: number;
+  summaryCategory: ProviderSmokeResultCategory;
+  summarySeverity: "success" | "warning" | "error";
+  summaryTitle: string;
+  hints: string[];
+}
+
+const REAL_SMOKE_STORAGE_KEY = "startrails_provider_real_smoke_results";
 
 function includesAny(input: string, patterns: string[]): boolean {
   return patterns.some((pattern) => input.includes(pattern));
@@ -142,4 +155,67 @@ export function summarizeProviderSmokeResult(
   result: ProviderSmokeRunResultLike,
 ): ProviderSmokeResultSummary {
   return classifyProviderSmokeResult(result);
+}
+
+export function getStoredProviderSmokeReadinessStatus(
+  result: StoredProviderSmokeResult | undefined,
+): "ready" | "warning" | "blocked" {
+  if (!result || result.status === "passed") return "ready";
+  if (result.summaryCategory === "confirmation") return "warning";
+  return "blocked";
+}
+
+export function loadStoredProviderSmokeResults(): Partial<Record<ProviderRealSmokeTarget, StoredProviderSmokeResult>> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(REAL_SMOKE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Partial<Record<ProviderRealSmokeTarget, StoredProviderSmokeResult>>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveStoredProviderSmokeResult(
+  target: ProviderRealSmokeTarget,
+  result: ProviderSmokeRunResultLike,
+): StoredProviderSmokeResult {
+  const summary = summarizeProviderSmokeResult(result);
+  const stored: StoredProviderSmokeResult = {
+    target,
+    status: result.status,
+    message: result.message,
+    details: result.details,
+    updatedAt: Date.now(),
+    summaryCategory: summary.category,
+    summarySeverity: summary.severity,
+    summaryTitle: summary.title,
+    hints: summary.hints,
+  };
+
+  if (typeof window !== "undefined") {
+    try {
+      const prev = loadStoredProviderSmokeResults();
+      window.localStorage.setItem(REAL_SMOKE_STORAGE_KEY, JSON.stringify({
+        ...prev,
+        [target]: stored,
+      }));
+      window.dispatchEvent(new CustomEvent("startrails-provider-updated"));
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  return stored;
+}
+
+export function clearStoredProviderSmokeResults(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(REAL_SMOKE_STORAGE_KEY);
+    window.dispatchEvent(new CustomEvent("startrails-provider-updated"));
+  } catch {
+    // ignore storage failures
+  }
 }

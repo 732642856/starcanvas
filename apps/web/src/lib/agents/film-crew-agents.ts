@@ -5,6 +5,7 @@
 
 import type { CinematicShot, SceneAnalysis } from "@/types/cinematic"
 import type { StoryboardShotData } from "@/app/canvas/components/canvas/types"
+import type { LocalSkillAuditRecord } from "@/lib/local-skills/contracts"
 
 // ---------------------------------------------------------------------------
 // Agent Role Definitions — 7 specialized roles per DEV PLAN.md
@@ -170,6 +171,9 @@ export interface AgentContext {
   mode: AgentOperationMode
   /** Existing canvas nodes to consider */
   canvasNodes?: Array<{ id: string; type: string; content?: string }>
+  /** Server-validated, untrusted local Skill references. Never user file paths. */
+  localSkillContext?: string
+  localSkillAudit?: LocalSkillAuditRecord[]
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +199,7 @@ export interface CrewExecutionResult {
     actions?: AgentAction[]
   }
   executionTrace: string[]
+  localSkillAudit?: LocalSkillAuditRecord[]
 }
 
 /** Build the full film crew context for agent prompts */
@@ -212,6 +217,9 @@ export function buildCrewContext(input: AgentContext): string {
 
   if (input.additionalNotes)
     parts.push(`## 额外说明\n${input.additionalNotes}`)
+
+  if (input.localSkillContext)
+    parts.push(input.localSkillContext)
 
   parts.push(`## 操作模式\n${OPERATION_MODE_LABELS[input.mode]}`)
 

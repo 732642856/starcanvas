@@ -5,9 +5,14 @@ import type {
 } from "./provider-health-summary.ts";
 import type {
   ProviderSmokeItem,
+  ProviderRealSmokeTarget,
   ProviderSmokeReport,
   ProviderSmokeStatus,
 } from "./providerSmoke.ts";
+import {
+  getStoredProviderSmokeReadinessStatus,
+  type StoredProviderSmokeResult,
+} from "./providerSmokeResult.ts";
 
 export type TaskReadinessTaskId =
   | "chat-create"
@@ -35,6 +40,7 @@ export interface TaskReadinessSummary {
 export interface BuildTaskReadinessSummaryInput {
   providerHealthSummary: ProviderHealthSummary | null;
   providerSmokeReport: ProviderSmokeReport | null;
+  storedProviderSmokeResults?: Partial<Record<ProviderRealSmokeTarget, StoredProviderSmokeResult>>;
 }
 
 export function getTaskReadinessPrimaryBlockingReason(
@@ -87,14 +93,23 @@ function mapSmokeItem(
   return report?.items.find((item) => item.target === target);
 }
 
+function mapStoredSmokeResult(
+  results: BuildTaskReadinessSummaryInput["storedProviderSmokeResults"],
+  target: "text" | "image" | "video",
+): StoredProviderSmokeResult | undefined {
+  return results?.[target];
+}
+
 function mergeCapabilityStatus(
   healthItem: ProviderHealthItem | undefined,
   smokeItem: ProviderSmokeItem | undefined,
+  storedSmokeResult?: StoredProviderSmokeResult,
 ): CapabilityStatus {
   const healthStatus = toTaskStatus(healthItem?.status);
   const smokeStatus = toTaskStatus(smokeItem?.status);
-  const blocked = healthStatus === "blocked" || smokeStatus === "blocked";
-  const warning = healthStatus === "warning" || smokeStatus === "warning";
+  const storedStatus = getStoredProviderSmokeReadinessStatus(storedSmokeResult);
+  const blocked = healthStatus === "blocked" || smokeStatus === "blocked" || storedStatus === "blocked";
+  const warning = healthStatus === "warning" || smokeStatus === "warning" || storedStatus === "warning";
   const healthReasons =
     healthStatus === "ready" || !healthItem
       ? []
@@ -103,12 +118,24 @@ function mergeCapabilityStatus(
     smokeStatus === "ready" || !smokeItem
       ? []
       : [smokeItem.summary, ...smokeItem.details];
+  const storedSmokeReasons =
+    storedStatus === "ready" || !storedSmokeResult
+      ? []
+      : [
+          `最近一次真实 smoke：${storedSmokeResult.summaryTitle}`,
+          storedSmokeResult.message,
+          ...(storedSmokeResult.details ?? []),
+        ];
 
   return {
     status: blocked ? "blocked" : warning ? "warning" : "ready",
-    reasons: dedupe([...smokeReasons, ...healthReasons]),
+    reasons: dedupe([...storedSmokeReasons, ...smokeReasons, ...healthReasons]),
     fixes: dedupe(
-      [...(healthItem?.details ?? []), ...(smokeItem?.details ?? [])].filter((detail) =>
+      [
+        ...(storedSmokeResult?.hints ?? []),
+        ...(healthItem?.details ?? []),
+        ...(smokeItem?.details ?? []),
+      ].filter((detail) =>
         /配置|填写|provider|Provider|模型|Model|Key|API/i.test(detail),
       ),
     ),
@@ -131,14 +158,17 @@ export function buildTaskReadinessSummary(
   const text = mergeCapabilityStatus(
     mapHealthItem(input.providerHealthSummary, "text"),
     mapSmokeItem(input.providerSmokeReport, "text"),
+    mapStoredSmokeResult(input.storedProviderSmokeResults, "text"),
   );
   const image = mergeCapabilityStatus(
     mapHealthItem(input.providerHealthSummary, "image"),
     mapSmokeItem(input.providerSmokeReport, "image"),
+    mapStoredSmokeResult(input.storedProviderSmokeResults, "image"),
   );
   const video = mergeCapabilityStatus(
     mapHealthItem(input.providerHealthSummary, "video"),
     mapSmokeItem(input.providerSmokeReport, "video"),
+    mapStoredSmokeResult(input.storedProviderSmokeResults, "video"),
   );
 
   const items: TaskReadinessItem[] = [

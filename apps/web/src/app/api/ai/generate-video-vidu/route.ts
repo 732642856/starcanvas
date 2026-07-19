@@ -14,6 +14,7 @@ import {
   type ViduTaskRequest,
   waitForViduTaskResult,
 } from "./vidu-task"
+import { createViduSubmissionRegistry } from "./vidu-submission-registry"
 
 // ---------------------------------------------------------------------------
 // Config
@@ -27,9 +28,12 @@ const MAX_POLL_MINUTES = 10     // 最大轮询 10 分钟
 // ---------------------------------------------------------------------------
 
 interface ViduGenerateRequest extends ViduTaskRequest {
-  mode: "i2v" | "t2v" | "start-end"
+  mode: "i2v" | "t2v" | "start-end" | "r2v"
+  requestId?: string
   _providerOverrides?: AiProviderOverrides
 }
+
+const viduSubmissionRegistry = createViduSubmissionRegistry()
 
 // ---------------------------------------------------------------------------
 // SSE helpers
@@ -98,7 +102,10 @@ export async function POST(req: NextRequest) {
           message: "正在提交视频生成任务到 Vidu...",
         })
 
-        const taskId = await createViduTask(body, apiKey, baseUrl)
+        const taskId = await viduSubmissionRegistry.getOrCreate(
+          body.requestId,
+          () => createViduTask(body, apiKey, baseUrl),
+        )
 
         send("progress", {
           stage: "queued",

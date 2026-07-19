@@ -37,7 +37,7 @@ async function runStoryboardAssistantPrompt(input: {
   return content;
 }
 
-function buildDirectorStoryboardText(input: {
+export function generateDirectorStoryboardText(input: {
   storyText: string;
   nodeId: string;
   model?: string;
@@ -111,7 +111,7 @@ export async function runStoryboardAssistantCommand(input: {
 
   const nextStage = getNextStoryboardAssistantStage(input.stage);
   const result = input.stage === "story"
-    ? await buildDirectorStoryboardText({ storyText: sourceText, nodeId: input.nodeId, model: input.model })
+    ? await generateDirectorStoryboardText({ storyText: sourceText, nodeId: input.nodeId, model: input.model })
     : await runStoryboardAssistantPrompt({ prompt: buildFullStoryPrompt(sourceText), model: input.model });
   const size = estimateStoryboardTextNodeSize({
     text: result,

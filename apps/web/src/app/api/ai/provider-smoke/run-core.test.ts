@@ -86,6 +86,51 @@ test("real image smoke requires a stronger confirmation phrase", async () => {
   assert.match(result.message, /确认短语/);
 });
 
+test("real reference image edit smoke requires its own confirmation phrase", async () => {
+  const result = await runProviderRealSmoke({
+    target: "image-edit",
+    confirmCost: true,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "blocked");
+  assert.match(result.message, /确认短语/);
+});
+
+test("real reference image edit smoke uses the image edits contract", async (t) => {
+  const envSnapshot = snapshotEnv();
+  const originalFetch = globalThis.fetch;
+  process.env.AI_BASE_URL = "https://relay.example/v1";
+  process.env.AI_API_KEY = "sk-env";
+  process.env.AI_DEFAULT_MODEL = "gpt-5.5";
+
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    return new Response(JSON.stringify({ data: [{ b64_json: "ZmFrZQ==" }] }), { status: 200 });
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    restoreEnv(envSnapshot);
+  });
+
+  const result = await runProviderRealSmoke({
+    target: "image-edit",
+    confirmCost: true,
+    confirmationText: getProviderRealSmokeConfirmationText("image-edit"),
+    _providerOverrides: { imageModel: "gpt-image-2" },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.url, "https://relay.example/v1/images/edits");
+  assert.ok(calls[0]?.init?.body instanceof FormData);
+  const form = calls[0]?.init?.body as FormData;
+  assert.equal(form.get("model"), "gpt-image-2");
+  assert.ok(form.get("image[]") instanceof Blob);
+});
+
 test("real image smoke executes a minimal image request after stronger confirmation", async (t) => {
   const envSnapshot = snapshotEnv();
   const originalFetch = globalThis.fetch;
@@ -127,6 +172,48 @@ test("real image smoke executes a minimal image request after stronger confirmat
   assert.equal(body.model, "gpt-image-2");
   assert.equal(body.size, "1024x1024");
   assert.equal(body.n, 1);
+});
+
+test("real image smoke respects provider timeout overrides", async (t) => {
+  const envSnapshot = snapshotEnv();
+  const originalFetch = globalThis.fetch;
+  process.env.AI_BASE_URL = "https://relay.example/v1";
+  process.env.AI_API_KEY = "sk-env";
+  process.env.AI_DEFAULT_MODEL = "gpt-5.5";
+
+  globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit) =>
+    new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        resolve(new Response(JSON.stringify({ data: [{ b64_json: "ZmFrZQ==" }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }, 20);
+
+      init?.signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new DOMException("aborted", "AbortError"));
+      }, { once: true });
+    });
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    restoreEnv(envSnapshot);
+  });
+
+  const result = await runProviderRealSmoke({
+    target: "image",
+    confirmCost: true,
+    confirmationText: getProviderRealSmokeConfirmationText("image"),
+    _providerOverrides: {
+      imageModel: "gpt-image-2",
+      timeoutMs: 5,
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "failed");
+  assert.match(result.message, /超时/);
 });
 
 test("real video smoke requires a stronger confirmation phrase", async () => {

@@ -142,6 +142,56 @@ describe("buildProviderHealthSummary", () => {
     assert.match(video?.message ?? "", /会话 Key|DashScope/);
   });
 
+  it("does not treat a bare session key as a text/image global override", () => {
+    const summary = buildProviderHealthSummary({
+      serverConfig: {
+        baseUrl: "https://relay.example.com/v1",
+        hasApiKey: false,
+        defaultModel: "gpt-5.5",
+        defaultImageModel: "gpt-image-2",
+        videoModel: "vidu",
+        timeoutMs: 120000,
+      },
+      sessionApiKey: "sk-session-dashscope",
+      useLocalOverride: false,
+      useMock: false,
+      defaultModel: "gpt-5.5",
+      imageModel: "gpt-image-2",
+      videoModel: "vidu",
+      timeoutMs: "120000",
+      providers: [],
+    });
+
+    assert.equal(summary.items.find((item) => item.id === "text")?.status, "blocked");
+    assert.equal(summary.items.find((item) => item.id === "image")?.status, "blocked");
+    assert.equal(summary.items.find((item) => item.id === "video")?.status, "warning");
+  });
+
+  it("treats session key plus explicit apiBaseUrl as a global BYOK route for text/image", () => {
+    const summary = buildProviderHealthSummary({
+      serverConfig: {
+        baseUrl: "https://server.example.com/v1",
+        hasApiKey: false,
+        defaultModel: "gpt-5.5",
+        defaultImageModel: "gpt-image-2",
+        videoModel: "vidu",
+        timeoutMs: 120000,
+      },
+      apiBaseUrl: "https://relay.example.com/v1",
+      sessionApiKey: "sk-session-copse",
+      useLocalOverride: false,
+      useMock: false,
+      defaultModel: "gpt-5.5",
+      imageModel: "gpt-image-2",
+      videoModel: "vidu",
+      timeoutMs: "120000",
+      providers: [],
+    });
+
+    assert.equal(summary.items.find((item) => item.id === "text")?.status, "ready");
+    assert.equal(summary.items.find((item) => item.id === "image")?.status, "ready");
+  });
+
   it("marks browser Kokoro TTS ready while warning that voice cloning needs a service", () => {
     const summary = buildProviderHealthSummary({
       serverConfig: null,

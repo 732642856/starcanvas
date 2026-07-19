@@ -49,7 +49,7 @@ function normalizeCapabilities(value: ProviderCapability[] | undefined): Set<Pro
 
 function isViduLikeModel(model: string | undefined): boolean {
   const normalized = cleanModel(model)?.toLowerCase()
-  return Boolean(normalized && /(^vidu($|[-/]))|viduq\d/i.test(normalized))
+  return Boolean(normalized && /(^vidu($|[-/]))|viduq\d|^happyhorse-/i.test(normalized))
 }
 
 function isDashScopeProvider(providerId: string, providerLabel?: string): boolean {

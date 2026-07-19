@@ -1,9 +1,10 @@
-export type ViduRouteMode = "i2v" | "t2v" | "start-end";
+export type ViduRouteMode = "i2v" | "t2v" | "start-end" | "r2v";
 
 const VIDU_MODEL_FAMILIES = {
   "viduq3-turbo": {
     i2v: "vidu/viduq3-turbo_img2video",
     t2v: "vidu/viduq3-turbo_text2video",
+    r2v: "vidu/viduq3-turbo_reference2video",
   },
   "viduq3-pro": {
     i2v: "vidu/viduq3-pro_img2video",
@@ -16,6 +17,7 @@ const VIDU_MODEL_FAMILIES = {
   "viduq2-pro": {
     i2v: "vidu/viduq2-pro_img2video",
     t2v: "vidu/viduq2-pro_text2video",
+    r2v: "vidu/viduq2-pro_reference2video",
   },
 } as const;
 
@@ -42,6 +44,8 @@ const VIDU_MODEL_ALIASES: Record<string, ViduModelFamily | "default"> = {
   "vidu/viduq3-pro_text2video": "viduq3-pro",
   "vidu/viduq2-turbo_text2video": "viduq2-turbo",
   "vidu/viduq2-pro_text2video": "viduq2-pro",
+  "vidu/viduq3-turbo_reference2video": "viduq3-turbo",
+  "vidu/viduq2-pro_reference2video": "viduq2-pro",
   viduq3: "default",
   "viduq3-turbo": "viduq3-turbo",
   "viduq3-pro": "viduq3-pro",
@@ -61,13 +65,19 @@ export function resolveViduModel(model: string | undefined, mode: ViduRouteMode)
   if (familyOrDefault) {
     const family =
       familyOrDefault === "default" ? DEFAULT_VIDU_MODEL_FAMILY : familyOrDefault;
+    if (mode === "r2v") {
+      const referenceModel = (VIDU_MODEL_FAMILIES[family] as { r2v?: string }).r2v;
+      return referenceModel ?? "vidu/viduq3-turbo_reference2video";
+    }
     return isImageDrivenMode(mode)
       ? VIDU_MODEL_FAMILIES[family].i2v
       : VIDU_MODEL_FAMILIES[family].t2v;
   }
 
   return model?.trim() || (
-    isImageDrivenMode(mode)
+    mode === "r2v"
+      ? "vidu/viduq3-turbo_reference2video"
+      : isImageDrivenMode(mode)
       ? VIDU_MODEL_FAMILIES[DEFAULT_VIDU_MODEL_FAMILY].i2v
       : VIDU_MODEL_FAMILIES[DEFAULT_VIDU_MODEL_FAMILY].t2v
   );

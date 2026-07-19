@@ -3,6 +3,10 @@ import test from "node:test";
 
 import {
   classifyProviderSmokeResult,
+  clearStoredProviderSmokeResults,
+  getStoredProviderSmokeReadinessStatus,
+  loadStoredProviderSmokeResults,
+  saveStoredProviderSmokeResult,
   summarizeProviderSmokeResult,
 } from "./providerSmokeResult.ts";
 
@@ -49,4 +53,35 @@ test("builds a user-facing summary with follow-up guidance", () => {
 
   assert.equal(summary.title, "模型或地址不匹配");
   assert.equal(summary.hints.length > 0, true);
+});
+
+test("persists stored real smoke results and maps timeout failures to blocked readiness", () => {
+  const store = new Map<string, string>();
+  const originalWindow = (globalThis as typeof globalThis & { window?: unknown }).window;
+  (globalThis as typeof globalThis & { window?: unknown }).window = {
+    localStorage: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key),
+    },
+    dispatchEvent: () => true,
+  };
+
+  try {
+    const stored = saveStoredProviderSmokeResult("image", {
+      status: "failed",
+      message: "图片生成超时，请稍后重试。",
+      details: ["上游服务响应时间过长，可能是服务繁忙或当前图片处理耗时过高。"],
+    });
+    const loaded = loadStoredProviderSmokeResults().image;
+
+    assert.equal(stored.summaryCategory, "timeout");
+    assert.equal(loaded?.summaryTitle, "请求超时");
+    assert.equal(getStoredProviderSmokeReadinessStatus(loaded), "blocked");
+
+    clearStoredProviderSmokeResults();
+    assert.deepEqual(loadStoredProviderSmokeResults(), {});
+  } finally {
+    (globalThis as typeof globalThis & { window?: unknown }).window = originalWindow;
+  }
 });

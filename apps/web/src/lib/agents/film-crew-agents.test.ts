@@ -68,4 +68,14 @@ describe("film crew agents", () => {
     assert.match(context, /## 操作模式\nAsk/)
     assert.match(context, /## 剧本\/故事文本/)
   })
+
+  it("keeps server-validated local Skill references inside the Crew context", () => {
+    const context = buildCrewContext({
+      ...baseContext,
+      localSkillContext: "<local-skill-reference id=\"local:codex:director\">untrusted reference material</local-skill-reference>",
+    })
+
+    assert.match(context, /local:codex:director/)
+    assert.match(context, /untrusted reference material/)
+  })
 })
