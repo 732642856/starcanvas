@@ -163,6 +163,20 @@ cd apps/web && npx playwright test --project=chromium
 pnpm -C apps/web exec node --test --experimental-strip-types src/path/to/file.test.ts
 ```
 
+### 可选：真实 Vidu production smoke
+
+该检查会真实调用 Vidu，可能产生费用。默认不会发起网络请求。
+
+```bash
+STARCANVAS_RUN_REAL_VIDU_SMOKE=1 \
+DASHSCOPE_API_KEY=你的 DashScope Key \
+STARCANVAS_SMOKE_PROJECT_ID=已有项目 ID \
+STARCANVAS_SMOKE_SOURCE_ASSET_ID=已上传图片 Asset ID \
+pnpm --filter api test:vidu:smoke
+```
+
+输出只包含 run/status/asset ID，不打印密钥或签名 URL。
+
 ## Demo 流程
 
 首次打开应用时会自动弹出新手引导，6 步完成一个完整的创作流程：
