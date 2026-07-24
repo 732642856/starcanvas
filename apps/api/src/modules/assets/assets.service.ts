@@ -21,6 +21,17 @@ export type UploadedAssetPayload = {
   uploadedAt: string
 }
 
+export type RegisterRemoteAssetInput = {
+  projectId?: string
+  kind: Exclude<UploadedAssetKind, "unknown">
+  originalName: string
+  fileName?: string
+  mimeType: string
+  size?: number
+  storagePath?: string
+  url: string
+}
+
 const documentMimeTypes = new Set([
   "application/pdf",
   "application/msword",
@@ -98,6 +109,45 @@ export class AssetsService {
       size: file.size,
       storagePath: targetPath,
       url,
+      uploadedAt: asset.createdAt.toISOString(),
+    }
+  }
+
+  async registerRemoteAsset(input: RegisterRemoteAssetInput): Promise<UploadedAssetPayload> {
+    if (input.projectId) {
+      const project = await this.prisma.project.findUnique({
+        where: { id: input.projectId },
+        select: { id: true },
+      })
+      if (!project) {
+        throw new NotFoundException("Project not found")
+      }
+    }
+    const id = randomUUID()
+    const fileName = input.fileName || `${id}${this.getSafeExtension(input.originalName, input.mimeType)}`
+    const asset = await this.prisma.asset.create({
+      data: {
+        id,
+        projectId: input.projectId,
+        kind: this.toAssetKind(input.kind),
+        originalName: input.originalName,
+        fileName,
+        mimeType: input.mimeType,
+        size: input.size ?? 0,
+        storagePath: input.storagePath ?? input.url,
+        url: input.url,
+      },
+    })
+    return {
+      id: asset.id,
+      projectId: asset.projectId ?? undefined,
+      kind: input.kind,
+      originalName: asset.originalName,
+      fileName: asset.fileName,
+      mimeType: asset.mimeType,
+      size: asset.size,
+      storagePath: asset.storagePath,
+      url: asset.url,
       uploadedAt: asset.createdAt.toISOString(),
     }
   }

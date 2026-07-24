@@ -6,6 +6,7 @@ import { CanvasModule } from "./modules/canvas/canvas.module"
 import { GenerationModule } from "./modules/generation/generation.module"
 import { OrganizationsModule } from "./modules/organizations/organizations.module"
 import { ProjectsModule } from "./modules/projects/projects.module"
+import { ProductionRunsModule } from "./modules/production-runs/production-runs.module"
 import { ProvidersModule } from "./modules/providers/providers.module"
 import { UsageModule } from "./modules/usage/usage.module"
 import { PrismaModule } from "./prisma/prisma.module"
@@ -34,6 +35,7 @@ class HealthController {
     AuthModule,
     OrganizationsModule,
     ProjectsModule,
+    ProductionRunsModule,
     CanvasModule,
     ProvidersModule,
     GenerationModule,
