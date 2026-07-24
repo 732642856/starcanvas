@@ -1,5 +1,5 @@
 import { defineConfig, devices } from "@playwright/test"
-import { resolvePlaywrightChromeExecutablePath } from "./src/lib/testing/playwrightBrowser"
+import { resolvePlaywrightChromeExecutablePath } from "./src/lib/testing/playwrightBrowser.ts"
 
 const PORT = Number(process.env.STARCANVAS_E2E_PORT || 3107)
 const baseURL = process.env.STARCANVAS_E2E_BASE_URL || `http://127.0.0.1:${PORT}`
