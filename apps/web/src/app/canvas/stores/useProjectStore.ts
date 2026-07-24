@@ -11,8 +11,6 @@ import supermemory from "@/lib/memory/supermemory"
 // Types
 // ============================================================================
 
-export type ProjectEntryMode = "blank" | "storyboard" | "video-production"
-
 export interface ProjectMeta {
   id: string
   name: string
@@ -25,6 +23,8 @@ export interface ProjectMeta {
   lastModifiedAt: string
   createdAt: string
 }
+
+export type ProjectEntryMode = NonNullable<ProjectMeta["template"]>
 
 interface ProjectStoreState {
   projects: ProjectMeta[]

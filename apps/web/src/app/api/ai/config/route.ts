@@ -6,15 +6,9 @@
 // ============================================================================
 
 import { NextResponse } from "next/server"
-import { getAiProviderConfigSafe, listProviders } from "@/lib/ai/provider-config"
+import { buildAiConfigResponsePayload } from "./config-response"
 
 export async function GET() {
-  try {
-    const config = getAiProviderConfigSafe()
-    const providers = listProviders()
-    return NextResponse.json({ ...config, providers })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Config unavailable"
-    return NextResponse.json({ error: message }, { status: 500 })
-  }
+  const { body, status } = buildAiConfigResponsePayload()
+  return NextResponse.json(body, { status })
 }

@@ -5,6 +5,7 @@ export type WorkspaceHistoryEventType =
   | "storyboard-generated"
   | "shots-split"
   | "image-generated"
+  | "video-workflow-created"
   | "snapshot-created"
   | "snapshot-restored";
 

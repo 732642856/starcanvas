@@ -1,8 +1,10 @@
 "use client";
 
+import type { Node } from "@xyflow/react";
 import React, { useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { X, ClipboardList, Download, Plus, Loader2, Play } from "lucide-react";
+import type { CanvasNodeData } from "@/app/canvas/components/canvas/types";
 import { useShotPlanningStore } from "./useShotPlanningStore.ts";
 import { useShotPlanningRunQueueStore } from "./useShotPlanningRunQueueStore.ts";
 import { exportShotPlanningBoardToMarkdown } from "./shotPlanningExport.ts";
@@ -28,6 +30,13 @@ const STATUS_BG_MAP: Record<ShotPlanningStatus, string> = Object.fromEntries(
   STATUS_OPTIONS.map((o) => [o.value, o.bg]),
 ) as Record<ShotPlanningStatus, string>;
 
+function formatSourceTag(sourceType: string, sourceTimeSec?: number): string {
+  const time = typeof sourceTimeSec === "number" && Number.isFinite(sourceTimeSec)
+    ? ` ${Math.round(sourceTimeSec * 10) / 10}s`
+    : "";
+  return `${sourceType}${time}`;
+}
+
 // ============================================================================
 // Props
 // ============================================================================
@@ -38,14 +47,9 @@ interface ShotPlanningPanelProps {
   projectId: string | null;
   projectTitle?: string;
   /** Canvas nodes to generate planning from */
-  nodes: Array<{
-    id: string;
-    title?: string;
-    description?: string;
-    shotPresetId?: string;
-    stylePresetId?: string;
-    durationSec?: number;
-  }>;
+  nodes: CreateShotPlanningBoardInput["nodes"];
+  /** Raw canvas nodes used when bridging to production queue */
+  sourceNodes?: Array<Pick<Node<CanvasNodeData>, "id" | "data">>;
 }
 
 // ============================================================================
@@ -115,6 +119,9 @@ function ShotItemRow({
     durationSec?: number;
     shotPresetId?: string;
     stylePresetId?: string;
+    sourceType?: string;
+    sourceTimeSec?: number;
+    referenceImageUrl?: string;
     status: ShotPlanningStatus;
     notes?: string;
   };
@@ -178,6 +185,16 @@ function ShotItemRow({
               {item.stylePresetId}
             </span>
           )}
+          {item.sourceType && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-200/70">
+              {formatSourceTag(item.sourceType, item.sourceTimeSec)}
+            </span>
+          )}
+          {item.referenceImageUrl && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-200/70">
+              reference frame
+            </span>
+          )}
         </div>
 
         {/* Notes toggle */}
@@ -233,6 +250,7 @@ export function ShotPlanningPanel({
   projectId,
   projectTitle,
   nodes,
+  sourceNodes,
 }: ShotPlanningPanelProps) {
   const board = useShotPlanningStore((s) => s.board);
   const isLoaded = useShotPlanningStore((s) => s.isLoaded);
@@ -257,7 +275,7 @@ export function ShotPlanningPanel({
     }
   }, [projectId, isOpen, loadBoard]);
 
-  const summary = useMemo(() => getSummary(), [getSummary, board]);
+  const summary = useMemo(() => getSummary(), [getSummary]);
 
   const sortedItems = useMemo(
     () => (board ? [...board.items].sort((a, b) => a.order - b.order) : []),
@@ -296,8 +314,8 @@ export function ShotPlanningPanel({
 
   const handleCreateRunQueue = useCallback(() => {
     if (!board || !projectId) return;
-    buildRunQueue(board, projectId);
-  }, [board, projectId, buildRunQueue]);
+    buildRunQueue(board, projectId, sourceNodes);
+  }, [board, projectId, sourceNodes, buildRunQueue]);
 
   // Handle status change
   const handleStatusChange = useCallback(

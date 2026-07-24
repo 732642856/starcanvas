@@ -7,6 +7,8 @@
     "build": "nest build",
     "start": "node dist/main.js",
     "lint": "eslint \"src/**/*.ts\"",
+    "test": "NODE_OPTIONS='' sh -c \"find src -name '*.test.ts' -print0 | xargs -0 node --test --experimental-strip-types\"",
+    "test:vidu:smoke": "node --experimental-strip-types scripts/vidu-production-smoke.mts",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev --schema prisma/schema.prisma --name init"

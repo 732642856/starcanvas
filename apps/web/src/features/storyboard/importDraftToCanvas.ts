@@ -8,8 +8,12 @@
  * Future use: production run queue, external import, etc.
  */
 import type { Node } from "@xyflow/react"
-import type { CanvasNodeData } from "../../app/canvas/components/canvas/types.ts"
+import type {
+  CanvasNodeData,
+  StoryboardShotData,
+} from "../../app/canvas/components/canvas/types.ts"
 import { generateId } from "../../app/canvas/utils/generateId.ts"
+import { STORYBOARD_SHOT_LAYOUT } from "../../lib/storyboard/layoutStoryboardShots.ts"
 
 // ── Common Draft Shot type ────────────────────────────
 
@@ -44,7 +48,7 @@ export interface ImportOptions {
 // ── Import function ───────────────────────────────────
 
 /**
- * Create React Flow content nodes from storyboard draft shots.
+ * Create React Flow shot nodes from storyboard draft shots.
  *
  * Returns an array of new nodes ready to be merged into the canvas
  * via `setNodes((nds) => [...nds, ...newNodes])`.
@@ -55,19 +59,43 @@ export function importStoryboardDraftToCanvas(
 ): Node<CanvasNodeData>[] {
   const {
     columns = 4,
-    nodeWidth = 320,
-    nodeHeight = 240,
+    nodeWidth = STORYBOARD_SHOT_LAYOUT.shotWidth,
+    nodeHeight = STORYBOARD_SHOT_LAYOUT.shotHeight,
     baseX = 100,
     baseY = 100,
     existingNodeCount = 0,
   } = options
 
+  let timelineCursorSeconds = 0
+
   return shots.map((shot, i) => {
     const nodeId = generateId()
+    const durationSec = Math.max(0.1, shot.durationSec || 0.1)
+    const sourceTimeSec =
+      typeof shot.sourceMeta?.timeSec === "number"
+        ? shot.sourceMeta.timeSec
+        : undefined
+    const timelineStartTimeSeconds = sourceTimeSec ?? timelineCursorSeconds
+    timelineCursorSeconds = timelineStartTimeSeconds + durationSec
+    const hasReferenceFrame = Boolean(shot.thumbnail)
+    const shotData: StoryboardShotData = {
+      id: shot.id || generateId(),
+      order: i + 1,
+      title: shot.title,
+      description: shot.description,
+      duration: `${durationSec}s`,
+      visualPrompt: shot.visualPrompt,
+      referenceImageUrl: shot.thumbnail,
+      sourceType: shot.sourceType,
+      sourceMeta: shot.sourceMeta,
+      notes: hasReferenceFrame ? "参考视频关键帧已保留为镜头参考图，并非最终生成分镜图。" : undefined,
+      generationStatus: "idle",
+      status: "ready",
+    }
 
     return {
       id: nodeId,
-      type: "content" as const,
+      type: "shot" as const,
       position: {
         x: baseX + (i % columns) * (nodeWidth + 40),
         y: baseY + Math.floor(i / columns) * (nodeHeight + 80) + existingNodeCount * 10,
@@ -78,13 +106,22 @@ export function importStoryboardDraftToCanvas(
       data: {
         title: shot.title,
         nodeKind: "shot",
+        shot: shotData,
         content: shot.description,
         prompt: shot.visualPrompt,
         imageUrl: shot.thumbnail,
+        thumbnailUrl: shot.thumbnail,
         source: "generated",
-        timelineStartTimeSeconds: 0,
-        timelineDurationSeconds: shot.durationSec,
+        sourceType: shot.sourceType,
+        sourceMeta: shot.sourceMeta,
+        sourceShotId: shot.id,
+        sourceShotOrder: i + 1,
+        sourceShotTitle: shot.title,
+        timelineStartTimeSeconds,
+        timelineDurationSeconds: durationSec,
         timelineTrackId: 0,
+        displayWidth: nodeWidth,
+        displayHeight: nodeHeight,
         createdAt: Date.now(),
       } as CanvasNodeData,
     }

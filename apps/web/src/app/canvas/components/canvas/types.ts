@@ -4,11 +4,13 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { ReactNode } from 'react'
 import type { CinematicShot, ContinuityWarning, SceneAnalysis } from '@/types/cinematic'
+import type { CrewAgentStatus } from '@/lib/agents'
 
 // ============================================================================
 // Node Types
 // ============================================================================
 export type AgentNodeType = "text" | "prompt" | "image" | "storyboard" | "shot" | "storyboard-grid" | "document" | "reference" | "group"
+export type CanvasCrewAgentStatus = CrewAgentStatus
 export type VideoWorkflowNodeKind =
   | "script"
   | "image-generation"
@@ -20,6 +22,8 @@ export type VideoWorkflowNodeKind =
   | "tts"
   | "bgm"
   | "upscale"
+  | "focus-edit"
+  | "reverse-prompt"
   | "poster"
   | "talking-photo"
   | "remix-analysis"
@@ -264,7 +268,18 @@ export type CharacterIdentityAsset = {
   frontViewUrl?: string
   sideViewUrl?: string
   backViewUrl?: string
+  frontViewAssetId?: string
+  sideViewAssetId?: string
+  backViewAssetId?: string
   viewGenerationStatus?: "idle" | "generating" | "done" | "failed"
+}
+
+export type VideoReferenceAudit = {
+  mode: "r2v" | "i2v"
+  configuredCount: number
+  usedCount: number
+  skippedCount: number
+  reason?: string
 }
 
 export type StoryboardShotData = {
@@ -281,6 +296,10 @@ export type StoryboardShotData = {
   notes?: string
   /** 角色一致性资产：用于跨镜头保持同一角色的脸、发型、服装、道具和轮廓稳定 */
   characterIdentities?: CharacterIdentityAsset[]
+  /** R2V reference assets that could not be restored or bridged for this shot */
+  videoReferenceWarning?: string
+  /** Actual reference-to-video inputs used for this shot's last production attempt */
+  videoReferenceAudit?: VideoReferenceAudit
   /** 专业分镜导演层输出：保留镜头动机、构图、调度、连续性等成熟镜头语言信息 */
   cinematicShot?: CinematicShot
   sceneAnalysis?: SceneAnalysis
@@ -289,6 +308,9 @@ export type StoryboardShotData = {
   generatedImageNodeId?: string
   generatedImageUrl?: string
   generatedImageAssetId?: string
+  referenceImageUrl?: string
+  sourceType?: string
+  sourceMeta?: Record<string, unknown>
   generationStatus?: "idle" | "queued" | "generating" | "retrying" | "succeeded" | "failed"
   generationError?: string
   generationStartedAt?: number
@@ -397,15 +419,6 @@ export type SketchStroke = {
   points: SketchPoint[]
 }
 
-export type CanvasCrewAgentStatus = {
-  roleId: "director" | "storyboardArtist" | "cinematographer" | "productionDesigner" | "promptEngineer" | "writer" | "router"
-  status: "idle" | "running" | "done" | "error"
-  output?: string
-  error?: string
-  startedAt?: number
-  completedAt?: number
-}
-
 export type CanvasNodeData = {
   label?: ReactNode
   title?: string
@@ -417,6 +430,7 @@ export type CanvasNodeData = {
 
   // ---- 旧：兼容字段，禁止新写入 ----
   status?: WorkflowNodeStatus
+  generationStatus?: "idle" | "queued" | "generating" | "retrying" | "succeeded" | "failed"
   errorMessage?: string
   pendingExecution?: boolean  // AI suggested run_node, waiting for user confirmation
 
@@ -424,6 +438,12 @@ export type CanvasNodeData = {
   summary?: string
   prompt?: string
   content?: string
+  autoAgentIntent?: string
+  preferredImageModel?: string
+  preferredImageSize?: string
+  preferredAspectRatio?: string
+  imageGenerationDeferred?: boolean
+  imageGenerationError?: string
   /** 文本内容（非 markdown 类型节点的纯文本展示，兼容旧数据） */
   text?: string
   negativePrompt?: string
@@ -443,6 +463,7 @@ export type CanvasNodeData = {
   displayWidth?: number
   displayHeight?: number
   aspectRatio?: number
+  characterFacingAngle?: number
   sketchStrokes?: SketchStroke[]
   sketchImageDataUrl?: string
   createdAt?: number
@@ -476,6 +497,7 @@ export type CanvasNodeData = {
   sourcePromptId?: string
   sourceGenerationJobId?: string
   sourceType?: "shot" | "storyboard" | "prompt" | "image" | string
+  sourceMeta?: Record<string, unknown>
   sourceStoryboardNodeId?: string
   sourceShotId?: string
   sourceShotOrder?: number
@@ -484,6 +506,16 @@ export type CanvasNodeData = {
   generatedAt?: string
   generationId?: string
   generationOutput?: any
+  syncToAssetLibrary?: boolean
+  assetLibraryType?: AssetType
+  assetLibraryFolder?: string
+  assetLibraryTags?: string[]
+  characterAssetSeeds?: Array<{
+    id: string
+    name: string
+    role: string
+    notes?: string
+  }>
   compositeSettings?: StoryboardCompositeSettings
   storyboardAssistantStage?: StoryboardAssistantStage
   projectScenes?: ProjectSceneBibleData[]
@@ -518,10 +550,21 @@ export type CanvasNodeData = {
   videoHeight?: number
   videoFps?: number
   videoFrameCount?: number
+  productionRunId?: string
+  videoAssetId?: string
   thumbnailUrl?: string
 
   // --- Image asset persistence (IndexedDB / remote) ---
   assetId?: string
+  sourceImageAssetId?: string
+  /** Provider-readable image URL/data URL. Prefer this over blob preview URLs when calling AI services. */
+  generatedImageUrl?: string
+  /** Mask data used by focus-edit nodes. */
+  focusEditMaskDataUrl?: string
+  /** IndexedDB identity for a focus-edit mask. */
+  focusEditMaskAssetId?: string
+  /** @deprecated Use focusEditMaskDataUrl for focus-edit nodes. */
+  maskDataUrl?: string
   /** @internal Where the image data lives: "indexeddb" | "remote" | "missing" */
   persistence?: "indexeddb" | "remote" | "missing"
   /** @internal Source of the image: "upload" | "generated" | "remote" */
@@ -848,6 +891,13 @@ export const nodeToneStyles: Record<CanvasNodeKind, {
     border: "1px solid rgba(148, 163, 184, 0.2)",
     background: "rgba(100, 116, 139, 0.1)",
   },
+  "reverse-prompt": {
+    eyebrow: "text-violet-200",
+    body: "text-violet-100/80",
+    meta: "text-violet-200/60",
+    border: "1px solid rgba(167, 139, 250, 0.24)",
+    background: "rgba(139, 92, 246, 0.14)",
+  },
   image: {
     eyebrow: "text-slate-300",
     body: "text-slate-200/75",
@@ -1071,6 +1121,13 @@ export const nodeToneStyles: Record<CanvasNodeKind, {
     meta: "text-cyan-300/60",
     border: "1px solid rgba(6, 182, 212, 0.25)",
     background: "rgba(6, 182, 212, 0.1)",
+  },
+  "focus-edit": {
+    eyebrow: "text-violet-300",
+    body: "text-violet-200/75",
+    meta: "text-violet-300/60",
+    border: "1px solid rgba(139, 92, 246, 0.25)",
+    background: "rgba(139, 92, 246, 0.1)",
   },
   poster: {
     eyebrow: "text-rose-300",

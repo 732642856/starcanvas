@@ -12,6 +12,7 @@
  *   server stop|restart   停止/重启
  *   server status         查看运行状态
  *   health                检查 AI Provider 连接
+ *   provider-smoke        分项检查真实 Provider 可运行性
  *   config                查看当前配置
  *   nodes                 列出所有画布节点
  *   node info <id>        查看节点详情
@@ -23,12 +24,26 @@
  *   logs [--follow]       查看日志
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, createWriteStream } from 'node:fs'
 import { createServer } from 'node:net'
 import { spawn, execSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
+import {
+  buildProviderSmokeEnv,
+  buildProviderSmokePlan,
+  parseProviderSmokeEnvFile,
+} from './provider-smoke-plan.mjs'
+import {
+  loadProviderSmokeConfigWithWarmup,
+} from './provider-smoke-runtime.mjs'
+import {
+  probeLocalServerReady,
+} from './server-runtime.mjs'
+import {
+  getApiGetTimeoutMs,
+} from './cli-http-runtime.mjs'
 
 // ── 常量 ──
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -126,13 +141,8 @@ async function getServerStatus() {
     process.kill(pid, 0) // 信号 0 = 只检查存在性
     // 进一步确认端口可访问
     if (port) {
-      try {
-        const resp = await fetch(`http://127.0.0.1:${port}/api/ai/health`, { signal: AbortSignal.timeout(3000) })
-        if (resp.ok) return { running: true, pid, port, healthy: true }
-        return { running: true, pid, port, healthy: false }
-      } catch {
-        return { running: true, pid, port, healthy: false }
-      }
+      const probe = await probeLocalServerReady({ port, timeoutMs: 3000 })
+      return { running: true, pid, port, healthy: probe.ok }
     }
     return { running: true, pid, port, healthy: false }
   } catch {
@@ -187,16 +197,12 @@ async function cmdServerStart() {
   info('等待服务器就绪...')
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 1000))
-    try {
-      const resp = await fetch(`http://127.0.0.1:${port}/api/ai/health`, { signal: AbortSignal.timeout(2000) })
-      if (resp.ok) {
-        success(`星轨画布已启动 → http://localhost:${port}/canvas`)
-        info(`API 端点: http://localhost:${port}/api/ai/`)
-        info(`管理命令: node scripts/starcanvas-cli.mjs dashboard`)
-        return
-      }
-    } catch {
-      // 继续等待
+    const probe = await probeLocalServerReady({ port, timeoutMs: 2000 })
+    if (probe.ok) {
+      success(`星轨画布已启动 → http://localhost:${port}/canvas`)
+      info(`API 端点: http://localhost:${port}/api/ai/`)
+      info(`管理命令: node scripts/starcanvas-cli.mjs dashboard`)
+      return
     }
   }
 
@@ -204,8 +210,7 @@ async function cmdServerStart() {
 }
 
 function createWriteSteam(filePath) {
-  const fs = require('node:fs')
-  return fs.createWriteStream(filePath, { flags: 'a' })
+  return createWriteStream(filePath, { flags: 'a' })
 }
 
 async function cmdServerStop() {
@@ -289,7 +294,7 @@ async function getApiBaseUrl() {
 async function apiGet(path) {
   const base = await getApiBaseUrl()
   try {
-    const resp = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(10000) })
+    const resp = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(getApiGetTimeoutMs(path)) })
     return { ok: resp.ok, data: await resp.json(), status: resp.status }
   } catch (e) {
     return { ok: false, error: e.message }
@@ -306,6 +311,24 @@ async function apiPost(path, body) {
       signal: AbortSignal.timeout(30000),
     })
     return { ok: resp.ok, data: await resp.json(), status: resp.status }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+}
+
+async function apiPostWithTimeout(path, body, timeoutMs) {
+  const base = await getApiBaseUrl()
+  try {
+    const resp = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const text = await resp.text()
+    let data = null
+    try { data = JSON.parse(text) } catch {}
+    return { ok: resp.ok, data, text, status: resp.status }
   } catch (e) {
     return { ok: false, error: e.message }
   }
@@ -353,6 +376,64 @@ async function apiPostStream(path, body, onChunk) {
   }
 }
 
+async function apiPostSseUntil(path, body, options = {}) {
+  const base = await getApiBaseUrl()
+  const timeoutMs = options.timeoutMs || 180000
+  try {
+    const resp = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    const reader = resp.body?.getReader()
+    if (!reader) {
+      return { ok: false, status: resp.status, error: 'No response stream returned' }
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let eventName = ''
+    let result = null
+    let progress = null
+    let errorEvent = null
+
+    const handleLine = (line) => {
+      if (line.startsWith('event: ')) {
+        eventName = line.slice(7).trim()
+        return
+      }
+      if (!line.startsWith('data: ')) return
+      let data = null
+      try { data = JSON.parse(line.slice(6)) } catch { return }
+      if (eventName === 'error' || data?.error) errorEvent = data
+      if (eventName === 'result' || data?.videoUrl || data?.audioBase64) result = data
+      if (eventName === 'progress' || data?.stage) progress = data
+    }
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) handleLine(line)
+      if (result || errorEvent) break
+    }
+
+    try { reader.releaseLock() } catch {}
+
+    if (errorEvent) {
+      return { ok: false, status: resp.status, error: errorEvent.message || JSON.stringify(errorEvent), progress }
+    }
+    if (!resp.ok) return { ok: false, status: resp.status, error: `HTTP ${resp.status}`, progress }
+    if (result) return { ok: true, status: resp.status, data: result, progress }
+    return { ok: true, status: resp.status, progress }
+  } catch (e) {
+    return { ok: false, error: e.message }
+  }
+}
+
 // ── 命令实现 ──
 
 async function cmdHealth() {
@@ -380,6 +461,125 @@ async function cmdHealth() {
     log(`  图片模型:      ${config.defaultImageModel || '-'}`, C.gray)
     log(`  视频模型:      ${config.videoModel || '(未配置)'}`, C.gray)
     log(`  超时时间:      ${config.timeoutMs || 120000}ms`, C.gray)
+  }
+}
+
+async function cmdProviderSmoke() {
+  header('Provider 分项 Smoke 检查')
+
+  const configResult = await loadProviderSmokeConfigWithWarmup({
+    apiGet,
+  })
+  let config = null
+  if (configResult.ok) {
+    config = configResult.config
+    if (configResult.usedRetry) {
+      info('检测到服务冷启动，已完成一次配置热身重试。')
+    }
+  } else {
+    warn(`无法读取 /api/ai/config: ${configResult.error || configResult.data?.error || '未知错误'}`)
+  }
+
+  const envFromFile = existsSync(ENV_FILE)
+    ? parseProviderSmokeEnvFile(readFileSync(ENV_FILE, 'utf-8'))
+    : {}
+  const smokeEnv = buildProviderSmokeEnv(process.env, envFromFile)
+  const plan = buildProviderSmokePlan({
+    config,
+    env: smokeEnv,
+  })
+
+  log(`  可运行: ${plan.summary.runnable}  跳过: ${plan.summary.skipped}  阻塞: ${plan.summary.blocked}`, C.gray)
+  console.log('')
+
+  const results = []
+
+  for (const check of plan.checks) {
+    const prefix = check.status === 'blocked'
+      ? `${C.red}●${C.reset}`
+      : check.status === 'skipped'
+        ? `${C.yellow}●${C.reset}`
+        : `${C.green}●${C.reset}`
+    log(`  ${prefix} ${check.label}: ${check.reason}`)
+
+    if (check.status !== 'runnable') {
+      results.push({ ...check, outcome: check.status })
+      continue
+    }
+
+    if (check.action === 'health') {
+      const result = await apiGet('/api/ai/health')
+      if (result.ok && result.data?.ok) {
+        success(`    文本连接通过: ${result.data.message}`)
+        results.push({ ...check, outcome: 'passed' })
+      } else {
+        error(`    文本连接失败: ${result.error || result.data?.message || '未知错误'}`)
+        results.push({ ...check, outcome: 'failed' })
+      }
+    }
+
+    if (check.action === 'image') {
+      const prompt = 'A small blue star on a plain white background, minimal smoke test.'
+      const result = await apiPostWithTimeout('/api/ai/generate-image', {
+        prompt,
+        model: config?.defaultImageModel,
+        size: '1024x1024',
+        requestId: `provider-smoke-image-${Date.now()}`,
+      }, Number(smokeEnv.STARCANVAS_REAL_IMAGE_SMOKE_TIMEOUT_MS || 180000))
+      if (result.ok && result.data?.ok && result.data?.imageUrl) {
+        success(`    生图通过: ${String(result.data.imageUrl).slice(0, 32)}...`)
+        results.push({ ...check, outcome: 'passed' })
+      } else {
+        error(`    生图失败: ${result.error || result.data?.error?.message || result.data?.error || result.text || '未知错误'}`)
+        results.push({ ...check, outcome: 'failed' })
+      }
+    }
+
+    if (check.action === 'video') {
+      const result = await apiPostSseUntil('/api/ai/generate-video-vidu', {
+        mode: 't2v',
+        model: config?.videoModel,
+        prompt: 'A two second static shot of a small blue star on a plain white background.',
+        duration: 1,
+        resolution: '540P',
+        audio: false,
+        watermark: true,
+      }, { timeoutMs: Number(smokeEnv.STARCANVAS_REAL_VIDEO_SMOKE_TIMEOUT_MS || 720000) })
+      if (result.ok && result.data?.videoUrl) {
+        success(`    视频通过: ${result.data.videoUrl}`)
+        results.push({ ...check, outcome: 'passed' })
+      } else {
+        error(`    视频失败: ${result.error || '未返回 videoUrl'}`)
+        results.push({ ...check, outcome: 'failed' })
+      }
+    }
+
+    if (check.action === 'tts') {
+      const result = await apiPostSseUntil('/api/ai/tts', {
+        text: '星轨画布 provider smoke test.',
+        voice: 'default',
+        speed: 1,
+      }, { timeoutMs: Number(smokeEnv.STARCANVAS_REAL_TTS_SMOKE_TIMEOUT_MS || 180000) })
+      if (result.ok && (result.data?.audioBase64 || result.data?.audioUrl)) {
+        success('    TTS 通过')
+        results.push({ ...check, outcome: 'passed' })
+      } else {
+        error(`    TTS 失败: ${result.error || '未返回音频结果'}`)
+        results.push({ ...check, outcome: 'failed' })
+      }
+    }
+  }
+
+  const failed = results.filter((result) => result.outcome === 'failed').length
+  const blocked = results.filter((result) => result.outcome === 'blocked').length
+  console.log('')
+  if (failed > 0) {
+    error(`Smoke 失败: ${failed} 项真实请求失败`)
+    process.exitCode = 1
+  } else if (blocked > 0) {
+    warn(`Smoke 存在阻塞项: ${blocked} 项需要配置后才能验证`)
+  } else {
+    success('Smoke 检查完成；未启用的真实付费请求已安全跳过。')
   }
 }
 
@@ -671,6 +871,7 @@ async function main() {
     console.log(`  ${C.cyan}server status${C.reset}       查看服务器状态\n`)
     console.log(`${C.bold}API 操作:${C.reset}`)
     console.log(`  ${C.cyan}health${C.reset}              检查 AI Provider 连接`)
+    console.log(`  ${C.cyan}provider-smoke${C.reset}      分项检查真实 Provider 可运行性`)
     console.log(`  ${C.cyan}config${C.reset}              查看当前配置`)
     console.log(`  ${C.cyan}chat <prompt>${C.reset}       发送 AI 聊天`)
     console.log(`  ${C.cyan}image <prompt>${C.reset}      生成图片\n`)
@@ -702,6 +903,7 @@ async function main() {
       }
       break
     case 'health': await cmdHealth(); break
+    case 'provider-smoke': await cmdProviderSmoke(); break
     case 'config': await cmdConfig(); break
     case 'nodes': await cmdNodes(); break
     case 'node':

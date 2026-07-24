@@ -8,10 +8,18 @@
 "use client";
 
 import { create } from "zustand";
-import type { ProductionRunQueue } from "@/lib/storyboard/productionRunQueue";
-import { completeProductionRunTask, failProductionRunTask } from "@/lib/storyboard/productionRunQueue";
-import { createProductionRunQueueFromReadyShots } from "./shotPlanningRunQueueAdapter";
-import type { ShotPlanningBoard } from "./shotPlanningTypes";
+import type { ProductionRunQueue } from "../../lib/storyboard/productionRunQueue.ts";
+import {
+  completeProductionRunTask,
+  failProductionRunTask,
+  retryProductionRunTask,
+  skipProductionRunTask,
+} from "../../lib/storyboard/productionRunQueue.ts";
+import {
+  createProductionRunQueueFromReadyShots,
+  type ShotPlanningSourceNode,
+} from "./shotPlanningRunQueueAdapter.ts";
+import type { ShotPlanningBoard } from "./shotPlanningTypes.ts";
 
 // ============================================================================
 // State
@@ -28,11 +36,17 @@ export interface ShotPlanningRunQueueState {
 
 export interface ShotPlanningRunQueueActions {
   /** Create a run queue from a ShotPlanningBoard's ready items */
-  buildFromBoard: (board: ShotPlanningBoard, projectId: string) => void;
+  buildFromBoard: (board: ShotPlanningBoard, projectId: string, sourceNodes?: ShotPlanningSourceNode[]) => void;
+  /** Directly set a queue built outside the planning board */
+  setQueue: (queue: ProductionRunQueue | null, projectId?: string | null) => void;
   /** Mark a task as completed (recomputes queue status) */
   markTaskCompleted: (taskId: string) => void;
   /** Mark a task as failed (recomputes queue status) */
   markTaskFailed: (taskId: string, error: string) => void;
+  /** Reset a failed/skipped task to queued for retry */
+  retryTask: (taskId: string) => void;
+  /** Mark a failed task as skipped so remaining tasks can continue */
+  skipTask: (taskId: string, reason?: string) => void;
   /** Clear the queue */
   clear: () => void;
   /** Acknowledge lastMessage (set to null) */
@@ -54,17 +68,26 @@ const initialState: ShotPlanningRunQueueState = {
 export const useShotPlanningRunQueueStore = create<ShotPlanningRunQueueStore>()((set) => ({
   ...initialState,
 
-  buildFromBoard: (board: ShotPlanningBoard, projectId: string) => {
-    const queue = createProductionRunQueueFromReadyShots({ board, projectId });
-    const readyCount = board.items.filter((item) => item.status === "ready").length;
+  buildFromBoard: (board: ShotPlanningBoard, projectId: string, sourceNodes?: ShotPlanningSourceNode[]) => {
+    const queue = createProductionRunQueueFromReadyShots({ board, projectId, sourceNodes });
 
     set({
       queue,
       projectId,
       lastMessage:
         queue !== null
-          ? `Created ${readyCount} queue task${readyCount > 1 ? "s" : ""}`
+          ? `Created ${queue.tasks.length} queue task${queue.tasks.length > 1 ? "s" : ""}`
           : "No ready shots to queue",
+    });
+  },
+
+  setQueue: (queue: ProductionRunQueue | null, projectId: string | null = null) => {
+    set({
+      queue,
+      projectId,
+      lastMessage: queue
+        ? `Created ${queue.tasks.length} queue task${queue.tasks.length > 1 ? "s" : ""}`
+        : null,
     });
   },
 
@@ -77,6 +100,18 @@ export const useShotPlanningRunQueueStore = create<ShotPlanningRunQueueStore>()(
   markTaskFailed: (taskId: string, error: string) => {
     set((state) => ({
       queue: state.queue ? failProductionRunTask(state.queue, taskId, error) : null,
+    }));
+  },
+
+  retryTask: (taskId: string) => {
+    set((state) => ({
+      queue: state.queue ? retryProductionRunTask(state.queue, taskId) : null,
+    }));
+  },
+
+  skipTask: (taskId: string, reason?: string) => {
+    set((state) => ({
+      queue: state.queue ? skipProductionRunTask(state.queue, taskId, reason) : null,
     }));
   },
 

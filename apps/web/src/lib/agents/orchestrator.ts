@@ -125,6 +125,9 @@ export async function orchestrateCrew(
 
   executionTrace.push(`🎬 Crew orchestration started with ${crewPlan.length} agents`)
   executionTrace.push(`   Mode: ${input.mode}, Plan: ${crewPlan.map((r) => FILM_CREW_ROLES[r].name).join(" → ")}`)
+  if (input.localSkillAudit?.length) {
+    executionTrace.push(`🔐 Local Skills: ${input.localSkillAudit.map((skill) => `${skill.skillId} (${skill.injection}${skill.truncated ? ", truncated" : ""})`).join(", ")}`)
+  }
 
   for (let i = 0; i < crewPlan.length; i += 1) {
     const roleId = crewPlan[i]
@@ -214,6 +217,7 @@ export async function orchestrateCrew(
     agentStatuses,
     finalOutput,
     executionTrace,
+    localSkillAudit: input.localSkillAudit,
   }
 }
 

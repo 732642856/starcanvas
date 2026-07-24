@@ -46,6 +46,34 @@ function makeBrief(
 }
 
 describe("buildProjectPackageManifest", () => {
+  it("exports partial R2V reference usage and schedules its handoff review", () => {
+    const manifest = buildProjectPackageManifest({
+      shots: [{ id: "shot-node-1", order: 1, title: "镜头 1" }],
+      productionBriefs: [makeBrief(1, {
+        handoff: {
+          videoReferenceAudit: {
+            mode: "r2v",
+            configuredCount: 3,
+            usedCount: 2,
+            skippedCount: 1,
+            reason: "角色参考图部分不可读：已使用 2/3 张，其余 1 张未恢复或桥接失败。",
+          },
+          warnings: ["视频参考审计：R2V，已使用 2/3 张，跳过 1 张。"],
+        },
+      })],
+    });
+
+    assert.deepEqual(manifest.productionRunPlan[0]?.videoReferenceAudit, {
+      mode: "r2v",
+      configuredCount: 3,
+      usedCount: 2,
+      skippedCount: 1,
+      reason: "角色参考图部分不可读：已使用 2/3 张，其余 1 张未恢复或桥接失败。",
+    });
+    assert.ok(manifest.productionRunPlan[0]?.nextActions.includes("review-handoff-warnings"));
+    assert.ok(manifest.handoffWarnings.some((item) => item.warning.includes("跳过 1 张")));
+  });
+
   it("builds a sound-picture production run manifest with counts and ordered shot index", () => {
     const manifest = buildProjectPackageManifest({
       shots: [
@@ -58,14 +86,34 @@ describe("buildProjectPackageManifest", () => {
           subtitle: { text: "我听见声音了。" },
           visual: {
             characterIdentities: [
-              { id: "char-linxia", name: "林夏" },
-              { id: "char-shadow", name: "黑影" },
+              {
+                id: "char-linxia",
+                name: "林夏",
+                visualSignature: "short black bob haircut and anxious eyes",
+                costume: "red wool coat",
+                referenceAssetId: "asset-linxia",
+              },
+              {
+                id: "char-shadow",
+                name: "黑影",
+                visualSignature: "tall silhouette with wet black coat",
+                costume: "dark raincoat",
+                referenceAssetId: "asset-shadow",
+              },
             ],
           },
         }),
         makeBrief(1, {
           visual: {
-            characterIdentities: [{ id: "char-linxia", name: "林夏" }],
+            characterIdentities: [
+              {
+                id: "char-linxia",
+                name: "林夏",
+                visualSignature: "short black bob haircut and anxious eyes",
+                costume: "red wool coat",
+                referenceAssetId: "asset-linxia",
+              },
+            ],
           },
         }),
       ],
@@ -74,13 +122,14 @@ describe("buildProjectPackageManifest", () => {
       handoffNotes: [{ id: "handoff-1", title: "剪辑说明" }],
     });
 
-    assert.equal(manifest.version, "1.1");
+    assert.equal(manifest.version, "1.2");
     assert.equal(manifest.workflow.model, "sound-picture-production-run");
     assert.equal(manifest.workflow.orchestrationHint, "queue-by-shot");
     assert.deepEqual(manifest.workflow.stages, [
       "script",
       "storyboard",
       "visual",
+      "video",
       "voice",
       "subtitle",
       "composition",
@@ -93,7 +142,17 @@ describe("buildProjectPackageManifest", () => {
       audioIntent: 1,
       handoffNotes: 1,
       warnings: 0,
+      previsPlans: 0,
     });
+    assert.equal(manifest.productionPreflight.summary.totalShots, 2);
+    assert.equal(manifest.productionPreflight.summary.blockedShots, 0);
+    assert.equal(manifest.videoProviderDryRun.providerId, "vidu");
+    assert.equal(manifest.videoProviderDryRun.summary.totalShots, 2);
+    assert.ok(
+      manifest.videoProviderDryRun.shots.every((shot) =>
+        shot.issues.some((issue) => issue.code === "missing-image" && issue.severity === "info"),
+      ),
+    );
     assert.deepEqual(
       manifest.shotBriefIndex.map((item) => item.shotId),
       ["shot-1", "shot-2"],
@@ -127,12 +186,14 @@ describe("buildProjectPackageManifest", () => {
 
     assert.deepEqual(manifest.productionRunPlan[0]?.requiredAssets, [
       "visual",
+      "video",
       "voice",
       "subtitle",
       "handoff-review",
     ]);
     assert.deepEqual(manifest.productionRunPlan[0]?.nextActions, [
       "generate-storyboard-image",
+      "generate-video-clip",
       "generate-voice-track",
       "create-subtitle-track",
       "review-handoff-warnings",
@@ -160,5 +221,73 @@ describe("buildProjectPackageManifest", () => {
     assert.equal(manifest.shotBriefIndex[0]?.hasVisualPrompt, false);
     assert.deepEqual(manifest.productionRunPlan[0]?.requiredAssets, []);
     assert.deepEqual(manifest.productionRunPlan[0]?.nextActions, ["add-visual-prompt"]);
+    assert.equal(manifest.productionPreflight.summary.blockedShots, 1);
+    assert.ok(
+      manifest.productionPreflight.shots[0]?.issues.some(
+        (issue) => issue.code === "missing-visual-prompt",
+      ),
+    );
+  });
+
+  it("preserves per-shot source references for production handoff", () => {
+    const manifest = buildProjectPackageManifest({
+      shots: [{ id: "shot-node-1", order: 1, title: "镜头 1" }],
+      productionBriefs: [
+        makeBrief(1, {
+          handoff: {
+            source: {
+              type: "reference-video",
+              videoName: "reference.webm",
+              timeSec: 8.2,
+              timestampMs: 8200,
+              frameIndex: 2,
+              sourceVideoId: "video-node-1",
+              referenceImageUrl: "data:image/jpeg;base64,frame",
+            },
+          },
+        }),
+      ],
+    });
+
+    assert.deepEqual(manifest.sourceReferences, [
+      {
+        shotId: "shot-1",
+        order: 1,
+        title: "镜头 1",
+        type: "reference-video",
+        videoName: "reference.webm",
+        timeSec: 8.2,
+        timestampMs: 8200,
+        frameIndex: 2,
+        sourceVideoId: "video-node-1",
+        referenceImageUrl: "data:image/jpeg;base64,frame",
+      },
+    ]);
+    assert.equal(manifest.videoProviderDryRun.summary.readyShots, 1);
+    assert.equal(manifest.videoProviderDryRun.shots[0]?.ok, true);
+    assert.equal(
+      manifest.videoProviderDryRun.shots[0]?.sourceImageUrl,
+      "data:image/jpeg;base64,frame",
+    );
+  });
+
+  it("exports recommended whitebox previs plans", () => {
+    const manifest = buildProjectPackageManifest({
+      shots: [{ id: "shot-node-1", order: 1, title: "镜头 1" }],
+      productionBriefs: [makeBrief(1, {
+        handoff: { previs: { status: "recommended", pose: true, depth: true, splitShotRecommended: true } },
+      })],
+    });
+
+    assert.equal(manifest.counts.previsPlans, 1);
+    assert.deepEqual(manifest.previsPlans, [{
+      shotId: "shot-1",
+      order: 1,
+      title: "镜头 1",
+      status: "recommended",
+      pose: true,
+      depth: true,
+      splitShotRecommended: true,
+    }]);
   });
 });

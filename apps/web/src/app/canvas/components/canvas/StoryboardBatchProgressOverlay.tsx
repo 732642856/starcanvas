@@ -5,6 +5,7 @@ import type { BatchGenerationJob } from "./types";
 type StoryboardBatchProgressOverlayProps = {
   job: BatchGenerationJob | null;
   onDismiss?: () => void;
+  rightOffset?: number;
 };
 
 const STATUS_LABELS: Record<BatchGenerationJob["status"], string> = {
@@ -18,6 +19,7 @@ const STATUS_LABELS: Record<BatchGenerationJob["status"], string> = {
 export function StoryboardBatchProgressOverlay({
   job,
   onDismiss,
+  rightOffset = 20,
 }: StoryboardBatchProgressOverlayProps) {
   if (!job) return null;
 
@@ -28,7 +30,8 @@ export function StoryboardBatchProgressOverlay({
 
   return (
     <div
-      className="fixed right-5 top-5 z-50 w-[340px] rounded-2xl border border-slate-700/70 bg-slate-950/90 p-4 text-slate-100 shadow-2xl backdrop-blur-xl"
+      className="fixed bottom-5 z-50 w-[360px] rounded-2xl border border-slate-700/70 bg-slate-950/90 p-4 text-slate-100 shadow-2xl backdrop-blur-xl"
+      style={{ right: rightOffset }}
       data-testid="storyboard-batch-progress-overlay"
     >
       <div className="flex items-start justify-between gap-3">

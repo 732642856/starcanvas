@@ -15,6 +15,8 @@ import {
   type AgentContext,
   type CrewAgentStatus,
 } from "@/lib/agents"
+import { normalizeCrewLocalSkillIds, resolveCrewLocalSkillContext } from "@/lib/local-skills/crew-local-skill-context"
+import { getLocalSkillRegistry } from "@/lib/local-skills/local-skill-registry"
 
 export const runtime = "nodejs"
 
@@ -30,6 +32,22 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  const localSkillIds = normalizeCrewLocalSkillIds(body.localSkillIds)
+  let localSkillResolution: Awaited<ReturnType<typeof resolveCrewLocalSkillContext>> = { prompt: "", audit: [] }
+  try {
+    localSkillResolution = await resolveCrewLocalSkillContext({
+      skillIds: localSkillIds,
+      includeContent: body.localSkillContent === true,
+      host: req.headers.get("host"),
+      registry: getLocalSkillRegistry(),
+    })
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: error instanceof Error ? error.message : "Local Skill resolution failed" }),
+      { status: 403, headers: { "Content-Type": "application/json" } },
+    )
+  }
+
   const input: AgentContext = {
     script: typeof body.script === "string" ? body.script : "",
     characterRelations: typeof body.characterRelations === "string" ? body.characterRelations : undefined,
@@ -41,6 +59,8 @@ export async function POST(req: NextRequest) {
     title: typeof body.title === "string" ? body.title : undefined,
     mode: (body.mode as AgentContext["mode"]) || "ask",
     canvasNodes: body.canvasNodes as AgentContext["canvasNodes"],
+    localSkillContext: localSkillResolution.prompt || undefined,
+    localSkillAudit: localSkillResolution.audit.length ? localSkillResolution.audit : undefined,
   }
 
   if (!input.script) {
@@ -99,6 +119,10 @@ export async function POST(req: NextRequest) {
         controller.close()
       })
 
+      if (localSkillResolution.audit.length) {
+        sendEvent("local_skill_context", { skills: localSkillResolution.audit })
+      }
+
       try {
         const result = await orchestrateCrew(input, {
           onAgentProgress,
@@ -113,6 +137,7 @@ export async function POST(req: NextRequest) {
           trace: result.executionTrace,
           agentCount: result.agentStatuses.length,
           finalOutput: result.finalOutput,
+          localSkillAudit: result.localSkillAudit,
         })
 
         controller.close()

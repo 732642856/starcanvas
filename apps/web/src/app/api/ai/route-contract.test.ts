@@ -13,17 +13,25 @@ async function postJson(path: string, body: unknown): Promise<{ response: Respon
   return { response, data }
 }
 
-async function requireServer(t: any) {
+export async function requireServer(fetchImpl: typeof fetch = fetch) {
   try {
-    const response = await fetch(`${BASE_URL}/canvas`, { method: "GET" })
+    const response = await fetchImpl(`${BASE_URL}/canvas`, { method: "GET" })
     assert.ok(response.status < 500)
-  } catch {
-    t.skip(`需要先启动 Next 服务：${BASE_URL}`)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`STARCANVAS_E2E_BASE_URL is unavailable (${BASE_URL}): ${reason}`)
   }
 }
 
-test("POST /api/ai/upscale validates required image", async (t) => {
-  await requireServer(t)
+test("requireServer fails when the contract server is unavailable", async () => {
+  await assert.rejects(
+    () => requireServer(async () => { throw new Error("connection refused") }),
+    /STARCANVAS_E2E_BASE_URL/,
+  )
+})
+
+test("POST /api/ai/upscale validates required image", async () => {
+  await requireServer()
   const { response, data } = await postJson("/api/ai/upscale", { scale: 4 })
 
   assert.equal(response.status, 400)
@@ -31,8 +39,8 @@ test("POST /api/ai/upscale validates required image", async (t) => {
   assert.match(data.error.message, /image/)
 })
 
-test("POST /api/ai/upscale returns explicit not_ready contract when service is not deployed", async (t) => {
-  await requireServer(t)
+test("POST /api/ai/upscale returns explicit not_ready contract when service is not deployed", async () => {
+  await requireServer()
   const { response, data } = await postJson("/api/ai/upscale", { image: "data:image/png;base64,abc", scale: 8 })
 
   assert.equal(response.status, 200)
@@ -42,8 +50,8 @@ test("POST /api/ai/upscale returns explicit not_ready contract when service is n
   assert.ok(Array.isArray(data.recommendedNextSteps))
 })
 
-test("POST /api/ai/talking-photo validates required image", async (t) => {
-  await requireServer(t)
+test("POST /api/ai/talking-photo validates required image", async () => {
+  await requireServer()
   const { response, data } = await postJson("/api/ai/talking-photo", {
     text: "你好",
     audioSource: "text-to-speech",
@@ -54,8 +62,8 @@ test("POST /api/ai/talking-photo validates required image", async (t) => {
   assert.match(data.error.message, /image/)
 })
 
-test("POST /api/ai/talking-photo validates required audio or text", async (t) => {
-  await requireServer(t)
+test("POST /api/ai/talking-photo validates required audio or text", async () => {
+  await requireServer()
   const { response, data } = await postJson("/api/ai/talking-photo", {
     image: "data:image/png;base64,abc",
     audioSource: "text-to-speech",
@@ -66,8 +74,8 @@ test("POST /api/ai/talking-photo validates required audio or text", async (t) =>
   assert.match(data.error.message, /audio or text/)
 })
 
-test("POST /api/ai/talking-photo returns explicit not_ready contract when backend is not configured", async (t) => {
-  await requireServer(t)
+test("POST /api/ai/talking-photo returns explicit not_ready contract when backend is not configured", async () => {
+  await requireServer()
   const { response, data } = await postJson("/api/ai/talking-photo", {
     image: "data:image/png;base64,abc",
     text: "你好，欢迎来到星轨画布。",
@@ -81,8 +89,8 @@ test("POST /api/ai/talking-photo returns explicit not_ready contract when backen
   assert.ok(Array.isArray(data.recommendedNextSteps))
 })
 
-test("POST /api/ai/generate-with-pose validates prompt before external API calls", async (t) => {
-  await requireServer(t)
+test("POST /api/ai/generate-with-pose validates prompt before external API calls", async () => {
+  await requireServer()
   const { response, data } = await postJson("/api/ai/generate-with-pose", { requestId: "contract-test" })
 
   assert.equal(response.status, 400)
@@ -91,8 +99,8 @@ test("POST /api/ai/generate-with-pose validates prompt before external API calls
   assert.equal(data.requestId, "contract-test")
 })
 
-test("POST /api/ai/reverse-prompt validates imageUrl", async (t) => {
-  await requireServer(t)
+test("POST /api/ai/reverse-prompt validates imageUrl", async () => {
+  await requireServer()
   const { response, data } = await postJson("/api/ai/reverse-prompt", {})
 
   assert.equal(response.status, 400)

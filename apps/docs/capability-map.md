@@ -17,13 +17,13 @@
 | 骨骼生图 | `/api/ai/generate-with-pose/` + `PoseReferenceEditor.tsx` | 骨骼姿态参考驱动 |
 | 局部重绘 | `/api/ai/focus-edit/` + `FocusEditPanel.tsx` | 图+遮罩+指令→编辑 |
 | 全景场景图 | `/api/ai/generate-panorama/` + `PanoramaPanel.tsx` | 720°/360° 场景图 |
-| AI 海报 | `/api/ai/generate-poster/` | 角色卡/概念图/宣传海报/社媒封面 |
+| 海报提示词 | `/api/ai/generate-poster/` | 可见入口已收敛为提示词节点；真实海报生成闭环待接入 |
 | 图片反推提示词 | `/api/ai/reverse-prompt/` | 图→prompt |
-| 图片高清放大 | `/api/ai/upscale/` | Stub 状态，待接入 Real-ESRGAN |
-| 照片说话 | `/api/ai/talking-photo/` | MuseTalk/LivePortrait 代理 |
+| 放大方案记录 | `/api/ai/upscale/` | 可记录参数；服务端超分仍为 Stub，待接入 Real-ESRGAN |
+| 数字人口播需求记录 | `/api/ai/talking-photo/` | 可见生成入口已隐藏；服务部署后再恢复 |
 | 情绪板/参考图 | `/api/ai/generate-moodboard/` | 8 张参考图 SSE 流式 |
 | TTS 配音 | `/api/ai/tts/` + `VoicePanel.tsx` | VoxCPM2, SSE 流式 |
-| 视频分析 | `/api/ai/remix-analysis/` + `VideoRemixPanel.tsx` | 爆款视频拆解复刻 |
+| 参考视频逆向分镜 | `features/reverse-storyboard/` | 上传参考视频，抽取关键帧并生成可导入分镜草稿 |
 | 相机运动 | `/api/ai/camera-control/` | 推拉摇移跟方案生成 |
 | 7 Agent 剧组 | `/api/ai/crew/run/` + `CrewAgentPanel.tsx` | 导演/分镜师/摄影师/美术/编剧/声音/灯光 |
 | 分镜文本解析 | `storyboardParser.ts` | AI输出→结构化分镜数据 |
@@ -88,7 +88,7 @@
 | Inpainting Mask 绘制 | `FocusEditPanel.tsx` 有基础 mask，但体验粗糙 | 集成 `react-canvas-masker` |
 | 海报编辑 | API 生成能力强，后期编辑弱 | 集成 `react-design-editor` |
 | 视频生成 | 图生视频已支持，非图生视频待完善 | 增强 Vidu 集成 |
-| 高清放大 | Upscale API stub 状态 | 接入 Real-ESRGAN |
+| 放大方案记录 | 当前作为参数/提示词节点使用；Upscale API 仍为 stub 状态 | 接入 Real-ESRGAN 后再恢复“一键高清放大”入口 |
 | 多人协作 | 无 | 后续考虑 |
 | 素材库搜索 | 手动分类，无全文搜索 | 添加搜索过滤 |
 | AI 脚本→分镜 | 有基础转换 | 增强 AI 驱动 |
@@ -161,14 +161,14 @@ generate-video       - 图生视频 (SSE)
 generate-video-vidu  - 阿里 Vidu 视频
 generate-character-view  - 角色三视图 (SSE)
 generate-moodboard   - 情绪板 8 图 (SSE)
-generate-poster      - AI 海报
+generate-poster      - 海报提示词/海报生成待闭环
 generate-panorama    - 720° 全景场景
 generate-with-pose   - 骨骼生图
 focus-edit           - 局部重绘
 reverse-prompt       - 图片反推提示词
-upscale              - 高清放大 (stub)
-talking-photo        - 照片说话
-remix-analysis       - 视频爆款分析
+upscale              - 放大方案记录 (service stub)
+talking-photo        - 数字人口播需求记录 (service not_ready)
+remix-analysis       - 参考视频结构分析
 camera-control       - 相机运动方案
 bible-director       - Bible 导演增强
 crew/run             - 7 Agent 剧组 (SSE)

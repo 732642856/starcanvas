@@ -50,4 +50,41 @@ describe("buildVideoWorkflowTemplate", () => {
       true,
     );
   });
+
+  it("creates the 3x3 grid storyboard workflow variant", () => {
+    const result = buildVideoWorkflowTemplate({
+      basePosition: { x: 10, y: 20 },
+      generateId: createIdGenerator(),
+      template: "grid_storyboard_video",
+    });
+
+    assert.equal(result.nodes.length, 7);
+    assert.equal(result.edges.length, 6);
+    assert.equal(result.nodes[2].data.title, "3×3 分镜网格生成");
+    assert.equal(result.nodes[4].data.title, "网格动效生成");
+    assert.equal(result.nodes[6].data.nodeKind, "video-result");
+  });
+
+  it("creates the character turnaround workflow variant", () => {
+    const result = buildVideoWorkflowTemplate({
+      basePosition: { x: 0, y: 0 },
+      generateId: createIdGenerator(),
+      template: "character_turnaround_video",
+    });
+
+    const titleByKind = result.nodes.map((node) => node.data.title);
+    const nodeIdByTitle = new Map(result.nodes.map((node) => [node.data.title, node.id]));
+    const edgePairs = new Set(result.edges.map((edge) => `${edge.source}->${edge.target}`));
+
+    assert.equal(result.nodes.length, 8);
+    assert.equal(result.edges.length, 8);
+    assert.deepEqual(
+      titleByKind.slice(1, 6),
+      ["角色三视图设定表", "三视图参考图", "动作首帧生成", "动作首帧结果", "角色自然转身动画"],
+    );
+    assert.equal(
+      edgePairs.has(`${nodeIdByTitle.get("三视图参考图")}->${nodeIdByTitle.get("角色自然转身动画")}`),
+      true,
+    );
+  });
 });

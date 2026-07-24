@@ -17,6 +17,8 @@ import {
   useEdgesState,
   getBezierPath,
   BaseEdge,
+  Handle,
+  Position,
   type Edge,
   type Node,
   type ReactFlowInstance,
@@ -89,6 +91,7 @@ import type {
   BatchGenerationJob,
   BatchGenerationJobStatus,
   BatchGenerationShotStatus,
+  CharacterBibleData,
 } from "./components/canvas/types";
 
 // ============================================================================
@@ -98,18 +101,19 @@ import { useCanvasStore, loadBibleFromIDB } from "./stores/canvasStore";
 import { useCanvasDropUpload } from "./hooks/useCanvasDropUpload";
 import { useHistoryDrop } from "./hooks/useHistoryDrop";
 import type { ChatAttachment } from "./hooks/useChatAttachments";
+import { hydrateCanvasMediaNodes } from "./hooks/useCanvasPersistence";
 
 // ============================================================================
 // COMPONENTS
 // ============================================================================
 import { EmptyCanvasGuide } from "./components/canvas/EmptyCanvasGuide";
 import { CanvasDropOverlay } from "./components/canvas/CanvasDropOverlay";
-import { AssetLibraryPanel } from "./components/canvas/AssetLibraryPanel";
-import { CharacterAssetLibraryPanel } from "./components/canvas/CharacterAssetLibraryPanel";
 import { ProductionRunQueuePanel } from "./components/canvas/ProductionRunQueuePanel";
+import { CanvasIssueCenterPanel } from "./components/canvas/CanvasIssueCenterPanel";
 import { ShotPlanningPanel } from "@/features/production/ShotPlanningPanel";
 import { useShotPlanningRunQueueStore } from "@/features/production/useShotPlanningRunQueueStore";
 import { useProductionRunExecutor } from "./hooks/useProductionRunExecutor";
+import { createVideoProductionRun, getProductionRun, waitForCompletedProductionRun, type ProductionRunDto } from "@/lib/production-runs/client";
 import { StoryboardBatchProgressOverlay } from "./components/canvas/StoryboardBatchProgressOverlay";
 import { CanvasContextMenu } from "./components/menus/CanvasContextMenu";
 import PropertyPanel from "./components/panels/PropertyPanel";
@@ -125,10 +129,10 @@ import { BibleDropdown, type BibleActions } from "./components/toolbar/BibleDrop
 import { WorkflowTemplatesDialog } from "./components/toolbar/WorkflowTemplatesDialog";
 import { useWorkflowTemplates, type WorkflowTemplate } from "./hooks/useWorkflowTemplates";
 import { AddNodePanel } from "./components/toolbar/AddNodePanel";
+import { ReferenceVideoEntryPanel } from "./components/panels/ReferenceVideoEntryPanel";
 import { QuickAddNodeSearch } from "./components/quick-add/QuickAddNodeSearch";
 import { QUICK_ADD_NODE_OPTIONS } from "./components/quick-add/quickAddNodeOptions";
 import { ChatPanel } from "./components/chat/ChatPanel";
-import { SettingsPanel } from "./components/panels/SettingsPanel";
 import {
   ProjectBiblePanel,
   type ProjectSceneBibleItem,
@@ -141,25 +145,27 @@ import { SceneBiblePanel } from "./components/panels/SceneBiblePanel";
 import { VisualStyleBiblePanel } from "./components/panels/VisualStyleBiblePanel";
 import { EmotionCurvePanel } from "./components/panels/EmotionCurvePanel";
 import type { EmotionCurveDataPoint } from "./components/panels/EmotionCurvePanel";
-import { ShotListTable } from "./components/panels/ShotListTable";
-import { StyleLibraryPanel } from "./components/panels/StyleLibraryPanel";
 import { DraggableAngleControl } from "./components/canvas/DraggableAngleControl";
-import { VersionComparePanel } from "./components/history/VersionComparePanel";
 // 重型面板全部懒加载 — 减少首屏编译体积
 import { type AgentMode } from "./components/chat/AgentModeSwitcher";
 import { BatchActionPanel, type BatchAction } from "./components/canvas/BatchActionPanel";
 // 制片层面板 — 全部 next/dynamic 懒加载
+const AssetLibraryPanel = dynamic(() => import("./components/canvas/AssetLibraryPanel").then(m => ({ default: m.AssetLibraryPanel })), { ssr: false, loading: () => <LazyOverlayFallback title="正在加载资产库..." /> });
 const CharacterViewPanel = dynamic(() => import("./components/canvas/CharacterViewModal").then(m => ({ default: m.CharacterViewPanel })), { ssr: false });
 const CinematicParamPanel = dynamic(() => import("./components/panels/CinematicParamPanel").then(m => ({ default: m.CinematicParamPanelInner })), { ssr: false });
 const ColorGradePanel = dynamic(() => import("./components/panels/ColorGradePanel").then(m => ({ default: m.ColorGradePanel })), { ssr: false });
 const TimelinePanel = dynamic(() => import("./components/panels/TimelinePanel").then(m => ({ default: m.TimelinePanel })), { ssr: false });
 const PanoramaPanel = dynamic(() => import("./components/panels/PanoramaPanel").then(m => ({ default: m.PanoramaPanel })), { ssr: false });
 const CrewAgentPanel = dynamic(() => import("./components/panels/CrewAgentPanel").then(m => ({ default: m.CrewAgentPanel })), { ssr: false });
+const SettingsPanel = dynamic(() => import("./components/panels/SettingsPanel").then(m => ({ default: m.SettingsPanel })), { ssr: false, loading: () => <LazyOverlayFallback title="正在加载设置..." /> });
+const ShotListTable = dynamic(() => import("./components/panels/ShotListTable").then(m => ({ default: m.ShotListTable })), { ssr: false, loading: () => <LazyInlineFallback title="正在加载镜头列表..." /> });
+const StyleLibraryPanel = dynamic(() => import("./components/panels/StyleLibraryPanel").then(m => ({ default: m.StyleLibraryPanel })), { ssr: false, loading: () => <LazyOverlayFallback title="正在加载画风库..." /> });
 const SourceTracePanel = dynamic(() => import("./components/preview/SourceTracePanel").then(m => ({ default: m.SourceTracePanel })), { ssr: false });
 const NodeHistoryPanel = dynamic(() => import("./components/history/NodeHistoryPanel").then(m => ({ default: m.NodeHistoryPanel })), { ssr: false });
-const VideoRemixPanel = dynamic(() => import("./components/panels/VideoRemixPanel").then(m => ({ default: m.VideoRemixPanel })), { ssr: false });
+const VersionComparePanel = dynamic(() => import("./components/history/VersionComparePanel").then(m => ({ default: m.VersionComparePanel })), { ssr: false, loading: () => <LazyOverlayFallback title="正在加载版本对比..." /> });
 const ScriptImportPanel = dynamic(() => import("./components/panels/ScriptImportPanel").then(m => ({ default: m.ScriptImportPanel })), { ssr: false });
 const ReverseStoryboardPanel = dynamic(() => import("@/features/reverse-storyboard/ReverseStoryboardPanel").then(m => ({ default: m.ReverseStoryboardPanelInner })), { ssr: false });
+const VideoRemixPanel = dynamic(() => import("./components/panels/VideoRemixPanel").then(m => ({ default: m.VideoRemixPanel })), { ssr: false, loading: () => <LazyOverlayFallback title="正在加载结构拆解..." /> });
 const ShotLibraryPanel = dynamic(() => import("@/features/shot-library/ShotLibraryPanel").then(m => ({ default: m.ShotLibraryPanelInner })), { ssr: false });
 const AIScriptPanel = dynamic(() => import("@/features/ai-script/AIScriptPanel").then(m => ({ default: m.AIScriptPanelInner })), { ssr: false });
 import { importStoryboardDraftToCanvas } from "@/features/storyboard/importDraftToCanvas"
@@ -167,7 +173,6 @@ import { useOnboarding } from "@/features/onboarding/useOnboarding"
 import { completeStep } from "@/features/onboarding/onboardingStorage"
 const OnboardingPanel = dynamic(() => import("@/features/onboarding/OnboardingPanel").then(m => ({ default: m.OnboardingPanelInner })), { ssr: false })
 import type { ScriptImportPayload } from "./components/panels/ScriptImportPanel";
-import type { VideoRemixImportPayload } from "./components/panels/VideoRemixPanel";
 import type { CinematicParams } from "./components/panels/CinematicParamPanel";
 import type { TimelineClip } from "./components/panels/TimelinePanel";
 // 恢复孤立组件
@@ -175,22 +180,22 @@ import { ChainGeneratePanel } from "./components/panels/ChainGeneratePanel";
 import { ParamControlPanel } from "./components/panels/ParamControlPanel";
 import { StoryboardShotEditorPanel } from "./components/panels/StoryboardShotEditorPanel";
 import { BgmPanel } from "./components/nodes/BgmPanel";
-import { AngleControlPanel } from "./components/nodes/AngleControlPanel";
 import { BackgroundRemoverPanel } from "./components/canvas/BackgroundRemoverPanel";
 import { AudioWaveform } from "./components/nodes/AudioWaveform";
-import { CanvasDiagnosticsPanel } from "./components/canvas/CanvasDiagnosticsPanel";
+const CanvasDiagnosticsPanel = dynamic(() => import("./components/canvas/CanvasDiagnosticsPanel").then(m => ({ default: m.CanvasDiagnosticsPanel })), { ssr: false, loading: () => <LazyOverlayFallback title="正在加载诊断信息..." /> });
 import { CinemaLabPanel } from "./components/nodes/CinemaLabPanel";
 import { TransitionPicker } from "./components/nodes/TransitionPicker";
 import { ExportPreflightPanel } from "./components/panels/ExportPreflightPanel";
 import { FileUploadPanel } from "./components/panels/FileUploadPanel";
-import { WorkspaceHistoryPanel } from "./components/history/WorkspaceHistoryPanel";
-import { WorkflowRunPanel } from "./components/workflow/WorkflowRunPanel";
-import { PromptPreviewPanel } from "./components/preview/PromptPreviewPanel";
+const WorkspaceHistoryPanel = dynamic(() => import("./components/history/WorkspaceHistoryPanel").then(m => ({ default: m.WorkspaceHistoryPanel })), { ssr: false, loading: () => <LazyOverlayFallback title="正在加载工作区历史..." /> });
+const WorkflowRunPanel = dynamic(() => import("./components/workflow/WorkflowRunPanel").then(m => ({ default: m.WorkflowRunPanel })), { ssr: false, loading: () => <LazyOverlayFallback title="正在加载运行记录..." /> });
+const PromptPreviewPanel = dynamic(() => import("./components/preview/PromptPreviewPanel").then(m => ({ default: m.PromptPreviewPanel })), { ssr: false, loading: () => <LazyOverlayFallback title="正在加载提示词预览..." /> });
 import ImageNode, {
   registerImageHoverHandlers,
   unregisterImageHoverHandlers,
 } from "./components/nodes/ImageNode";
 import ContentNode from "./components/nodes/ContentNode";
+import { DraftNodeWrapper } from "./components/nodes/DraftNodeWrapper";
 import { ContinuityReportNode } from "./components/nodes/ContinuityReportNode";
 import SketchNode from "./components/nodes/SketchNode";
 import WorkflowNode from "./components/nodes/WorkflowNode";
@@ -199,17 +204,53 @@ import StoryboardGridNode from "./components/nodes/StoryboardGridNode";
 import VideoNode from "./components/nodes/VideoNode";
 import AgentNode from "./components/nodes/AgentNode";
 import { generateId } from "./utils/generateId";
+import { layoutBatchNodePositions } from "./utils/chatActionNodePlacement";
+import { createRemixAnalysisArtifacts } from "./utils/remixAnalysisArtifacts";
 import { quickLayout } from "./utils/dagre-layout";
 import { parseStoryboardTextToShots } from "./utils/storyboardParser";
 import BatchProgressBar, {
   type BatchProgressHandle,
 } from "./components/nodes/BatchProgressBar";
-import { generateImageFromPrompt, friendlyErrorMessage, retryWithBackoff, ImageGenerationError } from "./utils/imageGeneration";
-import { generateTtsAudio, persistTtsAudio } from "./utils/ttsService";
+import { generateImageFromPrompt, friendlyErrorMessage, retryWithBackoff } from "./utils/imageGeneration";
+import {
+  buildUnknownImageResultMessage,
+  isUnknownImageResultError,
+  shouldRetryProductionImageError,
+} from "./utils/productionImageRetry";
+import {
+  resolveProviderBatchConcurrency,
+  runWithConcurrency,
+} from "./utils/batchConcurrency";
+import {
+  buildVideoGenerationInput,
+  generateVideoFromImage,
+  videoResultToNodeData,
+  type VideoGenBackend,
+} from "./utils/videoGenerationService";
+import {
+  describeVideoReferenceAvailability,
+  resolveProviderReadableCharacterReferenceImages,
+  resolveProviderReadableVideoSourceImage,
+} from "./utils/videoSourceImage";
+import { assetUrlToDataUrl } from "./utils/providerMediaDataUrl";
+import { shouldExposeStarCanvasE2EBridge } from "./utils/e2eBridge";
 import { composeStoryboardGrid } from "./utils/storyboardGridComposer";
 import { buildVideoWorkflowTemplate } from "./utils/videoWorkflowTemplate";
+import {
+  buildVideoWorkflowChain,
+  createUploadedVideoNode,
+} from "./utils/videoWorkflowChain";
+import {
+  buildProjectPackageAssetsWithLocalBytes,
+  buildProjectPackageCanvasNodes,
+  getProjectPackageExportWarning,
+} from "./utils/projectPackageExport";
+import type { ProjectPackageCanvasImport } from "./utils/projectPackageImport";
+import { applyShotParameterPatchToNode } from "./utils/shotParameterPatch";
 import { useWorkflowRunner } from "./hooks/useWorkflowRunner";
+import { usePreviewTransactionLifecycle } from "./hooks/previewTransactionLifecycle";
 import { buildExecutionPlan } from "./utils/execution-plan";
+import { requestImageUpscale } from "./utils/upscaleService";
 import { useCanvasPersistence } from "./hooks/useCanvasPersistence";
 import {
   createFailedRunMeta,
@@ -223,8 +264,17 @@ import {
   persistImageDataUrl,
   hydrateImageAsset,
   getLocalImageAsset,
+  saveLocalImageAsset,
+  dataUrlToBlob,
   revokeAllTrackedObjectUrls,
 } from "@/lib/assets/localImageStore";
+import {
+  persistMediaFile,
+  persistMediaBlob,
+  hydrateMediaAsset,
+  saveLocalMediaAsset,
+  revokeAllTrackedMediaObjectUrls,
+} from "@/lib/assets/localMediaStore";
 import {
   createDocumentNode,
   isTextDocumentFile,
@@ -239,9 +289,14 @@ import {
   normalizeGenerationError,
   formatGenerationErrorForDisplay,
 } from "@/lib/ai/normalizeGenerationError";
+import type { ProviderRealSmokeTarget } from "@/lib/ai/providerSmoke";
+import type { ProviderSmokeRunResultLike } from "@/lib/ai/providerSmokeResult";
 import { createImageGenerationSnapshot } from "@/lib/ai/createGenerationSnapshot";
 import { getDefaultImageModel } from "@/lib/ai/client";
 import { createShotImageNode } from "@/lib/storyboard/createShotImageNode";
+import { createShotImageArtifacts } from "@/lib/storyboard/createShotImageArtifacts";
+import { createScriptPipelineCanvasNodes } from "@/lib/storyboard/scriptPipelineCanvas";
+import { createScriptPipelineCharacters } from "@/lib/storyboard/scriptPipelineCharacters";
 import {
   STORYBOARD_SHOT_LAYOUT,
   createNormalizedShotTitle,
@@ -284,14 +339,22 @@ import {
 } from "@/lib/storyboard/storyboardComposite";
 import {
   applyCharacterAssetLibraryPatchToShots,
+  collectCharacterAssetLibraryItemsFromSeeds,
   collectCharacterAssetLibraryItemsFromShots,
+  mergeCharacterAssetLibraryItems,
   type CharacterAssetLibraryPatch,
 } from "@/lib/storyboard/characterAssetLibrary";
 import { buildCharacterConsistencyPrompt } from "@/lib/storyboard/characterIdentitySummary";
 import { buildStoryboardImagePrompt } from "@/lib/storyboard/storyboardImagePrompt";
 import { buildShotProductionBriefs, buildShotProductionBrief } from "@/lib/storyboard/shotProductionBrief";
+import { resolveShotTimelineStart } from "@/lib/storyboard/shotTimelineStart";
+import { buildVideoPromptDirection } from "@/lib/storyboard/videoPromptDirector";
 import { buildProjectPackageManifest } from "@/lib/storyboard/projectPackageManifest";
 import { buildProductionRunQueue } from "@/lib/storyboard/productionRunQueue";
+import { buildCanvasIssues } from "@/lib/storyboard/canvasIssueCenter";
+import { useAIUsageStore } from "./features/canvas/usage/useAIUsageStore";
+import { buildProductionTaskUsageRecord } from "./features/canvas/usage/productionTaskUsage";
+import { buildProductionPreflightFixOutcome } from "@/lib/storyboard/productionPreflightFix";
 import { generateStoryboardPdfHtml, storyboardPdfFilename } from "@/lib/storyboard/storyboardPdfExport";
 import {
   generateScreenplayMarkdown,
@@ -303,7 +366,6 @@ import {
 } from "@/lib/storyboard/storyboardExportFormats";
 import { buildSubtitleExport, subtitleTimelineFilename } from "@/lib/storyboard/storyboardSubtitleTimeline";
 import { generateVideoCompositionScript, type VideoCompositionInput } from "@/lib/storyboard/storyboardVideoComposition";
-import { downloadJianyingDraft } from "@/lib/jianying/jianyingDraftExport";
 import { formatDialogueAsSrt, parseDurationToSeconds } from "@/lib/storyboard/subtitleFormatter";
 import {
   exportToJianyingDraft,
@@ -314,10 +376,11 @@ import {
   downloadJsonFile,
   downloadZipBuffer,
 } from "./utils/jianyingDraftExport";
-import type {
-  ChatCanvasAction,
-  ApplyActionsReport,
-  ApplyActionResult,
+import {
+  resolveActionNodeReference,
+  type ChatCanvasAction,
+  type ApplyActionsReport,
+  type ApplyActionResult,
 } from "./features/canvas/actions/chatActions";
 import type { WorkflowRunEvent } from "./types/workflow-run";
 import type { ProjectEntryMode } from "./stores/useProjectStore";
@@ -328,6 +391,7 @@ import {
   CANVAS_SNAPSHOT_SCHEMA_VERSION,
   sanitizeAndValidateCanvasSnapshot,
 } from "./utils/canvasSnapshotSanitizer";
+import { applyProviderSetup, getStoredModelOptions, readUseMockPreference, type StoredModelOption } from "@/lib/ai/user-settings";
 
 // ============================================================================
 // DEBUG SWITCHES
@@ -338,6 +402,13 @@ const isDebugEnabled = (key: string) =>
 const DEBUG_DROP = isDebugEnabled("DEBUG_DROP_UPLOAD");
 const DEBUG_AI = isDebugEnabled("DEBUG_AI_PAYLOAD");
 const DEBUG_NODE = isDebugEnabled("DEBUG_NODE_ACTIONS");
+
+const DEFAULT_PROVIDER_MODEL_OPTIONS: StoredModelOption[] = [
+  { value: "gpt-5.5", label: "GPT-5.5", provider: "default", desc: "最强推理+创作", type: "text" },
+  { value: "gpt-5.4", label: "GPT-5.4", provider: "default", desc: "高性能多模态", type: "text" },
+  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", provider: "default", desc: "快速响应", type: "text" },
+  { value: "gpt-image-2", label: "gpt-image-2", provider: "default", desc: "高质量图像生成", type: "image" },
+];
 
 // ============================================================================
 // CONSTANTS
@@ -367,8 +438,46 @@ const ZOOM_CONSTRAINTS = {
 };
 const SHOT_GENERATION_WATCHDOG_TIMEOUT_MS = 90_000;
 const SHOT_GENERATION_WATCHDOG_INTERVAL_MS = 10_000;
-const SHOT_GENERATION_BATCH_CONCURRENCY = 3;
+const SHOT_GENERATION_BATCH_CONCURRENCY = resolveProviderBatchConcurrency(
+  process.env.NEXT_PUBLIC_SHOT_GENERATION_BATCH_CONCURRENCY,
+);
 // (Position/visibility utilities imported from canvasPositionUtils.ts and canvasVisibilityUtils.ts)
+
+function LazyOverlayFallback({ title = "正在加载面板..." }: { title?: string }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+      <div
+        className="pointer-events-auto flex items-center gap-3 rounded-2xl border px-4 py-3 shadow-2xl backdrop-blur-xl"
+        style={{
+          borderColor: DESIGN_TOKENS.border,
+          backgroundColor: "rgba(18, 18, 24, 0.92)",
+          color: DESIGN_TOKENS.textSecondary,
+        }}
+      >
+        <Loader2 size={16} className="animate-spin" />
+        <span className="text-sm">{title}</span>
+      </div>
+    </div>
+  )
+}
+
+function LazyInlineFallback({ title = "正在加载..." }: { title?: string }) {
+  return (
+    <div
+      className="flex h-full min-h-[140px] items-center justify-center rounded-xl border text-sm"
+      style={{
+        borderColor: DESIGN_TOKENS.border,
+        backgroundColor: "rgba(255,255,255,0.03)",
+        color: DESIGN_TOKENS.textMuted,
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <Loader2 size={14} className="animate-spin" />
+        <span>{title}</span>
+      </div>
+    </div>
+  )
+}
 
 function applyStoryboardProcessVisibility(params: {
   nodes: Node<CanvasNodeData>[];
@@ -413,36 +522,6 @@ function applyStoryboardProcessVisibility(params: {
   });
 
   return { nodes, edges };
-}
-
-async function runWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  worker: (item: T, index: number) => Promise<R>,
-): Promise<Array<PromiseSettledResult<R>>> {
-  const results: Array<PromiseSettledResult<R>> = new Array(items.length);
-  let nextIndex = 0;
-
-  async function runNext() {
-    const currentIndex = nextIndex;
-    nextIndex += 1;
-    if (currentIndex >= items.length) return;
-
-    try {
-      results[currentIndex] = {
-        status: "fulfilled",
-        value: await worker(items[currentIndex], currentIndex),
-      };
-    } catch (reason) {
-      results[currentIndex] = { status: "rejected", reason };
-    }
-
-    await runNext();
-  }
-
-  const workerCount = Math.min(Math.max(1, limit), items.length);
-  await Promise.all(Array.from({ length: workerCount }, () => runNext()));
-  return results;
 }
 
 // ============================================================================
@@ -543,27 +622,98 @@ export function tryRedo() {
   _doRedo?.()
 }
 
-const nodeTypes = {
-  image: ImageNode,
-  content: ContentNode,
-  text: ContentNode,
-  sketch: SketchNode,
-  "continuity-report": ContinuityReportNode,
-  workflow: WorkflowNode,
-  shot: ShotNode,
-  storyboardGrid: StoryboardGridNode,
-  video: (props: any) => <VideoNode {...props} onRetry={_runVideoRetryFn} onUpscale={_videoUpscaleFn} />,
-  agent: (props: any) => (
+const VideoNodeRenderer = memo(function VideoNodeRenderer(props: any) {
+  return <VideoNode {...props} onRetry={_runVideoRetryFn} onUpscale={_videoUpscaleFn} />
+})
+VideoNodeRenderer.displayName = "VideoNodeRenderer"
+
+const AgentNodeRenderer = memo(function AgentNodeRenderer(props: any) {
+  return (
     <AgentNode
       {...props}
       onRunAgent={_runAgentFn}
       onBatchGenerate={_runBatchGenerateFn}
       onUpdateAgentContent={_updateAgentContentFn}
     />
-  ),
+  )
+})
+AgentNodeRenderer.displayName = "AgentNodeRenderer"
+
+const AudioNodeRenderer = memo(function AudioNodeRenderer(props: any) {
+  const data = props.data ?? {};
+  return (
+    <div
+      className="relative rounded-2xl border p-3 shadow-lg backdrop-blur-xl"
+      style={{
+        width: 320,
+        borderColor: "rgba(34,197,94,0.22)",
+        backgroundColor: "rgba(18,18,24,0.92)",
+        color: DESIGN_TOKENS.textPrimary,
+      }}
+    >
+      <Handle type="target" position={Position.Left} className="!bg-emerald-400 !h-2.5 !w-2.5 !rounded-sm !border !border-white/30" />
+      <Handle type="source" position={Position.Right} className="!bg-emerald-500 !h-2.5 !w-2.5 !rounded-sm !border !border-white/30" />
+      <div className="mb-2 truncate text-xs font-medium">
+        {data.title || "音频"}
+      </div>
+      <AudioWaveform
+        audioUrl={data.audioUrl}
+        width={280}
+        height={44}
+        color="rgba(34,197,94,0.55)"
+        progressColor="#22c55e"
+      />
+      {data.dialogue && (
+        <div className="mt-2 line-clamp-2 text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+          {data.dialogue}
+        </div>
+      )}
+    </div>
+  );
+})
+AudioNodeRenderer.displayName = "AudioNodeRenderer"
+
+const withDraftWrapper = (Component: React.ComponentType<any>) => {
+  const WrappedWithDraft = (props: any) => (
+    <DraftNodeWrapper props={props}>
+      <Component {...props} />
+    </DraftNodeWrapper>
+  );
+  WrappedWithDraft.displayName = `WithDraftWrapper(${Component.displayName || Component.name || "Node"})`;
+  return WrappedWithDraft;
+};
+
+const nodeTypes = {
+  image: withDraftWrapper(ImageNode),
+  content: withDraftWrapper(ContentNode),
+  text: withDraftWrapper(ContentNode),
+  sketch: withDraftWrapper(SketchNode),
+  "continuity-report": withDraftWrapper(ContinuityReportNode),
+  workflow: withDraftWrapper(WorkflowNode),
+  shot: withDraftWrapper(ShotNode),
+  storyboardGrid: withDraftWrapper(StoryboardGridNode),
+  video: withDraftWrapper(VideoNodeRenderer),
+  audio: withDraftWrapper(AudioNodeRenderer),
+  agent: withDraftWrapper(AgentNodeRenderer),
 };
 
 const edgeTypes = { creative: CreativeEdge };
+
+type CanvasNoticeKind = "info" | "success" | "warning" | "error";
+
+type CanvasNotice = {
+  id: string;
+  kind: CanvasNoticeKind;
+  title: string;
+  description?: string;
+};
+
+const CANVAS_NOTICE_ACCENT: Record<CanvasNoticeKind, string> = {
+  info: "#6ee7f9",
+  success: "#34d399",
+  warning: "#fbbf24",
+  error: "#fb7185",
+};
 
 // ============================================================================
 // STAR CANVAS (OUTER - provides ReactFlowProvider)
@@ -599,6 +749,20 @@ function parseTimelineDurationSeconds(value: unknown, fallback = 5): number {
   if (typeof value !== "string") return fallback;
   const parsed = parseDurationToSeconds(value);
   return parsed && Number.isFinite(parsed) ? Math.max(1, parsed) : fallback;
+}
+
+function readPlanningText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readPlanningNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readPlanningRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function buildTimelineClipsFromNodes(nodes: Node<CanvasNodeData>[]): TimelineClip[] {
@@ -696,7 +860,34 @@ function StarCanvasInner({
     showPromptPreview,
     promptPreviewNodeId,
     closePromptPreview,
+    bibleCharacters,
   } = useCanvasStore();
+
+  const syncImageNodeToAssetLibrary = useCallback(
+    (node: Node<CanvasNodeData>) => {
+      const isImageNode = node.type === "image" || node.data.nodeKind === "ai-generated-image";
+      if (!isImageNode) return;
+      let src = node.data.sketchImageDataUrl || node.data.imageUrl || node.data.assetUrl;
+      if (src && !node.data.sketchImageDataUrl && (src.startsWith("blob:") || src.startsWith("data:"))) {
+        src = undefined;
+      }
+      addAsset({
+        id: `asset_${generateId()}`,
+        type: "image",
+        name: node.data.fileName || node.data.title || "Untitled",
+        src,
+        folder: "Others",
+        createdAt: Date.now(),
+        metadata: {
+          assetId: node.data.assetId,
+          persistence: node.data.persistence,
+          source: node.data.source,
+          sourceShotId: node.data.sourceShotId,
+        },
+      });
+    },
+    [addAsset],
+  );
 
   const [showPropertyPanel, setShowPropertyPanel] = useState(false);
   const [selectionCount, setSelectionCount] = useState(0);
@@ -741,16 +932,143 @@ function StarCanvasInner({
     },
     [setEdges],
   );
+  const resumedProductionRunIdsRef = useRef<Set<string>>(new Set());
+  const applyCompletedProductionRunToShot = useCallback(
+    (shotNodeId: string, run: ProductionRunDto) => {
+      const outputAsset = run.outputAsset;
+      if (!outputAsset?.id || !outputAsset.url) return;
+      applyNodeUpdates((nds) =>
+        nds.map((node) =>
+          node.id === shotNodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  productionRunId: run.id,
+                  videoAssetId: outputAsset.id,
+                  videoUrl: outputAsset.url,
+                  generationStatus: "succeeded" as const,
+                  errorMessage: undefined,
+                },
+              }
+            : node,
+        ),
+      );
+    },
+    [applyNodeUpdates],
+  );
+  useEffect(() => {
+    const activeShots = nodesRef.current.filter((node) => {
+      const status = node.data.generationStatus ?? node.data.shot?.generationStatus;
+      return node.type === "shot" && node.data.productionRunId && status !== "succeeded" && status !== "failed";
+    });
+    if (!activeShots.length) return;
+    let cancelled = false;
+    for (const shotNode of activeShots) {
+      const runId = shotNode.data.productionRunId;
+      if (!runId || resumedProductionRunIdsRef.current.has(runId)) continue;
+      resumedProductionRunIdsRef.current.add(runId);
+      void (async () => {
+        try {
+          const current = await getProductionRun(runId);
+          if (cancelled) return;
+          if (current.status === "COMPLETED") {
+            applyCompletedProductionRunToShot(shotNode.id, current);
+            return;
+          }
+          if (current.status === "FAILED" || current.status === "CANCELED") {
+            applyNodeUpdates((nds) =>
+              nds.map((node) =>
+                node.id === shotNode.id
+                  ? {
+                      ...node,
+                      data: {
+                        ...node.data,
+                        generationStatus: "failed" as const,
+                        errorMessage: `Production run ended with status ${current.status}`,
+                      },
+                    }
+                  : node,
+              ),
+            );
+            return;
+          }
+          const completed = await waitForCompletedProductionRun(runId);
+          if (!cancelled) applyCompletedProductionRunToShot(shotNode.id, completed);
+        } catch (error) {
+          if (cancelled) return;
+          applyNodeUpdates((nds) =>
+            nds.map((node) =>
+              node.id === shotNode.id
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      generationStatus: "failed" as const,
+                      errorMessage: error instanceof Error ? error.message : String(error),
+                    },
+                  }
+                : node,
+            ),
+          );
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [nodes.length, applyCompletedProductionRunToShot, applyNodeUpdates]);
 
   useEffect(() => {
     return () => {
       revokeAllTrackedObjectUrls();
+      revokeAllTrackedMediaObjectUrls();
       // Clean up module-level bridge variables to prevent stale closures
       _runAgentFn = undefined;
       _runBatchGenerateFn = undefined;
       _updateAgentContentFn = undefined;
       _runVideoRetryFn = undefined;
       _videoUpscaleFn = undefined;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      !shouldExposeStarCanvasE2EBridge({
+        nodeEnv: process.env.NODE_ENV,
+        hasWindow: typeof window !== "undefined",
+        webdriver: typeof navigator !== "undefined" ? navigator.webdriver : false,
+      })
+    ) {
+      return;
+    }
+
+    const e2eWindow = window as Window & {
+      __starcanvasE2E?: {
+        getAssets: () => AssetItem[];
+        getEdges: () => Edge[];
+        getNodeData: (nodeId: string) => CanvasNodeData | undefined;
+        getNodes: () => Node<CanvasNodeData>[];
+        setBibleCharactersForTest: (characters: CharacterBibleData[]) => void;
+      };
+    };
+
+    const bridge = {
+      getAssets: () => useCanvasStore.getState().assetLibrary.assets,
+      getEdges: () => edgesRef.current,
+      getNodeData: (nodeId: string) =>
+        nodesRef.current.find((node) => node.id === nodeId)?.data,
+      getNodes: () => nodesRef.current,
+      setBibleCharactersForTest: (characters: CharacterBibleData[]) => {
+        useCanvasStore.setState({ bibleCharacters: characters });
+      },
+    };
+    e2eWindow.__starcanvasE2E = bridge;
+
+    return () => {
+      if (e2eWindow.__starcanvasE2E === bridge) {
+        delete e2eWindow.__starcanvasE2E;
+      }
     };
   }, []);
 
@@ -820,12 +1138,13 @@ function StarCanvasInner({
   // ========================================================================
   // LOCAL STATE
   // ========================================================================
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showWorkspaceHistory, setShowWorkspaceHistory] = useState(false);
   const [showTemplatesDialog, setShowTemplatesDialog] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
+  const [isMiniMapVisible, setIsMiniMapVisible] = useState(true);
   // Quick Add Node Search (ComfyUI 风格双击画布快速添加)
   const [quickAddState, setQuickAddState] = useState<{
     open: boolean;
@@ -839,7 +1158,6 @@ function StarCanvasInner({
   const [showAddNodePanel, setShowAddNodePanel] = useState(false);
   const [showNodeHistory, setShowNodeHistory] = useState(false);
   const [showScriptImportPanel, setShowScriptImportPanel] = useState(false);
-  const [showVideoRemixPanel, setShowVideoRemixPanel] = useState(false);
   const [showProjectBiblePanel, setShowProjectBiblePanel] = useState(false);
   const [posterEditorImage, setPosterEditorImage] = useState<string | null>(null);
   const [showCharacterBiblePanel, setShowCharacterBiblePanel] = useState(false);
@@ -850,13 +1168,13 @@ function StarCanvasInner({
   const [showSceneBiblePanel, setShowSceneBiblePanel] = useState(false);
   const [showStyleBiblePanel, setShowStyleBiblePanel] = useState(false);
   const [showEmotionCurve, setShowEmotionCurve] = useState(false);
-  const [showCharacterLibrary, setShowCharacterLibrary] = useState(false);
   const [showChainGenerate, setShowChainGenerate] = useState(false);
   const [showParamControl, setShowParamControl] = useState(false);
   const [showShotEditor, setShowShotEditor] = useState(false);
   const [showBgRemover, setShowBgRemover] = useState(false);
   const [showBgm, setShowBgm] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showIssueCenter, setShowIssueCenter] = useState(false);
   const [showCinemaLab, setShowCinemaLab] = useState(false);
   const [showTransitionPicker, setShowTransitionPicker] = useState(false);
   const [transitionState, setTransitionState] = useState<{ effect: string; duration: number }>({
@@ -872,8 +1190,24 @@ function StarCanvasInner({
   const [showPanorama, setShowPanorama] = useState(false);
   const [showCrewAgentPanel, setShowCrewAgentPanel] = useState(false);
   const [showReverseStoryboard, setShowReverseStoryboard] = useState(false);
+  const [showVideoRemix, setShowVideoRemix] = useState(false);
+  const [showReferenceVideoEntry, setShowReferenceVideoEntry] = useState(false);
   const [showShotLibrary, setShowShotLibrary] = useState(false);
   const [showAIScript, setShowAIScript] = useState(false);
+
+  const openReferenceVideoEntry = useCallback(() => {
+    setShowReferenceVideoEntry(true)
+  }, [])
+
+  const handleChooseReferenceStoryboard = useCallback(() => {
+    setShowReferenceVideoEntry(false)
+    setShowReverseStoryboard(true)
+  }, [])
+
+  const handleChooseReferenceStructure = useCallback(() => {
+    setShowReferenceVideoEntry(false)
+    setShowVideoRemix(true)
+  }, [])
 
   // ── Onboarding ──────────────────────────────────────
   const onboarding = useOnboarding();
@@ -907,11 +1241,19 @@ function StarCanvasInner({
     }),
     [onboarding],
   )
+
+  useEffect(() => {
+    if (!isCanvasRestored) return
+    if (nodes.length !== 0) return
+    onboarding.close()
+    setShowTimeline(false)
+  }, [isCanvasRestored, nodes.length, onboarding])
   const [showExportPreflight, setShowExportPreflight] = useState(false);
   const [exportPreflightType, setExportPreflightType] = useState<"json" | "zip">("json");
   const [showFileUpload, setShowFileUpload] = useState(false);
   const [showProductionQueue, setShowProductionQueue] = useState(false);
   const [showShotPlanning, setShowShotPlanning] = useState(false);
+  const [canvasNotice, setCanvasNotice] = useState<CanvasNotice | null>(null);
   const [historyNodeId, setHistoryNodeId] = useState<string | null>(null);
   const [isComposingSelectedShots, setIsComposingSelectedShots] = useState(false);
   const [showStoryboardCompositeSettings, setShowStoryboardCompositeSettings] =
@@ -922,6 +1264,96 @@ function StarCanvasInner({
     useState<StoryboardCompositeSettings>(DEFAULT_STORYBOARD_COMPOSITE_SETTINGS);
   const [storyboardBatchJob, setStoryboardBatchJob] =
     useState<BatchGenerationJob | null>(null);
+
+  const showCanvasNotice = useCallback(
+    (kind: CanvasNoticeKind, title: string, description?: string) => {
+      setCanvasNotice({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        kind,
+        title,
+        description,
+      });
+    },
+    [],
+  );
+
+  const getRemixArtifacts = useCallback((nodeId: string) => {
+    const sourceNode = nodesRef.current.find((n) => n.id === nodeId);
+    const result = sourceNode?.data?.generationOutput?.result;
+    const videoName =
+      typeof sourceNode?.data?.title === "string"
+        ? sourceNode.data.title.replace(/^结构拆解：/, "").trim()
+        : "参考视频";
+
+    if (!sourceNode || sourceNode.data.nodeKind !== "remix-analysis" || !result?.template) {
+      showCanvasNotice("warning", "结构拆解结果不可用", "请先完成参考视频结构拆解，再派生下游节点。");
+      return null;
+    }
+
+    return createRemixAnalysisArtifacts({
+      sourceNode,
+      videoName,
+      result,
+      idFactory: generateId,
+    });
+  }, [showCanvasNotice]);
+
+  const handleCreatePromptFromRemix = useCallback((nodeId: string) => {
+    const artifacts = getRemixArtifacts(nodeId);
+    if (!artifacts) return;
+    applyNodeUpdates((nds) => [...nds, artifacts.promptNode]);
+    applyEdgeUpdates((eds) => [...eds, artifacts.promptEdge]);
+    showCanvasNotice("success", "已生成复刻提示词", "结构拆解已转成可继续编辑的提示词节点。");
+  }, [applyEdgeUpdates, applyNodeUpdates, getRemixArtifacts, showCanvasNotice]);
+
+  const handleCreateStoryboardFromRemix = useCallback((nodeId: string) => {
+    const artifacts = getRemixArtifacts(nodeId);
+    if (!artifacts) return;
+    applyNodeUpdates((nds) => [...nds, ...artifacts.storyboardNodes]);
+    applyEdgeUpdates((eds) => [...eds, ...artifacts.storyboardEdges]);
+    showCanvasNotice("success", "已拆成参考分镜", `已生成 ${artifacts.storyboardNodes.length} 个参考分镜节点。`);
+  }, [applyEdgeUpdates, applyNodeUpdates, getRemixArtifacts, showCanvasNotice]);
+
+  const handleQueueProductionFromRemix = useCallback((nodeId: string) => {
+    const artifacts = getRemixArtifacts(nodeId);
+    if (!artifacts?.productionQueue) return;
+    const existingStoryboardShotIds = new Set(
+      nodesRef.current
+        .map((node) => (typeof node.data?.shot?.id === "string" ? node.data.shot.id : ""))
+        .filter(Boolean),
+    );
+    const storyboardNodesToInsert = artifacts.storyboardNodes.filter((node) => {
+      const shotId = typeof node.data?.shot?.id === "string" ? node.data.shot.id : "";
+      return !shotId || !existingStoryboardShotIds.has(shotId);
+    });
+    if (storyboardNodesToInsert.length > 0) {
+      const insertedNodeIds = new Set(storyboardNodesToInsert.map((node) => node.id));
+      const nextNodes = [...nodesRef.current, ...storyboardNodesToInsert];
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
+      setEdges((eds) => {
+        const nextEdges = [
+          ...eds,
+          ...artifacts.storyboardEdges.filter((edge) => insertedNodeIds.has(edge.target)),
+        ];
+        edgesRef.current = nextEdges;
+        return nextEdges;
+      });
+    }
+    useShotPlanningRunQueueStore.getState().setQueue(artifacts.productionQueue);
+    setShowProductionQueue(true);
+    showCanvasNotice("success", "已生成生产队列", `已创建 ${artifacts.productionQueue.tasks.length} 个待生产任务。`);
+  }, [getRemixArtifacts, setEdges, setNodes, showCanvasNotice]);
+
+  useEffect(() => {
+    if (!canvasNotice) return;
+    const timer = window.setTimeout(() => {
+      setCanvasNotice((current) =>
+        current?.id === canvasNotice.id ? null : current,
+      );
+    }, 3600);
+    return () => window.clearTimeout(timer);
+  }, [canvasNotice]);
 
   const handleDismissStoryboardBatchJob = useCallback(() => {
     setStoryboardBatchJob(null);
@@ -951,9 +1383,18 @@ function StarCanvasInner({
   );
 
   const characterLibraryItems = useMemo(
-    () => collectCharacterAssetLibraryItemsFromShots(
-      nodes.map((node) => node.data.shot).filter((shot): shot is NonNullable<CanvasNodeData["shot"]> => Boolean(shot)),
-    ),
+    () => {
+      const shotDerivedItems = collectCharacterAssetLibraryItemsFromShots(
+        nodes.map((node) => node.data.shot).filter((shot): shot is NonNullable<CanvasNodeData["shot"]> => Boolean(shot)),
+      );
+      const seededItems = collectCharacterAssetLibraryItemsFromSeeds(
+        nodes.flatMap((node) => {
+          const seeds = node.data.characterAssetSeeds;
+          return Array.isArray(seeds) ? seeds : [];
+        }),
+      );
+      return mergeCharacterAssetLibraryItems(shotDerivedItems, seededItems);
+    },
     [nodes],
   );
 
@@ -1135,12 +1576,28 @@ function StarCanvasInner({
     return edges.filter((e) => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target));
   }, [edges, nodes, timelineCurrentTime, showTimeline]);
 
+  const canvasProductionBriefs = useMemo(() => buildShotProductionBriefs(nodes), [nodes]);
+
+  const canvasProductionRunManifest = useMemo(() => {
+    if (canvasProductionBriefs.length === 0) return null;
+
+    return buildProjectPackageManifest({
+      shots: canvasProductionBriefs.map((brief) => ({
+        id: brief.shotId,
+        order: brief.order,
+        title: brief.title,
+      })),
+      productionBriefs: canvasProductionBriefs,
+      videoProvider: {
+        providerId: process.env.NEXT_PUBLIC_VIDEO_BACKEND || "vidu",
+      },
+    });
+  }, [canvasProductionBriefs]);
+
   const productionRunQueue = useMemo(() => {
-    const briefs = buildShotProductionBriefs(nodes);
-    if (briefs.length === 0) return null;
-    const manifest = buildProjectPackageManifest({ shots: briefs.map((b) => ({ id: b.shotId, order: b.order, title: b.title })), productionBriefs: briefs });
-    return buildProductionRunQueue(manifest, { jobId: "canvas-production-run" });
-  }, [nodes]);
+    if (!canvasProductionRunManifest) return null;
+    return buildProductionRunQueue(canvasProductionRunManifest, { jobId: "canvas-production-run" });
+  }, [canvasProductionRunManifest]);
 
   // Bridged queue from Shot Planning Board
   const planningRunQueue = useShotPlanningRunQueueStore((s) => s.queue);
@@ -1156,6 +1613,13 @@ function StarCanvasInner({
   const activeProductionQueue = useMemo(
     () => planningRunQueue ?? productionRunQueue,
     [planningRunQueue, productionRunQueue],
+  );
+  const canvasIssues = useMemo(
+    () => buildCanvasIssues({
+      productionPreflight: activeProductionQueue?.productionPreflight,
+      queue: activeProductionQueue,
+    }),
+    [activeProductionQueue],
   );
 
   // Derive project title from storyboard content node
@@ -1174,14 +1638,35 @@ function StarCanvasInner({
     () =>
       nodes
         .filter((n) => n.type === "shot" || n.type === "storyboardImage" || n.type === "storyboardText")
-        .map((n) => ({
-          id: n.id,
-          title: (n.data as Record<string, unknown>)?.title as string | undefined,
-          description: (n.data as Record<string, unknown>)?.description as string | undefined,
-          shotPresetId: (n.data as Record<string, unknown>)?.shotPresetId as string | undefined,
-          stylePresetId: (n.data as Record<string, unknown>)?.stylePresetId as string | undefined,
-          durationSec: (n.data as Record<string, unknown>)?.duration as number | undefined,
-        })),
+        .map((n) => {
+          const data = (n.data ?? {}) as CanvasNodeData & Record<string, unknown>;
+          const shot = data.shot;
+          const sourceMeta = readPlanningRecord(shot?.sourceMeta) ?? readPlanningRecord(data.sourceMeta);
+          const durationValue =
+            data.timelineDurationSeconds ??
+            data.duration ??
+            shot?.duration ??
+            data.totalDurationSeconds;
+          const timestampMs = readPlanningNumber(sourceMeta?.timestampMs);
+          const sourceTimeSec =
+            readPlanningNumber(sourceMeta?.timeSec) ??
+            (timestampMs != null ? timestampMs / 1000 : readPlanningNumber(data.timelineStartTimeSeconds));
+
+          return {
+            id: n.id,
+            title: readPlanningText(data.title) ?? readPlanningText(shot?.title),
+            description: readPlanningText(data.description) ?? readPlanningText(data.content) ?? readPlanningText(shot?.description),
+            shotPresetId: readPlanningText(data.shotPresetId),
+            stylePresetId: readPlanningText(data.stylePresetId),
+            durationSec: durationValue != null ? parseTimelineDurationSeconds(durationValue) : undefined,
+            sourceType: readPlanningText(shot?.sourceType) ?? readPlanningText(data.sourceType),
+            sourceTimeSec,
+            referenceImageUrl:
+              readPlanningText(shot?.referenceImageUrl) ??
+              readPlanningText(data.thumbnailUrl) ??
+              readPlanningText(data.imageUrl),
+          };
+        }),
     [nodes],
   );
 
@@ -1200,6 +1685,34 @@ function StarCanvasInner({
           throw new Error(`找不到 shotId=${task.shotId} 对应的画布节点`);
         }
 
+        const taskStartedAt = new Date().toISOString();
+        const recordProductionUsage = (params: {
+          provider: string;
+          model: string;
+          status: "success" | "failed";
+          error?: string;
+          imageSize?: string;
+          videoSeconds?: number;
+          videoResolution?: string;
+        }) => {
+          useAIUsageStore.getState().addUsageRecord(
+            buildProductionTaskUsageRecord({
+              task,
+              nodeId: shotNode.id,
+              runId: task.id,
+              provider: params.provider,
+              model: params.model,
+              startedAt: taskStartedAt,
+              finishedAt: new Date().toISOString(),
+              status: params.status,
+              error: params.error,
+              imageSize: params.imageSize,
+              videoSeconds: params.videoSeconds,
+              videoResolution: params.videoResolution,
+            }),
+          );
+        };
+
         switch (task.action) {
           case "generate-storyboard-image": {
             // 使用 shotNode.data.prompt 或 shot.visualPrompt 作为生成提示词
@@ -1212,7 +1725,7 @@ function StarCanvasInner({
             }
 
             // 标记 shotNode 为 generating
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) =>
                 n.id === shotNode.id
                   ? { ...n, data: { ...n.data, generationStatus: "generating" as const } }
@@ -1222,72 +1735,96 @@ function StarCanvasInner({
 
             try {
               const model = await getDefaultImageModel();
-              const result = await generateImageFromPrompt({
-                prompt,
-                model,
-                size: "1792x1024",
-              });
-
-              const imageNodeId = generateId();
-              const nodeWidth =
-                typeof shotNode.width === "number" ? shotNode.width : 320;
-
-              setNodes((nds) => [
-                ...nds.map((n) =>
-                  n.id === shotNode.id
-                    ? {
-                        ...n,
-                        data: {
-                          ...n.data,
-                          generationStatus: "succeeded" as const,
-                          imageUrl: result.imageUrl,
-                          generatedImageUrl: result.imageUrl,
-                          errorMessage: undefined,
-                        },
-                      }
-                    : n,
-                ),
-                {
-                  id: imageNodeId,
-                  type: "image",
-                  position: {
-                    x: (shotNode.position.x ?? 0) + nodeWidth + 80,
-                    y: shotNode.position.y ?? 0,
-                  },
-                  data: {
-                    title: shotNode.data.title
-                      ? `${shotNode.data.title} 图`
-                      : "分镜图",
-                    imageUrl: result.imageUrl,
-                    assetId: result.assetId,
-                    nodeKind: "ai-generated-image",
-                    sourceShotId: shotNode.id,
-                    sourcePromptId: shotNode.id,
-                    sourceType: "shot",
+              const requestId = `production-queue-image-${task.id}-${Date.now()}`;
+              const result = await retryWithBackoff(
+                async () => {
+                  if (signal.aborted) {
+                    throw new Error("生产任务已取消");
+                  }
+                  return generateImageFromPrompt({
                     prompt,
                     model,
-                    source: "generated",
-                    persistence: result.assetId ? "indexeddb" : undefined,
-                    displayWidth: 320,
-                    displayHeight: 180,
-                    createdAt: Date.now(),
-                  },
-                } as any,
-              ]);
-
-              setEdges((eds) => [
-                ...eds,
-                {
-                  id: `edge-gen-${shotNode.id}-${imageNodeId}`,
-                  source: shotNode.id,
-                  target: imageNodeId,
-                  type: "creative",
-                  animated: true,
-                  style: { stroke: "rgba(168, 85, 247, 0.3)", strokeWidth: 1.5 },
+                    size: "1792x1024",
+                    requestId,
+                  });
                 },
-              ]);
+                {
+                  maxRetries: 2,
+                  shouldRetry: (error) => shouldRetryProductionImageError(error, signal.aborted),
+                  onRetry: () => {
+                    applyNodeUpdates((nds) =>
+                      nds.map((n) =>
+                        n.id === shotNode.id
+                          ? { ...n, data: { ...n.data, generationStatus: "retrying" as const } }
+                          : n,
+                      ),
+                    );
+                  },
+                },
+              );
+
+              const imageNodeId = generateId();
+              const generatedAt = new Date().toISOString();
+              let generatedImageNode: Node<CanvasNodeData> | null = null;
+
+              applyNodeUpdates((nds) => {
+                const { shotNode: updatedShotNode, imageNode } = createShotImageArtifacts({
+                  shotNode,
+                  existingNodes: nds as Node<CanvasNodeData>[],
+                  existingEdges: edgesRef.current,
+                  generationResult: {
+                    imageUrl: result.imageUrl,
+                    assetId: result.assetId,
+                    model,
+                    generationId: result.requestId,
+                    enhancedPrompt: result.prompt,
+                  },
+                  prompt,
+                  generatedAt,
+                  generationFinishedAt: Date.now(),
+                  imageNodeId,
+                });
+                const updated = [
+                  ...nds.map((n) => (n.id === shotNode.id ? updatedShotNode : n)),
+                  imageNode,
+                ];
+                generatedImageNode = imageNode;
+                return updated;
+              });
+
+              applyEdgeUpdates((eds) => {
+                const { edge } = createShotImageNode({
+                  shotNode,
+                  existingNodes: nodesRef.current as Node<CanvasNodeData>[],
+                  existingEdges: eds,
+                  generationResult: {
+                    imageUrl: result.imageUrl,
+                    assetId: result.assetId,
+                    model,
+                    generationId: result.requestId,
+                    enhancedPrompt: result.prompt,
+                  },
+                  prompt,
+                  generatedAt,
+                  imageNodeId,
+                });
+                const updated = [
+                  ...eds,
+                  edge,
+                ];
+                return updated;
+              });
+              if (generatedImageNode) {
+                syncImageNodeToAssetLibrary(generatedImageNode);
+              }
+              recordProductionUsage({
+                provider: "copse",
+                model,
+                status: "success",
+                imageSize: "1792x1024",
+              });
             } catch (err: any) {
-              setNodes((nds) =>
+              applyNodeUpdates((nds) =>
                 nds.map((n) =>
                   n.id === shotNode.id
                     ? {
@@ -1301,6 +1838,252 @@ function StarCanvasInner({
                     : n,
                 ),
               );
+              recordProductionUsage({
+                provider: "copse",
+                model: "gpt-image-2",
+                status: "failed",
+                error: err?.message || "分镜图生成失败",
+                imageSize: "1792x1024",
+              });
+              throw err;
+            }
+            break;
+          }
+
+          case "generate-video-clip": {
+            const selected = await resolveProviderReadableVideoSourceImage(shotNode.data, {
+              bridgeLocalAssetToProviderUrl: async ({ assetId, imageUrl }) => {
+                return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" })
+              },
+            });
+            const imageUrl = selected.url?.trim() || "";
+            if (!imageUrl) {
+              throw new Error(
+                selected.blockedBlobUrl
+                  ? "首帧图只有本地预览地址，且未找到可桥接的原始图片资产。请重新上传该图片，或先生成分镜图后再试。"
+                  : "缺少可用于视频生成的首帧图，请先生成分镜图",
+              );
+            }
+
+            const characterReferences = await resolveProviderReadableCharacterReferenceImages(
+              shotNode.data.shot?.characterIdentities,
+              {
+                bridgeLocalAssetToProviderUrl: async ({ assetId, imageUrl }) => {
+                  return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" });
+                },
+              },
+            );
+            const videoReferenceWarning = describeVideoReferenceAvailability(characterReferences);
+            const videoReferenceAudit = {
+              mode: characterReferences.urls.length > 0 ? "r2v" as const : "i2v" as const,
+              configuredCount: characterReferences.candidateCount,
+              usedCount: characterReferences.urls.length,
+              skippedCount: characterReferences.unavailableReferenceCount,
+              reason: videoReferenceWarning,
+            };
+            const useMockVideo = readUseMockPreference();
+            if (!useMockVideo && videoReferenceWarning && characterReferences.urls.length === 0) {
+              applyNodeUpdates((nds) =>
+                nds.map((n) =>
+                  n.id === shotNode.id && n.data.shot
+                    ? {
+                        ...n,
+                        data: {
+                          ...n.data,
+                          shot: {
+                            ...n.data.shot,
+                            videoReferenceWarning,
+                            videoReferenceAudit,
+                          },
+                        },
+                      }
+                    : n,
+                ),
+              );
+              throw new Error(videoReferenceWarning);
+            }
+            const sourceMotionPrompt =
+              shotNode.data.shot?.visualPrompt?.trim() ||
+              shotNode.data.prompt?.trim() ||
+              shotNode.data.shot?.description?.trim() ||
+              "cinematic shot, subtle camera motion";
+            const rawDuration = shotNode.data.shot?.duration;
+            const durationSeconds =
+              parseDurationToSeconds(rawDuration) ??
+              (typeof rawDuration === "number" ? rawDuration : 5);
+            const motionPrompt = buildVideoPromptDirection({
+              action: shotNode.data.shot?.description?.trim() || sourceMotionPrompt,
+              shotType: shotNode.data.shot?.shotType,
+              cameraMovement: shotNode.data.shot?.cameraMovement,
+              hasReferenceFrame: true,
+            }).prompt;
+            const backend = useMockVideo
+              ? "mock"
+              : (process.env.NEXT_PUBLIC_VIDEO_BACKEND as VideoGenBackend | undefined);
+
+            applyNodeUpdates((nds) =>
+              nds.map((n) =>
+                n.id === shotNode.id
+                  ? {
+                      ...n,
+                      data: {
+                        ...n.data,
+                        generationStatus: "generating" as const,
+                        shot: n.data.shot
+                          ? { ...n.data.shot, videoReferenceWarning, videoReferenceAudit }
+                          : n.data.shot,
+                      },
+                    }
+                  : n,
+              ),
+            );
+
+            try {
+              let productionRunId: string | undefined;
+              let durableVideoAssetId: string | undefined;
+              const productionSourceAssetId =
+                shotNode.data.shot?.generatedImageAssetId ||
+                shotNode.data.assetId ||
+                shotNode.data.sourceImageAssetId;
+              const result =
+                !useMockVideo && projectId && productionSourceAssetId
+                  ? await (async () => {
+                      const run = await createVideoProductionRun({
+                        projectId,
+                        shotId: shotNode.id,
+                        sourceAssetId: productionSourceAssetId,
+                        prompt: motionPrompt,
+                        durationSeconds,
+                        referenceAssetIds: characterReferences.urls,
+                        idempotencyKey: `production-queue-video-${task.id}`,
+                      });
+                      productionRunId = run.id;
+                      applyNodeUpdates((nds) =>
+                        nds.map((n) =>
+                          n.id === shotNode.id
+                            ? {
+                                ...n,
+                                data: {
+                                  ...n.data,
+                                  productionRunId: run.id,
+                                  generationStatus: "generating" as const,
+                                },
+                              }
+                            : n,
+                        ),
+                      );
+                      const completed = await waitForCompletedProductionRun(run.id);
+                      durableVideoAssetId = completed.outputAsset?.id;
+                      return {
+                        videoUrl: completed.outputAsset?.url || "",
+                        durationSeconds,
+                        backend: "vidu" as const,
+                        assetId: completed.outputAsset?.id,
+                        persistence: "remote" as const,
+                        metadata: { modelVersion: "production-run", taskId: run.id },
+                      };
+                    })()
+                  : await generateVideoFromImage(
+                      buildVideoGenerationInput({
+                        imageUrl,
+                        requestId: `production-queue-video-${task.id}`,
+                        referenceImageUrls: characterReferences.urls,
+                        motionPrompt,
+                        durationSeconds,
+                        backend,
+                        useMock: useMockVideo,
+                      }),
+                    );
+              const nodePatch = videoResultToNodeData(result);
+              const videoNodeId = generateId();
+              const nodeWidth =
+                typeof shotNode.width === "number" ? shotNode.width : 320;
+
+              applyNodeUpdates((nds) => {
+                const updated = [
+                  ...nds.map((n) =>
+                    n.id === shotNode.id
+                      ? {
+                          ...n,
+                          data: {
+                          ...n.data,
+                          generationStatus: "succeeded" as const,
+                          videoUrl: result.videoUrl,
+                          productionRunId,
+                          videoAssetId: durableVideoAssetId,
+                          errorMessage: undefined,
+                        },
+                        }
+                      : n,
+                  ),
+                  {
+                    id: videoNodeId,
+                    type: "video",
+                    position: {
+                      x: (shotNode.position.x ?? 0) + nodeWidth + 430,
+                      y: shotNode.position.y ?? 0,
+                    },
+                    data: {
+                      title: shotNode.data.title
+                        ? `${shotNode.data.title} 视频`
+                        : "视频",
+                      ...nodePatch,
+                      videoUrl: result.videoUrl,
+                      nodeKind: "video-result",
+                      sourceShotId: shotNode.id,
+                      sourceType: "shot",
+                      prompt: motionPrompt,
+                      createdAt: Date.now(),
+                    },
+                  } as any,
+                ];
+                return updated;
+              });
+
+              applyEdgeUpdates((eds) => {
+                const updated = [
+                  ...eds,
+                  {
+                    id: `edge-video-${shotNode.id}-${videoNodeId}`,
+                    source: shotNode.id,
+                    target: videoNodeId,
+                    type: "creative",
+                    animated: true,
+                    style: { stroke: "rgba(14, 165, 233, 0.35)", strokeWidth: 1.5 },
+                  },
+                ];
+                return updated;
+              });
+              recordProductionUsage({
+                provider: result.backend === "mock" ? "mock" : result.backend,
+                model: result.metadata?.modelVersion || result.backend,
+                status: "success",
+                videoSeconds: result.durationSeconds,
+                videoResolution: "720p",
+              });
+            } catch (err: any) {
+              applyNodeUpdates((nds) =>
+                nds.map((n) =>
+                  n.id === shotNode.id
+                    ? {
+                        ...n,
+                        data: {
+                          ...n.data,
+                          generationStatus: "failed" as const,
+                          errorMessage: err?.message || "视频生成失败",
+                        },
+                      }
+                    : n,
+                ),
+              );
+              recordProductionUsage({
+                provider: backend || "vidu",
+                model: backend || "vidu",
+                status: "failed",
+                error: err?.message || "视频生成失败",
+                videoSeconds: durationSeconds,
+                videoResolution: "720p",
+              });
               throw err;
             }
             break;
@@ -1317,11 +2100,19 @@ function StarCanvasInner({
               mode: "auto" as const,
               text: "",
             };
+            const voiceConfigWithBackend = voiceConfig as typeof voiceConfig & {
+              backend?: "kokoro" | "voxcpm" | "mock";
+            };
+            const selectedTtsBackend = voiceConfigWithBackend.backend ?? (readUseMockPreference() ? "mock" : "kokoro");
 
             try {
+              const { generateTtsAudio, persistTtsAudio } = await import("./utils/ttsService");
               const ttsResult = await generateTtsAudio({
                 text: dialogue,
-                voiceConfig,
+                voiceConfig: {
+                  ...voiceConfig,
+                  backend: selectedTtsBackend,
+                },
               });
               const persistedAudio = await persistTtsAudio(ttsResult.audioBlob, {
                 fileName: `${shotNode.data.title || "shot"}-voice.wav`,
@@ -1330,8 +2121,15 @@ function StarCanvasInner({
               const audioNodeId = generateId();
               const nodeWidth =
                 typeof shotNode.width === "number" ? shotNode.width : 320;
+              const sourceTimelineStart = resolveShotTimelineStart({
+                explicitTimelineStart: shotNode.data.timelineStartTimeSeconds,
+                persistedSubtitleStart:
+                  shotNode.data.shot?.subtitleTimeline?.startTimeSeconds,
+                briefs: buildShotProductionBriefs(nodesRef.current),
+                shotId: shotNode.id,
+              });
 
-              setNodes((nds) => [
+              applyNodeUpdates((nds) => [
                 ...nds,
                 {
                   id: audioNodeId,
@@ -1347,6 +2145,8 @@ function StarCanvasInner({
                     audioUrl: persistedAudio.objectUrl,
                     audioAssetId: persistedAudio.assetId,
                     durationSeconds: Math.max(1, Math.round(dialogue.length * 0.18)),
+                    startOffsetSeconds: sourceTimelineStart,
+                    timelineStartTimeSeconds: sourceTimelineStart,
                     nodeKind: "tts-audio",
                     sourceShotId: shotNode.id,
                     sourceType: "shot",
@@ -1357,7 +2157,7 @@ function StarCanvasInner({
                 } as any,
               ]);
 
-              setEdges((eds) => [
+              applyEdgeUpdates((eds) => [
                 ...eds,
                 {
                   id: `edge-tts-${shotNode.id}-${audioNodeId}`,
@@ -1368,7 +2168,18 @@ function StarCanvasInner({
                   style: { stroke: "rgba(34, 197, 94, 0.3)", strokeWidth: 1.5 },
                 },
               ]);
+              recordProductionUsage({
+                provider: selectedTtsBackend,
+                model: selectedTtsBackend === "mock" ? "mock-tts-1.0" : selectedTtsBackend,
+                status: "success",
+              });
             } catch (err: any) {
+              recordProductionUsage({
+                provider: selectedTtsBackend,
+                model: selectedTtsBackend === "mock" ? "mock-tts-1.0" : selectedTtsBackend,
+                status: "failed",
+                error: err?.message || "配音生成失败",
+              });
               throw new Error(`配音生成失败: ${err?.message || "未知错误"}`);
             }
             break;
@@ -1417,7 +2228,7 @@ function StarCanvasInner({
               ),
             ].join("\n");
 
-            setNodes((nds) => [
+            applyNodeUpdates((nds) => [
               ...nds,
               {
                 id: subtitleNodeId,
@@ -1430,6 +2241,7 @@ function StarCanvasInner({
                   title: shotNode.data.title
                     ? `${shotNode.data.title} 字幕`
                     : "字幕",
+                  content: subtitleText,
                   text: subtitleText,
                   nodeKind: "subtitle-srt",
                   sourceShotId: shotNode.id,
@@ -1443,7 +2255,7 @@ function StarCanvasInner({
               } as any,
             ]);
 
-            setEdges((eds) => [
+            applyEdgeUpdates((eds) => [
               ...eds,
               {
                 id: `edge-sub-${shotNode.id}-${subtitleNodeId}`,
@@ -1537,7 +2349,7 @@ function StarCanvasInner({
               Infinity,
             );
 
-            setNodes((nds) => [
+            applyNodeUpdates((nds) => [
               ...nds,
               {
                 id: reportNodeId,
@@ -1576,7 +2388,7 @@ function StarCanvasInner({
             }));
 
             if (reportEdges.length > 0) {
-              setEdges((eds) => [...eds, ...reportEdges]);
+              applyEdgeUpdates((eds) => [...eds, ...reportEdges]);
             }
             break;
           }
@@ -1585,7 +2397,7 @@ function StarCanvasInner({
             throw new Error(`未知的生产任务动作: ${(task as any).action}`);
         }
       },
-      [setNodes, setEdges],
+      [applyNodeUpdates, applyEdgeUpdates, syncImageNodeToAssetLibrary],
     ),
     onTaskCompleted: useCallback(
       (taskId: string) => {
@@ -1601,14 +2413,56 @@ function StarCanvasInner({
       (taskId: string, error: Error) => {
         const store = useShotPlanningRunQueueStore.getState();
         if (store.queue) {
-          store.markTaskFailed(taskId, error.message);
+          store.markTaskFailed(
+            taskId,
+            isUnknownImageResultError(error) ? buildUnknownImageResultMessage(error) : error.message,
+          );
+        }
+      },
+      [],
+    ),
+    onTaskSkipped: useCallback(
+      (taskId: string, reason?: string) => {
+        const store = useShotPlanningRunQueueStore.getState();
+        if (store.queue) {
+          store.skipTask(taskId, reason);
         }
       },
       [],
     ),
   });
 
-  const handleApplyCharacterAssetPatch = useCallback((assetKey: string, patch: CharacterAssetLibraryPatch) => {
+  const persistCharacterViewPatch = useCallback(async (patch: CharacterAssetLibraryPatch) => {
+    const fields = [
+      { urlKey: "frontViewUrl", assetKey: "frontViewAssetId", fileName: "character-front-view.png" },
+      { urlKey: "sideViewUrl", assetKey: "sideViewAssetId", fileName: "character-side-view.png" },
+      { urlKey: "backViewUrl", assetKey: "backViewAssetId", fileName: "character-back-view.png" },
+    ] as const;
+    const nextPatch: CharacterAssetLibraryPatch = { ...patch };
+
+    for (const field of fields) {
+      const imageUrl = nextPatch[field.urlKey];
+      if (
+        typeof imageUrl !== "string" ||
+        !imageUrl.startsWith("data:image") ||
+        typeof nextPatch[field.assetKey] === "string"
+      ) {
+        continue;
+      }
+      try {
+        const persisted = await persistImageDataUrl(imageUrl, { fileName: field.fileName });
+        nextPatch[field.urlKey] = persisted.objectUrl;
+        nextPatch[field.assetKey] = persisted.assetId;
+      } catch (error) {
+        console.error("[CharacterView] Failed to persist generated view", error);
+      }
+    }
+
+    return nextPatch;
+  }, []);
+
+  const handleApplyCharacterAssetPatch = useCallback(async (assetKey: string, patch: CharacterAssetLibraryPatch) => {
+    const persistedPatch = await persistCharacterViewPatch(patch);
     pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "bible-patch");
     setNodes((nds) => {
       const shotNodeIndexes: number[] = [];
@@ -1617,7 +2471,7 @@ function StarCanvasInner({
         shotNodeIndexes.push(index);
         return [node.data.shot];
       });
-      const syncedShots = applyCharacterAssetLibraryPatchToShots(shots, assetKey, patch);
+      const syncedShots = applyCharacterAssetLibraryPatchToShots(shots, assetKey, persistedPatch);
       let shotIndex = 0;
       const updated = nds.map((node, index) => {
         if (!shotNodeIndexes.includes(index)) return node;
@@ -1635,7 +2489,7 @@ function StarCanvasInner({
       nodesRef.current = updated;
       return updated;
     });
-  }, [setNodes]);
+  }, [persistCharacterViewPatch, setNodes]);
 
   const handleApplySceneBiblePatch = useCallback((sceneId: string, patch: ProjectSceneBiblePatch) => {
     pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "bible-patch");
@@ -2451,6 +3305,7 @@ function StarCanvasInner({
           edgesRef.current = nextEdges;
           return nextEdges;
         });
+        syncImageNodeToAssetLibrary(imageNode);
         addWorkspaceHistoryEvent({
           id: generateId(),
           type: "image-generated",
@@ -2540,7 +3395,7 @@ function StarCanvasInner({
         }
       }
     },
-    [setNodes, setEdges, addWorkspaceHistoryEvent],
+    [setNodes, setEdges, addWorkspaceHistoryEvent, syncImageNodeToAssetLibrary],
   );
 
   const finalizeStoryboardResult = useCallback(
@@ -3125,8 +3980,8 @@ function StarCanvasInner({
           }
           return node;
         });
-        setNodes(() => updatedNodes);
         nodesRef.current = updatedNodes;
+        setNodes(() => updatedNodes);
       }
       if (shotNodes.length === 0) {
         updateSourceRunMeta({
@@ -3281,11 +4136,10 @@ function StarCanvasInner({
             },
           };
 
-          setNodes((nds) => [...nds, newImageNode]);
-          nodesRef.current = [...nodesRef.current, newImageNode];
+          applyNodeUpdates((nds) => [...nds, newImageNode]);
 
           // 更新源节点记录输出
-          setNodes((nds) => {
+          applyNodeUpdates((nds) => {
             const updated = nds.map((node) =>
               node.id === nodeId
                 ? {
@@ -3300,13 +4154,12 @@ function StarCanvasInner({
                   }
                 : node,
             );
-            nodesRef.current = updated;
             return updated;
           });
 
           // 创建源→最终图的边
           const sourceToFinalEdgeId = `edge-${nodeId}-${imageNodeId}`;
-          setEdges((eds) => {
+          applyEdgeUpdates((eds) => {
             const filtered = eds.filter(
               (e) =>
                 e.id !== sourceToFinalEdgeId &&
@@ -3614,8 +4467,8 @@ function StarCanvasInner({
           height: 360,
           measured: { width: 360, height: 360 },
         };
-        setNodes((nds) => [...nds, newGridNode]);
-        setEdges((eds) => [
+        applyNodeUpdates((nds) => [...nds, newGridNode]);
+        applyEdgeUpdates((eds) => [
           ...eds,
           ...candidateShotNodes.map((shotNode) => ({
             hidden: !processVisible,
@@ -3707,8 +4560,6 @@ function StarCanvasInner({
       finalizeStoryboardResult,
       createStoryboardBatchJob,
       syncStoryboardBatchJobToSource,
-      buildStoryboardImagePrompt,
-      generateImageFromPrompt,
       setNodes,
       setEdges,
       addWorkspaceHistoryEvent,
@@ -4018,7 +4869,7 @@ function StarCanvasInner({
             _fallbackComposite: true,
           },
         };
-        setNodes((nds) => [...nds, fallbackNode]);
+        applyNodeUpdates((nds) => [...nds, fallbackNode]);
         console.warn(
           "[handleComposeSelectedShots] compose failed, fallback to shot image:",
           fallbackShot.id,
@@ -4026,7 +4877,7 @@ function StarCanvasInner({
         );
       } else {
         // 没有任何可用镜头图 → 标记 error
-        setNodes((nds) =>
+        applyNodeUpdates((nds) =>
           nds.map((node) =>
             shotNodeIds.includes(node.id) && node.data.shot
               ? {
@@ -4052,7 +4903,7 @@ function StarCanvasInner({
         );
       }
     } finally {
-      setNodes((nds) =>
+      applyNodeUpdates((nds) =>
         nds.map((node) => {
           if (!shotNodeIds.includes(node.id) || !node.data.shot) return node;
           if (
@@ -4088,14 +4939,13 @@ function StarCanvasInner({
     isComposingSelectedShots,
     storyboardCompositeSettings,
     getStoryboardCompositeImageSize,
-    setNodes,
-    setEdges,
+    applyEdgeUpdates,
+    applyNodeUpdates,
     addWorkspaceHistoryEvent,
   ]);
 
 
   const workflowRunner = useWorkflowRunner({
-    projectId,
     onRunEvent: useCallback((event: WorkflowRunEvent) => {
       // 新 run 开始时清空旧事件
       if (event.type === "run-started") {
@@ -4117,16 +4967,104 @@ function StarCanvasInner({
   _videoUpscaleFn = async (nodeId: string) => {
     const node = nodesRef.current.find((n) => n.id === nodeId);
     if (!node) return;
-    // Fire and forget — the upscale API will notify via node state updates
-    fetch("/api/ai/upscale", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        nodeId,
-        videoUrl: node.data.resultUrl,
+    const sourceUrl = node.data.imageUrl || node.data.resultUrl || node.data.assetUrl || node.data.thumbnailUrl;
+    if (!sourceUrl) {
+      setNodes((current) => current.map((item) => (
+        item.id === nodeId
+          ? {
+              ...item,
+              data: {
+                ...item.data,
+                runMeta: createFailedRunMeta({
+                  error: "HD 增强缺少图片输入，请先选择图片或抽帧结果。",
+                  message: "HD 增强缺少图片输入，请先选择图片或抽帧结果。",
+                }),
+              },
+            }
+          : item
+      )));
+      return;
+    }
+
+    setNodes((current) => current.map((item) => (
+      item.id === nodeId
+        ? {
+            ...item,
+            data: {
+              ...item.data,
+              runMeta: createRunningRunMeta({ source: "manual", message: "正在提交图片 HD 增强..." }),
+            },
+          }
+        : item
+    )));
+
+    try {
+      const result = await requestImageUpscale({
+        imageUrl: sourceUrl,
+        assetId: node.data.assetId ?? node.data.sourceImageAssetId,
         scale: 2,
-      }),
-    }).catch((err) => console.error("[upscale] API error:", err));
+      });
+
+      if (result.status === "not_ready") {
+        setNodes((current) => current.map((item) => (
+          item.id === nodeId
+            ? {
+                ...item,
+                data: {
+                  ...item.data,
+                  runMeta: createFailedRunMeta({
+                    error: result.message,
+                    message: result.message,
+                  }),
+                  generationOutput: {
+                    status: "not_ready",
+                    clientFallback: result.clientFallback,
+                    recommendedNextSteps: result.recommendedNextSteps,
+                  },
+                  summary: result.message,
+                },
+              }
+            : item
+        )));
+        return;
+      }
+
+      setNodes((current) => current.map((item) => (
+        item.id === nodeId
+          ? {
+              ...item,
+              data: {
+                ...item.data,
+                imageUrl: result.imageUrl,
+                resultUrl: result.imageUrl,
+                outputs: [{ label: "高清图片", type: "image", url: result.imageUrl }],
+                generationOutput: {
+                  status: "ready",
+                  imageUrl: result.imageUrl,
+                  sourceImageUrl: sourceUrl,
+                },
+                runMeta: createSucceededRunMeta({ message: result.message ?? "HD 增强完成" }),
+                summary: "HD 增强完成",
+              },
+            }
+          : item
+      )));
+    } catch (err: any) {
+      const message = err?.message || "HD 增强失败";
+      setNodes((current) => current.map((item) => (
+        item.id === nodeId
+          ? {
+              ...item,
+              data: {
+                ...item.data,
+                runMeta: createFailedRunMeta({ error: message, message }),
+                summary: message,
+              },
+            }
+          : item
+      )));
+      console.error("[upscale] API error:", err);
+    }
   };
 
   // Wire undo/redo for toolbar buttons
@@ -4134,10 +5072,10 @@ function StarCanvasInner({
     const entry = _undoStack.pop();
     if (entry) {
       _redoStack.push({ nodes: nodesRef.current, edges: edgesRef.current });
-      setNodes(entry.nodes);
-      setEdges(entry.edges);
       nodesRef.current = entry.nodes;
       edgesRef.current = entry.edges;
+      setNodes(entry.nodes);
+      setEdges(entry.edges);
       // Clear selection to avoid referencing a node that may no longer exist
       setSelectedNodeId(null);
       closeFloatingToolbar();
@@ -4147,10 +5085,10 @@ function StarCanvasInner({
     const entry = _redoStack.pop();
     if (entry) {
       _undoStack.push({ nodes: nodesRef.current, edges: edgesRef.current });
-      setNodes(entry.nodes);
-      setEdges(entry.edges);
       nodesRef.current = entry.nodes;
       edgesRef.current = entry.edges;
+      setNodes(entry.nodes);
+      setEdges(entry.edges);
       // Clear selection to avoid referencing a node that may no longer exist
       setSelectedNodeId(null);
       closeFloatingToolbar();
@@ -4280,8 +5218,11 @@ function StarCanvasInner({
         }
       }
 
-      // Run with concurrency pool (max 3 parallel)
-      await runWithConcurrency(validNodes, 3, generateSingleShot);
+      await runWithConcurrency(
+        validNodes,
+        SHOT_GENERATION_BATCH_CONCURRENCY,
+        generateSingleShot,
+      );
     },
     [setNodes, setEdges],
   );
@@ -4433,6 +5374,8 @@ function StarCanvasInner({
         );
         if (!ok) return;
       }
+      nodesRef.current = template.nodes;
+      edgesRef.current = template.edges;
       setNodes(template.nodes);
       setEdges(template.edges);
       setFitViewOnce(true);
@@ -4497,7 +5440,21 @@ function StarCanvasInner({
       const nodeId = (e as CustomEvent<{ nodeId: string }>).detail?.nodeId;
       if (nodeId) handleCreateStoryboardAssistantFromInspiration(nodeId);
     };
+    const handleCanvasNotice = (e: Event) => {
+      const detail = (e as CustomEvent<{
+        kind?: CanvasNoticeKind;
+        title?: string;
+        description?: string;
+      }>).detail;
+      if (!detail?.title) return;
+      showCanvasNotice(detail.kind ?? "info", detail.title, detail.description);
+    };
+    const handleOpenJianyingExport = () => {
+      setExportPreflightType("zip");
+      setShowExportPreflight(true);
+    };
     window.addEventListener("startrails-open-settings", handleOpenSettings);
+    window.addEventListener("starcanvas:open-jianying-export", handleOpenJianyingExport);
     window.addEventListener("startrails-run-node", handleRunNode);
     window.addEventListener("starcanvas:generate-shot", handleGenerateShot);
     window.addEventListener("starcanvas:generate-grid", handleGenerateGrid);
@@ -4515,11 +5472,13 @@ function StarCanvasInner({
       handleSettingsUpdated,
     );
     window.addEventListener("startrails-clear-pending", handleClearPending);
+    window.addEventListener("starcanvas:notice", handleCanvasNotice);
     return () => {
       window.removeEventListener(
         "startrails-open-settings",
         handleOpenSettings,
       );
+      window.removeEventListener("starcanvas:open-jianying-export", handleOpenJianyingExport);
       window.removeEventListener("startrails-run-node", handleRunNode);
       window.removeEventListener(
         "starcanvas:generate-shot",
@@ -4549,6 +5508,7 @@ function StarCanvasInner({
         "startrails-clear-pending",
         handleClearPending,
       );
+      window.removeEventListener("starcanvas:notice", handleCanvasNotice);
     };
   }, [
     workflowRunner,
@@ -4558,7 +5518,161 @@ function StarCanvasInner({
     handleSplitStoryboardNode,
     handleGenerateStoryboardImageFromSource,
     handleCreateStoryboardAssistantFromInspiration,
+    showCanvasNotice,
   ]);
+
+  const appendVideoAnalysisChains = useCallback(
+    (sourceNodes: Node<CanvasNodeData>[]) => {
+      const existingNodes = nodesRef.current;
+      const existingEdges = edgesRef.current;
+      const existingNodeById = new Map(existingNodes.map((node) => [node.id, node]));
+      const sourceVideoNodes = sourceNodes.filter((node) => {
+        if (node.data?.nodeKind !== "uploaded-video") return false;
+        return !existingEdges.some((edge) => {
+          if (edge.source !== node.id) return false;
+          const target = existingNodeById.get(edge.target);
+          return target?.data?.nodeKind === "video-sample-frames";
+        });
+      });
+      const skippedCount =
+        sourceNodes.filter((node) => node.data?.nodeKind === "uploaded-video").length -
+        sourceVideoNodes.length;
+
+      if (sourceVideoNodes.length === 0) {
+        if (skippedCount > 0) {
+          addWorkspaceHistoryEvent({
+            id: generateId(),
+            type: "video-workflow-created",
+            title: "视频分析链路已存在",
+            summary: "该视频素材已经连接抽帧与分析节点。",
+            nodeId: sourceNodes[0]?.id,
+            createdAt: new Date().toISOString(),
+          });
+        }
+        return;
+      }
+
+      const chainNodes: Node<CanvasNodeData>[] = [];
+      const chainEdges: Edge[] = [];
+      for (const sourceNode of sourceVideoNodes) {
+        const chain = buildVideoWorkflowChain({
+          sourceNode,
+          generateId,
+          edgeStyle: { stroke: DESIGN_TOKENS.nodeEdge, strokeWidth: 2 },
+        });
+        chainNodes.push(...chain.nodes);
+        chainEdges.push(...chain.edges);
+      }
+
+      setNodes((nds) => {
+        const existingIds = new Set(nds.map((node) => node.id));
+        const nodesToAdd = chainNodes.filter((node) => !existingIds.has(node.id));
+        const nextNodes = [...nds, ...nodesToAdd];
+        nodesRef.current = nextNodes;
+        return nextNodes;
+      });
+      setEdges((eds) => {
+        const existingPairs = new Set(
+          eds.map((edge) => `${edge.source}->${edge.target}`),
+        );
+        const edgesToAdd = chainEdges.filter(
+          (edge) => !existingPairs.has(`${edge.source}->${edge.target}`),
+        );
+        const nextEdges = [...eds, ...edgesToAdd];
+        edgesRef.current = nextEdges;
+        return nextEdges;
+      });
+
+      if (sourceVideoNodes[0]) {
+        setSelectedNodeId(sourceVideoNodes[0].id);
+      }
+      addWorkspaceHistoryEvent({
+        id: generateId(),
+        type: "video-workflow-created",
+        title:
+          sourceVideoNodes.length === 1
+            ? `创建视频分析链路：${sourceVideoNodes[0].data.title || sourceVideoNodes[0].data.fileName || "视频素材"}`
+            : `创建 ${sourceVideoNodes.length} 条视频分析链路`,
+        summary: "已连接上传视频、真实抽帧和本地视频分析节点。",
+        nodeId: sourceVideoNodes[0]?.id,
+        relatedNodeIds: [
+          ...sourceVideoNodes.map((node) => node.id),
+          ...chainNodes.map((node) => node.id),
+        ],
+        createdAt: new Date().toISOString(),
+      });
+    },
+    [addWorkspaceHistoryEvent, setEdges, setNodes, setSelectedNodeId],
+  );
+
+  const handleImportProjectPackage = useCallback(
+    async (projectPackage: ProjectPackageCanvasImport) => {
+      if (nodesRef.current.length > 0 || edgesRef.current.length > 0) {
+        const ok = window.confirm("导入项目包将替换当前画布内容。是否继续？");
+        if (!ok) return;
+      }
+
+      await Promise.all(
+        projectPackage.assets.map(async (asset) => {
+          const blob = dataUrlToBlob(asset.dataUrl);
+          if (blob.type.startsWith("image/")) {
+            await saveLocalImageAsset({
+              id: asset.id,
+              blob,
+              mimeType: blob.type,
+              size: blob.size,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            });
+            return;
+          }
+          await saveLocalMediaAsset({
+            id: asset.id,
+            blob,
+            kind: blob.type.startsWith("audio/") ? "audio" : "video",
+            mimeType: blob.type || "application/octet-stream",
+            size: blob.size,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+        }),
+      );
+
+      const hydratedNodes = await hydrateCanvasMediaNodes(projectPackage.nodes);
+
+      nodesRef.current = hydratedNodes;
+      edgesRef.current = projectPackage.edges;
+      setNodes(hydratedNodes);
+      setEdges(projectPackage.edges);
+      setSelectedNodeId(null);
+      if (projectPackage.viewport) {
+        setViewport(projectPackage.viewport);
+        reactFlowInstance?.setViewport(projectPackage.viewport, { duration: 300 });
+      } else {
+        setFitViewOnce(true);
+      }
+      dismissCanvasHint();
+      addWorkspaceHistoryEvent({
+        id: generateId(),
+        type: "document-uploaded",
+        title: `导入项目包：${projectPackage.projectName || "星轨项目包"}`,
+        summary: `${hydratedNodes.length} 个节点，${projectPackage.edges.length} 条连线${
+          projectPackage.warnings.length > 0 ? `，${projectPackage.warnings.length} 条修复提示` : ""
+        }`,
+        createdAt: new Date().toISOString(),
+      });
+    },
+    [
+      addWorkspaceHistoryEvent,
+      dismissCanvasHint,
+      reactFlowInstance,
+      setEdges,
+      setFitViewOnce,
+      setNodes,
+      setSelectedNodeId,
+      setViewport,
+    ],
+  );
 
   // ========================================================================
   // DRAG & DROP UPLOAD
@@ -4571,18 +5685,24 @@ function StarCanvasInner({
     handleDragLeave,
     handleDrop,
     clearError,
-  } = useCanvasDropUpload(setNodes, dismissCanvasHint, (documentNodes) => {
-    documentNodes.forEach((node) => {
-      addWorkspaceHistoryEvent({
-        id: generateId(),
-        type: "document-uploaded",
-        title: `上传文档：${node.data.title || node.data.fileName || "未命名文档"}`,
-        summary: typeof node.data.summary === "string" ? node.data.summary : undefined,
-        nodeId: node.id,
-        createdAt: new Date().toISOString(),
+  } = useCanvasDropUpload(
+    setNodes,
+    dismissCanvasHint,
+    (documentNodes) => {
+      documentNodes.forEach((node) => {
+        addWorkspaceHistoryEvent({
+          id: generateId(),
+          type: "document-uploaded",
+          title: `上传文档：${node.data.title || node.data.fileName || "未命名文档"}`,
+          summary: typeof node.data.summary === "string" ? node.data.summary : undefined,
+          nodeId: node.id,
+          createdAt: new Date().toISOString(),
+        });
       });
-    });
-  });
+    },
+    appendVideoAnalysisChains,
+    handleImportProjectPackage,
+  );
 
   // ── 历史产物拖回画布 (P2-4) ──
   // onNodeCreated: 节点创建后自动选中（Zustand store）
@@ -4606,6 +5726,78 @@ function StarCanvasInner({
     () => nodes.find((n) => n.id === selectedNodeId) || null,
     [nodes, selectedNodeId],
   );
+
+  const handleRunScriptPipeline = useCallback(async () => {
+    const isScriptSourceNode = (node: Node<CanvasNodeData>) =>
+      ["text", "content", "storyboard", "prompt"].includes(String(node.type)) ||
+      ["text", "storyboard", "prompt"].includes(String(node.data?.nodeKind));
+    const sourceNode =
+      selectedNode && isScriptSourceNode(selectedNode)
+        ? selectedNode
+        : nodesRef.current.find(isScriptSourceNode);
+
+    const script = String(sourceNode?.data?.content || sourceNode?.data?.prompt || sourceNode?.data?.title || "").trim();
+    if (!sourceNode || !script) {
+      showCanvasNotice("warning", "需要剧本节点", "请先选中或创建一个包含剧本正文的文本/故事板节点。");
+      return;
+    }
+
+    const pipelineCharacters = createScriptPipelineCharacters(bibleCharacters);
+    showCanvasNotice(
+      "info",
+      "正在生成分镜流水线",
+      pipelineCharacters.length
+        ? `已带入 ${pipelineCharacters.length} 个角色设定/三视图资产。`
+        : "剧本会拆成镜头、角色绑定、9宫格 prompt 和视频 prompt。",
+    );
+    try {
+      const response = await fetch("/api/ai/script-pipeline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectTitle: sourceNode.data.title || "星轨画布项目",
+          script,
+          targetShotCount: 9,
+          characters: pipelineCharacters,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.pipeline) {
+        throw new Error(data?.error?.message || "分镜流水线生成失败");
+      }
+
+      const generated = createScriptPipelineCanvasNodes({
+        pipeline: data.pipeline,
+        sourceNode,
+      });
+      const pipelineNodePrefix = `${sourceNode.id}-pipeline-`;
+      const nextNodes = [
+        ...nodesRef.current.filter((node) => !node.id.startsWith(pipelineNodePrefix)),
+        ...generated.shotNodes,
+        generated.gridNode,
+      ];
+      const nextNodeIds = new Set(nextNodes.map((node) => node.id));
+      const nextEdges = [
+        ...edgesRef.current.filter((edge) => nextNodeIds.has(edge.source) && nextNodeIds.has(edge.target) && !edge.id.includes(`-${sourceNode.id}-pipeline-`)),
+        ...generated.edges,
+      ];
+      nodesRef.current = nextNodes;
+      edgesRef.current = nextEdges;
+      setNodes(nextNodes);
+      setEdges(nextEdges);
+      setSelectedNodeId(generated.gridNode.id);
+      setTimeout(() => {
+        reactFlowInstance?.fitView({
+          nodes: [generated.gridNode, ...generated.shotNodes].map((node) => ({ id: node.id })),
+          padding: 0.18,
+          duration: 650,
+        });
+      }, 80);
+      showCanvasNotice("success", "分镜流水线已生成", `已创建 ${generated.shotNodes.length} 个镜头和 1 个连续9宫格节点。`);
+    } catch (error) {
+      showCanvasNotice("error", "分镜流水线失败", error instanceof Error ? error.message : "未知错误");
+    }
+  }, [bibleCharacters, reactFlowInstance, selectedNode, setEdges, setNodes, setSelectedNodeId, showCanvasNotice]);
 
   const getCanvasFocusScreenPoint = useCallback(() => {
     const availableWidth =
@@ -4646,6 +5838,113 @@ function StarCanvasInner({
       return true;
     },
     [reactFlowInstance, setSelectedNodeId, viewport.zoom],
+  );
+
+  const findShotNodeId = useCallback((shotId: string): string | null => {
+    const target = nodesRef.current.find((node) => {
+      const shot = node.data?.shot;
+      return node.id === shotId || shot?.id === shotId;
+    });
+    return target?.id ?? null;
+  }, []);
+
+  const handleResolveProductionIssue = useCallback(
+    (shotId: string, action: string) => {
+      const nodeId = findShotNodeId(shotId);
+      if (!nodeId) {
+        showCanvasNotice("warning", "没有找到对应镜头", `shotId: ${shotId}`);
+        return;
+      }
+
+      focusCanvasNode(nodeId);
+      setShowPropertyPanel(true);
+      setShowProductionQueue(false);
+      setShowExportPreflight(false);
+
+      const fixHint: Record<string, string> = {
+        "preflight:strengthen-visual-prompt": "请补强视觉提示词：主体、动作、场景、光线、风格。",
+        "strengthen-visual-prompt": "请补强视觉提示词：主体、动作、场景、光线、风格。",
+        "preflight:add-shot-language": "请补齐景别和运镜。",
+        "add-shot-language": "请补齐景别和运镜。",
+        "preflight:set-shot-duration": "请设置镜头时长。",
+        "set-shot-duration": "请设置镜头时长。",
+        "preflight:attach-reference-frame": "请补参考帧或角色参考资产。",
+        "attach-reference-frame": "请补参考帧或角色参考资产。",
+        "preflight:complete-character-anchor": "请补齐角色视觉锚点或角色参考资产。",
+        "complete-character-anchor": "请补齐角色视觉锚点或角色参考资产。",
+        "preflight:restore-source-timecode": "请恢复来源视频时间码。",
+        "restore-source-timecode": "请恢复来源视频时间码。",
+        "preflight:add-voice-intent": "请补声线、情绪或表演意图。",
+        "add-voice-intent": "请补声线、情绪或表演意图。",
+        "preflight:review-handoff-warning": "请复核交接警告。",
+        "review-handoff-warning": "请复核交接警告。",
+        "add-visual-prompt": "请先补视觉提示词。",
+      };
+
+      showCanvasNotice("info", "已定位到问题镜头", fixHint[action] ?? "请在右侧面板补齐投产信息。");
+    },
+    [
+      findShotNodeId,
+      focusCanvasNode,
+      setShowPropertyPanel,
+      showCanvasNotice,
+    ],
+  );
+
+  const handleApplyProductionFixDraft = useCallback(
+    (shotId: string, action: string, source?: "production-queue" | "export-preflight") => {
+      const nodeId = findShotNodeId(shotId);
+      if (!nodeId) {
+        showCanvasNotice("warning", "没有找到对应镜头", `shotId: ${shotId}`);
+        return;
+      }
+
+      const target = nodesRef.current.find((node) => node.id === nodeId);
+      const shot = target?.data?.shot;
+      if (!shot) {
+        showCanvasNotice("warning", "该节点不是分镜镜头", "无法生成投产修复草案。");
+        return;
+      }
+
+      const outcome = buildProductionPreflightFixOutcome(shot, [action]);
+      if (Object.keys(outcome.draft.patch).length === 0) {
+        handleResolveProductionIssue(shotId, action);
+        showCanvasNotice(outcome.notice.kind, outcome.notice.title, outcome.notice.description);
+        return;
+      }
+
+      setNodes((nds) =>
+        nds.map((node) => {
+          if (node.id !== nodeId || !node.data?.shot) return node;
+          const nextShot = { ...node.data.shot, ...outcome.draft.patch };
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              title: nextShot.title || node.data.title,
+              prompt: outcome.draft.patch.visualPrompt ?? node.data.prompt,
+              duration: outcome.draft.patch.duration ?? node.data.duration,
+              shot: nextShot,
+            },
+          };
+        }),
+      );
+
+      focusCanvasNode(nodeId);
+      setSelectedNodeId(nodeId);
+      setShowPropertyPanel(true);
+      setShowProductionQueue(source !== "export-preflight");
+      setShowExportPreflight(source === "export-preflight");
+      showCanvasNotice(outcome.notice.kind, outcome.notice.title, outcome.notice.description);
+    },
+    [
+      findShotNodeId,
+      focusCanvasNode,
+      handleResolveProductionIssue,
+      setNodes,
+      setSelectedNodeId,
+      showCanvasNotice,
+    ],
   );
 
   const fitViewToVisibleCanvas = useCallback(
@@ -5013,10 +6312,67 @@ function StarCanvasInner({
       // Calculate center position within visible canvas area, excluding the chat panel.
       let basePosition = getCenteredFlowPosition(NODE_DEFAULT_SIZE.image);
 
-      // Process each file. 这里只读取原图尺寸并控制画布展示尺寸，不压缩、不改写用户原图。
       const newNodes: Node<CanvasNodeData>[] = [];
+      const newVideoNodes: Node<CanvasNodeData>[] = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        if (file.type.startsWith("video/")) {
+          const metadataUrl = URL.createObjectURL(file);
+          const metadata = await new Promise<{
+            width?: number;
+            height?: number;
+            durationMs?: number;
+          }>((resolve) => {
+            const video = document.createElement("video");
+            video.preload = "metadata";
+            video.muted = true;
+            video.onloadedmetadata = () => {
+              URL.revokeObjectURL(metadataUrl);
+              resolve({
+                width: video.videoWidth || undefined,
+                height: video.videoHeight || undefined,
+                durationMs: Number.isFinite(video.duration)
+                  ? Math.round(video.duration * 1000)
+                  : undefined,
+              });
+            };
+            video.onerror = () => {
+              URL.revokeObjectURL(metadataUrl);
+              resolve({});
+            };
+            video.src = metadataUrl;
+          });
+          const persisted = await persistMediaFile(file, {
+            kind: "video",
+            width: metadata.width,
+            height: metadata.height,
+            durationMs: metadata.durationMs,
+            mimeType: file.type,
+          });
+
+          newVideoNodes.push(
+            createUploadedVideoNode({
+              id: generateId(),
+              title: file.name,
+              url: persisted.objectUrl,
+              fileName: file.name,
+              fileSize: file.size,
+              mimeType: file.type,
+              durationMs: metadata.durationMs,
+              width: metadata.width,
+              height: metadata.height,
+              assetId: persisted.assetId,
+              persistence: "indexeddb",
+              position: {
+                x: basePosition.x + i * 40,
+                y: basePosition.y + i * 40,
+              },
+            }),
+          );
+          continue;
+        }
+
+        // Process each image. 这里只读取原图尺寸并控制画布展示尺寸，不压缩、不改写用户原图。
         if (!file.type.startsWith("image/")) continue;
 
         try {
@@ -5102,13 +6458,21 @@ function StarCanvasInner({
       }
 
       if (newNodes.length > 0) {
-        setNodes((nds) => [...nds, ...newNodes]);
+        applyNodeUpdates((nds) => [...nds, ...newNodes]);
+        dismissCanvasHint();
+      }
+
+      if (newVideoNodes.length > 0) {
+        const nextNodes = [...nodesRef.current, ...newVideoNodes];
+        nodesRef.current = nextNodes;
+        setNodes(nextNodes);
+        appendVideoAnalysisChains(newVideoNodes);
         dismissCanvasHint();
       }
 
       e.target.value = "";
     },
-    [getCenteredFlowPosition, setNodes, dismissCanvasHint],
+    [appendVideoAnalysisChains, applyNodeUpdates, getCenteredFlowPosition, setNodes, dismissCanvasHint],
   );
 
   const handleUploadClick = useCallback(() => {
@@ -5169,7 +6533,10 @@ function StarCanvasInner({
         return;
       }
 
-      setNodes(applyCanvasVisibilityAndLayoutRecovery(safeSnapshot.nodes));
+      const recoveredNodes = applyCanvasVisibilityAndLayoutRecovery(safeSnapshot.nodes);
+      nodesRef.current = recoveredNodes;
+      edgesRef.current = safeSnapshot.edges;
+      setNodes(recoveredNodes);
       setEdges(safeSnapshot.edges);
       setSelectedNodeId(null);
       setFitViewOnce(true);
@@ -5219,7 +6586,7 @@ function StarCanvasInner({
       }
 
       if (newNodes.length > 0) {
-        setNodes((nds) => [...nds, ...newNodes]);
+        applyNodeUpdates((nds) => [...nds, ...newNodes]);
         newNodes.forEach((node) => {
           addWorkspaceHistoryEvent({
             id: generateId(),
@@ -5238,37 +6605,10 @@ function StarCanvasInner({
     [getCenteredFlowPosition, setNodes, dismissCanvasHint, addWorkspaceHistoryEvent],
   );
 
-  const buildProjectPackage = useCallback(() => {
+  const buildProjectPackage = useCallback(async () => {
     const now = new Date().toISOString();
-    const plainNodes = nodes.map((node) => {
-      const data = node.data || {};
-      return {
-        id: node.id,
-        type: node.type || "workflow",
-        position: node.position,
-        data: {
-          title: data.title,
-          nodeKind: data.nodeKind,
-          workflowRole: data.workflowRole,
-          status: data.status,
-          runMeta: data.runMeta ?? undefined,
-          summary: data.summary,
-          prompt: data.prompt,
-          content: data.content,
-          duration: data.duration,
-          model: data.model,
-          fileName: data.fileName,
-          fileSize: data.fileSize,
-          mimeType: data.mimeType,
-          imageUrl: data.imageUrl,
-          assetUrl: data.assetUrl,
-          resultUrl: data.resultUrl,
-          inputs: data.inputs,
-          outputs: data.outputs,
-          createdAt: data.createdAt,
-        },
-      };
-    });
+    const plainNodes = buildProjectPackageCanvasNodes(nodes);
+    const assets = await buildProjectPackageAssetsWithLocalBytes(nodes);
 
     const shots = plainNodes
       .filter((node) =>
@@ -5337,13 +6677,16 @@ function StarCanvasInner({
         note: getNodeText(node),
       }));
 
-    const productionBriefs = buildShotProductionBriefs(nodes);
+    const productionBriefs = canvasProductionBriefs;
     const productionRunManifest = buildProjectPackageManifest({
       shots,
       productionBriefs,
       visualReferences,
       audioIntent,
       handoffNotes,
+      videoProvider: {
+        providerId: process.env.NEXT_PUBLIC_VIDEO_BACKEND || "vidu",
+      },
     });
 
     return {
@@ -5367,6 +6710,7 @@ function StarCanvasInner({
       visualReferences,
       audioIntent,
       handoffNotes,
+      assets,
       canvas: {
         viewport,
         nodes: plainNodes,
@@ -5381,11 +6725,13 @@ function StarCanvasInner({
         })),
       },
     };
-  }, [nodes, edges, viewport]);
+  }, [nodes, edges, viewport, canvasProductionBriefs]);
 
-  const handleExportProjectPackage = useCallback(() => {
-    const projectPackage = buildProjectPackage();
+  const handleExportProjectPackage = useCallback(async () => {
+    const projectPackage = await buildProjectPackage();
     const json = JSON.stringify(projectPackage, null, 2);
+    const warning = getProjectPackageExportWarning(json);
+    if (warning && !window.confirm(warning)) return;
     const blob = new Blob([json], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -5413,7 +6759,7 @@ function StarCanvasInner({
   const handleExportStoryboardPdf = useCallback(() => {
     const result = buildStoryboardHtml();
     if (!result) {
-      alert("当前画布没有找到分镜节点，请先通过「故事分镜」流程生成分镜。");
+      showCanvasNotice("warning", "还没有可导出的分镜本", "请先通过「故事分镜」流程生成分镜。");
       return;
     }
 
@@ -5426,13 +6772,13 @@ function StarCanvasInner({
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }, [buildStoryboardHtml]);
+  }, [buildStoryboardHtml, showCanvasNotice]);
 
   /** 一键打印为 PDF：在新窗口打开分镜本 HTML 并自动调起打印对话框 */
   const handlePrintStoryboardPdf = useCallback(() => {
     const result = buildStoryboardHtml();
     if (!result) {
-      alert("当前画布没有找到分镜节点。");
+      showCanvasNotice("warning", "还没有可打印的分镜本", "请先生成分镜节点后再打印。");
       return;
     }
 
@@ -5440,7 +6786,7 @@ function StarCanvasInner({
     if (!printWindow) {
       // Fallback: download HTML and instruct user
       handleExportStoryboardPdf();
-      alert("弹窗被拦截，已下载 HTML 文件，请在浏览器中打开后 Ctrl+P 打印为 PDF。");
+      showCanvasNotice("info", "浏览器拦截了打印弹窗", "已自动下载 HTML 文件，请打开后使用 Ctrl+P 或系统打印另存为 PDF。");
       return;
     }
 
@@ -5453,12 +6799,12 @@ function StarCanvasInner({
         printWindow.print();
       }, 500);
     };
-  }, [buildStoryboardHtml, handleExportStoryboardPdf]);
+  }, [buildStoryboardHtml, handleExportStoryboardPdf, showCanvasNotice]);
 
   const handleExportScreenplay = useCallback(() => {
     const briefs = buildShotProductionBriefs(nodes);
     if (briefs.length === 0) {
-      alert("当前画布没有找到分镜节点。");
+      showCanvasNotice("warning", "还没有可导出的剧本", "请先生成分镜节点。");
       return;
     }
     const md = generateScreenplayMarkdown("星轨剧本", briefs);
@@ -5471,7 +6817,7 @@ function StarCanvasInner({
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }, [nodes]);
+  }, [nodes, showCanvasNotice]);
 
   const handleExportCharacterCsv = useCallback(() => {
     const shots = nodes
@@ -5479,7 +6825,7 @@ function StarCanvasInner({
       .filter((shot): shot is NonNullable<CanvasNodeData["shot"]> => Boolean(shot));
     const characters = collectCharacterAssetLibraryItemsFromShots(shots);
     if (characters.length === 0) {
-      alert("当前画布没有找到角色资产，请先在分镜中定义角色。");
+      showCanvasNotice("warning", "还没有角色资产表", "请先在分镜中定义角色，再导出角色表。");
       return;
     }
     const csv = generateCharacterTableCsv(characters);
@@ -5492,12 +6838,12 @@ function StarCanvasInner({
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }, [nodes]);
+  }, [nodes, showCanvasNotice]);
 
   const handleExportStoryboardCsv = useCallback(() => {
     const briefs = buildShotProductionBriefs(nodes);
     if (briefs.length === 0) {
-      alert("当前画布没有找到分镜节点。");
+      showCanvasNotice("warning", "还没有可导出的分镜表", "请先生成分镜节点。");
       return;
     }
     const csv = generateStoryboardTableCsv(briefs);
@@ -5510,12 +6856,12 @@ function StarCanvasInner({
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }, [nodes]);
+  }, [nodes, showCanvasNotice]);
 
   const handleExportSubtitles = useCallback(() => {
     const briefs = buildShotProductionBriefs(nodes);
     if (briefs.length === 0) {
-      alert("当前画布没有找到分镜节点。");
+      showCanvasNotice("warning", "还没有可导出的字幕", "请先生成分镜节点。");
       return;
     }
     const bundle = buildSubtitleExport(briefs);
@@ -5541,12 +6887,12 @@ function StarCanvasInner({
     vttLink.click();
     vttLink.remove();
     URL.revokeObjectURL(vttUrl);
-  }, [nodes]);
+  }, [nodes, showCanvasNotice]);
 
   const handleExportCompositionScript = useCallback(() => {
     const briefs = buildShotProductionBriefs(nodes);
     if (briefs.length === 0) {
-      alert("当前画布没有找到分镜节点。");
+      showCanvasNotice("warning", "还没有可导出的合成脚本", "请先生成分镜节点。");
       return;
     }
 
@@ -5580,7 +6926,7 @@ function StarCanvasInner({
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }, [nodes]);
+  }, [nodes, showCanvasNotice]);
 
   // ========================================================================
   // 剪映草稿导出
@@ -5607,7 +6953,7 @@ function StarCanvasInner({
     const subtitleInputs = extractSubtitleNodesFromCanvas(nodes);
 
     if (videoInputs.length === 0 && audioInputs.length === 0 && subtitleInputs.length === 0) {
-      alert("当前画布没有找到可导出的视频、音频或字幕节点。请先生成视频或添加字幕。");
+      showCanvasNotice("warning", "还没有可导出的剪映素材", "请先生成视频、音频或字幕节点。");
       return { success: false, message: "无可用素材" };
     }
 
@@ -5636,7 +6982,7 @@ function StarCanvasInner({
     } catch (error) {
       throw error;
     }
-  }, [nodes]);
+  }, [nodes, showCanvasNotice]);
 
   // ========================================================================
   // ADD NODE
@@ -5725,44 +7071,44 @@ function StarCanvasInner({
         outputs: [{ label: "音乐提示词", type: "audio" }],
       },
       upscale: {
-        title: "高清放大",
+        title: "放大方案记录",
         workflowRole: "Upscale Brief",
         status: "draft",
         runMeta: idleMeta,
-        summary: "参考 Real-ESRGAN/视频超分流程，为图片或视频记录 2x/4x 放大、降噪、保细节要求。",
-        model: "Real-ESRGAN Reference",
+        summary: "记录图片或视频的 2x/4x 放大、降噪、保细节要求，供外部超分或后续服务使用。",
+        model: "Upscale Brief",
         inputs: [{ label: "图片/视频" }],
-        outputs: [{ label: "高清版本", type: "image" }],
+        outputs: [{ label: "放大方案", type: "text" }],
       },
       poster: {
-        title: "AI 海报",
+        title: "海报提示词",
         workflowRole: "Poster Generator",
         status: "draft",
         runMeta: idleMeta,
         summary: "把角色、场景、片名、卖点和视觉风格合成为竖版/横版海报提示词，可接现有生图链路。",
         model: "GPT-Image-2 / Ideogram",
         inputs: [{ label: "角色/标题/风格" }],
-        outputs: [{ label: "海报图", type: "image" }],
+        outputs: [{ label: "海报提示词", type: "text" }],
       },
       "talking-photo": {
-        title: "照片说话 / 数字人",
+        title: "数字人口播需求记录",
         workflowRole: "Talking Photo Brief",
         status: "draft",
         runMeta: idleMeta,
-        summary: "参考 LivePortrait/MuseTalk，记录头像、台词、声线和口型同步要求，形成后续数字人生成任务。",
-        model: "LivePortrait / MuseTalk Reference",
+        summary: "记录头像、台词、声线和口型同步要求；真实数字人生成服务接入后再开放生成入口。",
+        model: "Talking Photo Brief",
         inputs: [{ label: "角色头像" }, { label: "台词/音频" }],
-        outputs: [{ label: "口播视频", type: "video" }],
+        outputs: [{ label: "口播需求", type: "text" }],
       },
       "remix-analysis": {
-        title: "爆款拆解 / 复刻",
+        title: "参考视频结构分析",
         workflowRole: "Remix Analyst",
         status: "draft",
         runMeta: idleMeta,
-        summary: "拆解参考视频/文案的节奏、钩子、镜头结构、反转点和可复刻模板，不直接复制受版权保护内容。",
+        summary: "拆解参考视频/文案的节奏、钩子、镜头结构和反转点，沉淀原创改写结构。",
         model: "Creative Analyst",
         inputs: [{ label: "参考链接/脚本" }],
-        outputs: [{ label: "复刻结构", type: "text" }],
+        outputs: [{ label: "原创结构", type: "text" }],
       },
       "camera-control": {
         title: "摄影机控制",
@@ -5914,127 +7260,11 @@ function StarCanvasInner({
         console.debug("[DEBUG_NODE] Creating node:", newNode);
       }
 
-      setNodes((nds) => [...nds, newNode]);
+      applyNodeUpdates((nds) => [...nds, newNode]);
       dismissCanvasHint();
     },
-    [getCenteredFlowPosition, setNodes, dismissCanvasHint],
+    [applyNodeUpdates, getCenteredFlowPosition, dismissCanvasHint],
   );
-
-  const handleImportRemix = useCallback((payload: VideoRemixImportPayload) => {
-    const { videoName, result } = payload;
-    const template = result.template;
-    const beats = template.structure;
-
-    if (!beats || beats.length === 0) {
-      alert("未检测到分镜结构，无法导入画布。");
-      return;
-    }
-
-    const basePosition = getCenteredFlowPosition({ width: 280, height: 170 });
-    const now = Date.now();
-
-    // 为每个 beat 创建一个 ShotNode
-    const shotNodes: Node<CanvasNodeData>[] = beats.map((beat, index) => ({
-      id: `remix-shot-${generateId()}`,
-      type: "shot",
-      position: {
-        x: basePosition.x + index * 320,
-        y: basePosition.y,
-      },
-      width: 280,
-      height: 170,
-      measured: { width: 280, height: 170 },
-      data: {
-        title: `${beat.type === "hook" ? "钩子" : beat.type === "setup" ? "铺垫" : beat.type === "conflict" ? "冲突" : beat.type === "climax" ? "高潮" : beat.type === "twist" ? "反转" : beat.type === "resolution" ? "收尾" : "引导"} ${index + 1}`,
-        nodeKind: "shot",
-        content: `${beat.description}\n视觉: ${beat.visualNotes}\n音频: ${beat.audioNotes}`,
-        prompt: beat.description,
-        summary: `[${beat.timestamp}] ${beat.type}: ${beat.description}`,
-        shot: {
-          id: `remix-shot-data-${generateId()}`,
-          order: index + 1,
-          title: `${beat.type} ${index + 1}`,
-          shotType: beat.visualNotes,
-          description: beat.description,
-          visualPrompt: beat.visualNotes,
-          duration: beat.duration,
-          characterIdentities: [],
-          status: "draft",
-        },
-        displayWidth: 280,
-        displayHeight: 170,
-        createdAt: now,
-      },
-    }));
-
-    // 创建 StoryboardGridNode 作为汇总节点
-    const gridNodeId = `remix-grid-${generateId()}`;
-    const gridNode: Node<CanvasNodeData> = {
-      id: gridNodeId,
-      type: "storyboard-grid",
-      position: {
-        x: basePosition.x + beats.length * 320 + 100,
-        y: basePosition.y - 40,
-      },
-      width: 360,
-      height: 250,
-      measured: { width: 360, height: 250 },
-      data: {
-        title: `${videoName} - 拉片汇总`,
-        nodeKind: "storyboard-grid",
-        content: `来源: ${result.source}\n类别: ${template.category}\n总时长: ${template.totalDuration}\n钩子模式: ${template.hookPattern}\n\n关键技巧: ${template.keyTechniques.join("、")}\n\n改编建议: ${template.adaptationNotes}`,
-        prompt: template.adaptationNotes,
-        summary: `一键拉片: ${template.name}`,
-        storyboardGrid: {
-          id: gridNodeId,
-          title: `${videoName} - 拉片汇总`,
-          sourceStoryboardNodeId: undefined,
-          shotNodeIds: shotNodes.map((n) => n.id),
-          columns: 3,
-          maxShots: beats.length,
-          shotStates: beats.map((beat, i) => ({
-            shotNodeId: shotNodes[i].id,
-            order: i + 1,
-            title: beat.type,
-            status: "missing" as const,
-          })),
-          status: "draft",
-        },
-        displayWidth: 360,
-        displayHeight: 250,
-        createdAt: now,
-      },
-    };
-
-    // 创建连接边
-    const edges: Edge[] = [];
-    for (let i = 0; i < shotNodes.length - 1; i++) {
-      edges.push({
-        id: `remix-edge-${i}-${i + 1}-${generateId()}`,
-        source: shotNodes[i].id,
-        target: shotNodes[i + 1].id,
-        type: "smoothstep",
-        animated: true,
-        style: { stroke: DESIGN_TOKENS.nodeEdge, strokeWidth: 2 },
-      });
-    }
-    // 连接最后一个 shot 到 grid
-    if (shotNodes.length > 0) {
-      edges.push({
-        id: `remix-edge-grid-${generateId()}`,
-        source: shotNodes[shotNodes.length - 1].id,
-        target: gridNode.id,
-        type: "smoothstep",
-        animated: true,
-        style: { stroke: DESIGN_TOKENS.nodeEdge, strokeWidth: 2 },
-      });
-    }
-
-    pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "import");
-    setNodes((nds) => [...nds, ...shotNodes, gridNode]);
-    setEdges((eds) => [...eds, ...edges]);
-    dismissCanvasHint();
-  }, [getCenteredFlowPosition, setNodes, setEdges, pushUndo, dismissCanvasHint]);
 
   const handleImportScript = useCallback((payload: ScriptImportPayload) => {
     const defaultSize = NODE_DEFAULT_SIZE.content;
@@ -6233,9 +7463,9 @@ function StarCanvasInner({
   const deleteEdge = useCallback(
     (edgeId: string) => {
       pushUndo({ nodes: nodesRef.current, edges: edgesRef.current }, "delete");
-      setEdges((eds) => eds.filter((e) => e.id !== edgeId));
+      applyEdgeUpdates((eds) => eds.filter((e) => e.id !== edgeId));
     },
-    [setEdges],
+    [applyEdgeUpdates],
   );
 
   const duplicateNode = useCallback(
@@ -6254,9 +7484,9 @@ function StarCanvasInner({
         selected: false,
       };
 
-      setNodes((nds) => [...nds, newNode]);
+      applyNodeUpdates((nds) => [...nds, newNode]);
     },
-    [nodes, setNodes],
+    [applyNodeUpdates],
   );
 
   const copyNode = useCallback(
@@ -6265,7 +7495,7 @@ function StarCanvasInner({
       if (!node) return;
       setClipboardNode(node);
     },
-    [nodes, setClipboardNode],
+    [setClipboardNode],
   );
 
   const cutNode = useCallback(
@@ -6275,7 +7505,7 @@ function StarCanvasInner({
       setClipboardNode(node);
       deleteNode(nodeId);
     },
-    [nodes, setClipboardNode, deleteNode],
+    [setClipboardNode, deleteNode],
   );
 
   const pasteNode = useCallback(() => {
@@ -6298,17 +7528,70 @@ function StarCanvasInner({
       selected: false,
     };
 
-    setNodes((nds) => [...nds, newNode]);
+    applyNodeUpdates((nds) => [...nds, newNode]);
     setClipboardNode(null);
-  }, [clipboardNode, reactFlowInstance, setNodes, setClipboardNode]);
+  }, [applyNodeUpdates, clipboardNode, reactFlowInstance, setClipboardNode]);
 
   // ========================================================================
   // APPLY CHAT ACTIONS - AI 画布操作执行器（返回结构化报告）
   // ========================================================================
   const applyChatActions = useCallback(
-    (actions: ChatCanvasAction[]): ApplyActionsReport => {
+    (
+      actions: ChatCanvasAction[],
+      options?: { allowRunNodeExecution?: boolean },
+    ): ApplyActionsReport => {
+      const allowRunNodeExecution = options?.allowRunNodeExecution === true;
       const results: ApplyActionResult[] = [];
       const aliasMap: Record<string, string> = {};
+      const resolveActionNodeId = (params: { nodeId?: string; id?: string; title?: string }) =>
+        resolveActionNodeReference({
+          ...params,
+          aliasMap,
+          nodes: nodesRef.current,
+        });
+      const getCreateActionDefaultSize = (
+        action?: Extract<ChatCanvasAction, { action: "create_node" }>,
+      ) => {
+        const requestedType = action?.nodeType ?? "content";
+        if (requestedType === "agent") return NODE_DEFAULT_SIZE.agent;
+        if (requestedType === "workflow") return NODE_DEFAULT_SIZE.workflow;
+        if (requestedType === "image") return NODE_DEFAULT_SIZE.image;
+        if (requestedType === "sketch") return NODE_DEFAULT_SIZE.sketch;
+        return NODE_DEFAULT_SIZE.content;
+      };
+      const pendingAutoPositionCreateIndices = actions.reduce<number[]>((indices, action, index) => {
+        if (action.action === "create_node" && !action.position) indices.push(index);
+        return indices;
+      }, []);
+      const firstAutoPositionCreateAction = pendingAutoPositionCreateIndices
+        .map((actionIndex) => actions[actionIndex])
+        .find(
+          (action): action is Extract<ChatCanvasAction, { action: "create_node" }> =>
+            action?.action === "create_node",
+        );
+      const batchCreateNodePositions =
+        pendingAutoPositionCreateIndices.length > 1
+          ? layoutBatchNodePositions(
+              pendingAutoPositionCreateIndices.map((actionIndex) => {
+                const action = actions[actionIndex];
+                return action?.action === "create_node"
+                  ? getCreateActionDefaultSize(action)
+                  : NODE_DEFAULT_SIZE.content;
+              }),
+              getCenteredFlowPosition(getCreateActionDefaultSize(firstAutoPositionCreateAction)),
+            )
+          : null;
+      const batchCreateNodePositionMap = new Map<number, { x: number; y: number }>(
+        pendingAutoPositionCreateIndices.map((actionIndex, layoutIndex) => [
+          actionIndex,
+          batchCreateNodePositions?.[layoutIndex] ??
+            getCenteredFlowPosition(
+              actions[actionIndex]?.action === "create_node"
+                ? getCreateActionDefaultSize(actions[actionIndex])
+                : NODE_DEFAULT_SIZE.content,
+            ),
+        ]),
+      );
 
       for (let i = 0; i < actions.length; i++) {
         const act = actions[i];
@@ -6339,7 +7622,7 @@ function StarCanvasInner({
                       ? NODE_DEFAULT_SIZE.image
                       : NODE_DEFAULT_SIZE.content;
               const position =
-                act.position ?? getCenteredFlowPosition(defaultSize);
+                act.position ?? batchCreateNodePositionMap.get(i) ?? getCenteredFlowPosition(defaultSize);
               const nodeId = generateId();
               const newNode: Node<CanvasNodeData> = {
                 id: nodeId,
@@ -6399,7 +7682,11 @@ function StarCanvasInner({
                           ...(act.data ?? {}),
                         },
               };
-              setNodes((nds) => [...nds, newNode]);
+              setNodes((nds) => {
+                const nextNodes = [...nds, newNode];
+                nodesRef.current = nextNodes;
+                return nextNodes;
+              });
               dismissCanvasHint();
               if (act.title) aliasMap[act.title] = nodeId;
               results.push({
@@ -6413,7 +7700,8 @@ function StarCanvasInner({
             }
 
             case "update_node": {
-              if (!act.nodeId) {
+              const nodeId = resolveActionNodeId({ nodeId: act.nodeId });
+              if (!nodeId) {
                 results.push({
                   index: i,
                   action: "update_node",
@@ -6422,28 +7710,28 @@ function StarCanvasInner({
                 });
                 break;
               }
-              const found = nodesRef.current.find((n) => n.id === act.nodeId);
+              const found = nodesRef.current.find((n) => n.id === nodeId);
               if (!found) {
                 results.push({
                   index: i,
                   action: "update_node",
                   status: "skipped",
-                  reason: `节点 ${act.nodeId} 不存在`,
+                  reason: `节点 ${nodeId} 不存在`,
                 });
                 break;
               }
-              setNodes((nds) =>
-                nds.map((n) =>
-                  n.id === act.nodeId
-                    ? { ...n, data: { ...n.data, ...(act.updates ?? {}) } }
-                    : n,
-                ),
-              );
+              setNodes((nds) => {
+                const nextNodes = nds.map((n) =>
+                  n.id === nodeId ? { ...n, data: { ...n.data, ...(act.updates ?? {}) } } : n,
+                );
+                nodesRef.current = nextNodes;
+                return nextNodes;
+              });
               results.push({
                 index: i,
                 action: "update_node",
                 status: "applied",
-                nodeId: act.nodeId,
+                nodeId,
                 reason: act.description,
               });
               break;
@@ -6459,8 +7747,10 @@ function StarCanvasInner({
                 });
                 break;
               }
-              const src = nodesRef.current.find((n) => n.id === act.sourceId);
-              const tgt = nodesRef.current.find((n) => n.id === act.targetId);
+              const sourceId = resolveActionNodeId({ nodeId: act.sourceId });
+              const targetId = resolveActionNodeId({ nodeId: act.targetId });
+              const src = sourceId ? nodesRef.current.find((n) => n.id === sourceId) : undefined;
+              const tgt = targetId ? nodesRef.current.find((n) => n.id === targetId) : undefined;
               if (!src || !tgt) {
                 results.push({
                   index: i,
@@ -6471,17 +7761,21 @@ function StarCanvasInner({
                 break;
               }
               const edgeId = generateId();
-              setEdges((eds) => [
-                ...eds,
-                {
-                  id: edgeId,
-                  source: act.sourceId!,
-                  target: act.targetId!,
-                  type: "creative",
-                  animated: false,
-                  style: { stroke: DESIGN_TOKENS.nodeEdge, strokeWidth: 2 },
-                },
-              ]);
+              setEdges((eds) => {
+                const nextEdges = [
+                  ...eds,
+                  {
+                    id: edgeId,
+                    source: sourceId!,
+                    target: targetId!,
+                    type: "creative",
+                    animated: false,
+                    style: { stroke: DESIGN_TOKENS.nodeEdge, strokeWidth: 2 },
+                  },
+                ];
+                edgesRef.current = nextEdges;
+                return nextEdges;
+              });
               results.push({
                 index: i,
                 action: "connect_nodes",
@@ -6493,7 +7787,7 @@ function StarCanvasInner({
             }
 
             case "delete_node": {
-              const did = act.nodeId ?? act.id;
+              const did = resolveActionNodeId({ nodeId: act.nodeId, id: act.id });
               if (!did) {
                 results.push({
                   index: i,
@@ -6537,7 +7831,7 @@ function StarCanvasInner({
             }
 
             case "select_node": {
-              const sid = act.nodeId ?? act.id;
+              const sid = resolveActionNodeId({ nodeId: act.nodeId, id: act.id });
               if (sid) setSelectedNodeId(sid);
               results.push({
                 index: i,
@@ -6550,7 +7844,7 @@ function StarCanvasInner({
             }
 
             case "focus_node": {
-              const fid = act.nodeId ?? act.id;
+              const fid = resolveActionNodeId({ nodeId: act.nodeId, id: act.id });
               if (!fid) {
                 results.push({
                   index: i,
@@ -6594,6 +7888,7 @@ function StarCanvasInner({
                 basePosition,
                 generateId,
                 edgeStyle: { stroke: DESIGN_TOKENS.nodeEdge, strokeWidth: 2 },
+                template: act.template,
               });
 
               let nextNodesToAdd = templateNodes;
@@ -6683,11 +7978,17 @@ function StarCanvasInner({
                 case "style_bible":
                   setShowStyleBiblePanel(true);
                   break;
+                case "production_queue":
+                  setShowProductionQueue(true);
+                  break;
                 case "run_queue":
                   setShowRunPanel(true);
                   break;
                 case "property":
                   setShowPropertyPanel(true);
+                  break;
+                case "settings":
+                  setShowSettings(true);
                   break;
                 default:
                   results.push({ index: i, action: "open_panel", status: "skipped", reason: "未知面板" });
@@ -6695,6 +7996,38 @@ function StarCanvasInner({
               }
               if (results[results.length - 1]?.index !== i) {
                 results.push({ index: i, action: "open_panel", status: "applied", reason: act.description ?? `已打开 ${act.panel} 面板` });
+              }
+              break;
+            }
+
+            case "configure_provider": {
+              try {
+                const result = applyProviderSetup(
+                  {
+                    baseUrl: act.baseUrl,
+                    sessionApiKey: act.apiKey,
+                    defaultModel: act.defaultModel,
+                    imageModel: act.imageModel,
+                    videoModel: act.videoModel,
+                    timeoutMs: act.timeoutMs,
+                    keyStorageMode: act.keyStorageMode,
+                    openSettings: act.openSettings,
+                  },
+                  getStoredModelOptions(DEFAULT_PROVIDER_MODEL_OPTIONS),
+                );
+                results.push({
+                  index: i,
+                  action: "configure_provider",
+                  status: "applied",
+                  reason: act.description ?? result.summary,
+                });
+              } catch (error) {
+                results.push({
+                  index: i,
+                  action: "configure_provider",
+                  status: "failed",
+                  error: error instanceof Error ? error.message : "模型配置失败",
+                });
               }
               break;
             }
@@ -6800,13 +8133,13 @@ function StarCanvasInner({
             }
 
             case "run_node": {
-              const rid = act.nodeId ?? act.id;
+              const rid = resolveActionNodeId({ nodeId: act.nodeId, id: act.id, title: act.title });
               if (!rid) {
                 results.push({
                   index: i,
                   action: "run_node",
                   status: "skipped",
-                  reason: "缺少 nodeId",
+                  reason: act.title ? `找不到标题为「${act.title}」的节点` : "缺少 nodeId",
                 });
                 break;
               }
@@ -6821,10 +8154,10 @@ function StarCanvasInner({
                 break;
               }
               // Safety: only auto-run if user explicitly allowed it
-              if (!allowAIAutoRun) {
+              if (!allowAIAutoRun && !allowRunNodeExecution) {
                 // Mark node as pending confirmation via runMeta
-                setNodes((nds) =>
-                  nds.map((n) =>
+                setNodes((nds) => {
+                  const nextNodes = nds.map((n) =>
                     n.id === rid
                       ? {
                           ...n,
@@ -6838,8 +8171,10 @@ function StarCanvasInner({
                           },
                         }
                       : n,
-                  ),
-                );
+                  );
+                  nodesRef.current = nextNodes;
+                  return nextNodes;
+                });
                 setSelectedNodeId(rid);
                 results.push({
                   index: i,
@@ -6860,6 +8195,17 @@ function StarCanvasInner({
                 status: "applied",
                 nodeId: rid,
                 reason: act.description,
+              });
+              break;
+            }
+
+            case "ask_clarification": {
+              setChatOpen(true);
+              results.push({
+                index: i,
+                action: "ask_clarification",
+                status: "pending_confirmation",
+                reason: act.description ?? act.question,
               });
               break;
             }
@@ -6896,6 +8242,10 @@ function StarCanvasInner({
         aliasMap,
       };
 
+      if (pendingAutoPositionCreateIndices.length > 1) {
+        setTimeout(() => fitViewToVisibleCanvas(450), 80);
+      }
+
       return report;
     },
     [
@@ -6913,13 +8263,16 @@ function StarCanvasInner({
     ],
   );
 
+  usePreviewTransactionLifecycle(applyChatActions);
+
   // ========================================================================
   // ADD IMAGE FROM CHAT ATTACHMENT
   // ========================================================================
   const handleAddImageFromChat = useCallback(
     (attachment: ChatAttachment) => {
       const isImage = attachment.type === "image";
-      const isAiGenerated = !attachment.file; // AI-generated images don't have a File object
+      const isVideo = attachment.type === "video";
+      const isAiGenerated = isImage && !attachment.file; // AI-generated images don't have a File object
       const nodeKind = isAiGenerated
         ? "ai-generated-image"
         : attachment.type === "video"
@@ -6958,22 +8311,42 @@ function StarCanvasInner({
           : NODE_DEFAULT_SIZE.workflow,
       );
 
-      // For images with a File object, persist to IndexedDB
-      const assetIdPromise =
-        isImage && attachment.file
+      const assetInfoPromise: Promise<{
+        assetId?: string;
+        objectUrl?: string;
+      }> =
+        isImage && attachment.assetId
+          ? Promise.resolve({
+              assetId: attachment.assetId,
+              objectUrl: attachment.src,
+            })
+          : isImage && attachment.file
           ? persistImageFile(attachment.file, {
               width: attachment.width,
               height: attachment.height,
             })
-              .then((r) => r.assetId)
-              .catch(() => undefined)
+              .then((r) => ({ assetId: r.assetId }))
+              .catch(() => ({}))
           : isAiGenerated && attachment.src?.startsWith("data:image")
             ? persistImageDataUrl(attachment.src, { fileName: attachment.name })
-                .then((r) => r.assetId)
-                .catch(() => undefined)
-            : Promise.resolve(undefined);
+                .then((r) => ({ assetId: r.assetId }))
+                .catch(() => ({}))
+            : isVideo && attachment.file
+              ? persistMediaFile(attachment.file, {
+                  kind: "video",
+                  width: attachment.width,
+                  height: attachment.height,
+                  mimeType: attachment.mimeType,
+                })
+                  .then((r) => ({
+                    assetId: r.assetId,
+                    objectUrl: r.objectUrl,
+                  }))
+                  .catch(() => ({}))
+              : Promise.resolve({});
 
-      assetIdPromise.then((assetId) => {
+      assetInfoPromise.then(({ assetId, objectUrl }) => {
+        const imageUrl = objectUrl ?? attachment.src;
         const newNode: Node<CanvasNodeData> = isImage
           ? {
               id: generateId(),
@@ -6981,7 +8354,8 @@ function StarCanvasInner({
               position,
               data: {
                 title: attachment.name,
-                imageUrl: attachment.src,
+                imageUrl,
+                assetUrl: imageUrl,
                 assetId,
                 fileName: attachment.name,
                 fileSize: attachment.size,
@@ -7001,6 +8375,20 @@ function StarCanvasInner({
                 height: height + IMAGE_NODE_TITLE_HEIGHT,
               },
             }
+          : isVideo
+            ? createUploadedVideoNode({
+                id: generateId(),
+                title: attachment.name,
+                url: objectUrl ?? attachment.src,
+                fileName: attachment.name,
+                fileSize: attachment.size,
+                mimeType: attachment.mimeType,
+                width: attachment.width,
+                height: attachment.height,
+                assetId,
+                persistence: assetId ? "indexeddb" : undefined,
+                position,
+              })
           : {
               id: generateId(),
               type: "workflow",
@@ -7009,9 +8397,7 @@ function StarCanvasInner({
                 title: attachment.name,
                 nodeKind,
                 workflowRole:
-                  attachment.type === "video"
-                    ? "Video Asset"
-                    : attachment.type === "audio"
+                  attachment.type === "audio"
                       ? "Audio Asset"
                       : "File Asset",
                 status: "ready",
@@ -7024,9 +8410,7 @@ function StarCanvasInner({
                 outputs: [
                   {
                     label:
-                      attachment.type === "video"
-                        ? "视频素材"
-                        : attachment.type === "audio"
+                      attachment.type === "audio"
                           ? "音频素材"
                           : "文件素材",
                     type: attachment.type,
@@ -7034,17 +8418,168 @@ function StarCanvasInner({
                 ],
                 createdAt: Date.now(),
               },
-            };
+              };
 
-        setNodes((nds) => [...nds, newNode]);
+        if (isImage) {
+          addAsset({
+            id: `asset_${generateId()}`,
+            type: "image",
+            name: attachment.name,
+            src: imageUrl,
+            thumbnail: imageUrl,
+            folder: "Others",
+            createdAt: Date.now(),
+            metadata: {
+              assetId,
+              persistence: assetId ? "indexeddb" : "remote",
+              source: isAiGenerated ? "chat-generated" : "chat-attachment",
+            },
+          });
+        }
+        applyNodeUpdates((nds) => [...nds, newNode]);
+        if (isVideo) {
+          appendVideoAnalysisChains([newNode]);
+        }
         dismissCanvasHint();
 
         if (DEBUG_NODE) {
           console.debug("[DEBUG_NODE] Added attachment from chat:", newNode.id);
         }
-      }); // end assetIdPromise.then
+      }); // end assetInfoPromise.then
     },
-    [getCenteredFlowPosition, setNodes, dismissCanvasHint],
+    [addAsset, appendVideoAnalysisChains, applyNodeUpdates, getCenteredFlowPosition, dismissCanvasHint],
+  );
+
+  const handleImportProviderSmokeArtifact = useCallback(
+    async ({
+      target,
+      artifact,
+      result,
+    }: {
+      target: ProviderRealSmokeTarget;
+      artifact: NonNullable<ProviderSmokeRunResultLike["artifact"]>;
+      result: {
+        message: string;
+        details?: string[];
+      };
+    }) => {
+      const position = reactFlowInstance
+        ? reactFlowInstance.screenToFlowPosition({
+            x: window.innerWidth / 2,
+            y: window.innerHeight / 2,
+          })
+        : { x: 400, y: 300 };
+
+      if (artifact.type === "image") {
+        const persisted = artifact.url.startsWith("data:image")
+          ? await persistImageDataUrl(artifact.url, {
+              fileName: `provider-smoke-image-${Date.now()}.png`,
+            })
+          : null;
+        const imageUrl = persisted?.objectUrl ?? artifact.url;
+        const assetId = persisted?.assetId;
+        const nodeId = generateId();
+
+        const imageNode: Node<CanvasNodeData> = {
+          id: nodeId,
+          type: "image",
+          position,
+          data: {
+            title: "Provider Smoke 图像",
+            imageUrl,
+            assetUrl: imageUrl,
+            assetId,
+            fileName: "provider-smoke-image.png",
+            mimeType: artifact.mimeType ?? "image/png",
+            nodeKind: "ai-generated-image",
+            source: "generated",
+            persistence: assetId ? "indexeddb" : "remote",
+            summary: result.message,
+            createdAt: Date.now(),
+          },
+        };
+
+        const imageAsset: AssetItem = {
+          id: `asset_${generateId()}`,
+          type: "image",
+          name: "Provider Smoke 图像",
+          src: assetId ? undefined : imageUrl,
+          thumbnail: assetId ? undefined : imageUrl,
+          folder: "Others",
+          createdAt: Date.now(),
+          metadata: {
+            assetId,
+            persistence: assetId ? "indexeddb" : "remote",
+            source: "provider-smoke",
+            target,
+          },
+        };
+
+        setNodes((nds) => {
+          const nextNodes = [...nds, imageNode];
+          nodesRef.current = nextNodes;
+          return nextNodes;
+        });
+        addAsset(imageAsset);
+        dismissCanvasHint();
+        return;
+      }
+
+      const videoResponse = await fetch(artifact.url);
+      if (!videoResponse.ok) {
+        throw new Error(`下载真实视频结果失败: ${videoResponse.status}`);
+      }
+      const videoBlob = await videoResponse.blob();
+      const persistedVideo = await persistMediaBlob(videoBlob, {
+        kind: "video",
+        fileName: `provider-smoke-video-${Date.now()}.mp4`,
+        mimeType: videoBlob.type || "video/mp4",
+      });
+      const hydratedVideoUrl =
+        (await hydrateMediaAsset(persistedVideo.assetId)) ?? persistedVideo.objectUrl;
+      const videoNode = createUploadedVideoNode({
+        id: generateId(),
+        title: "Provider Smoke 视频",
+        url: hydratedVideoUrl,
+        fileName: "provider-smoke-video.mp4",
+        mimeType: videoBlob.type || "video/mp4",
+        assetId: persistedVideo.assetId,
+        persistence: "indexeddb",
+        position,
+        source: "generated",
+      });
+
+      const videoAsset: AssetItem = {
+        id: `asset_${generateId()}`,
+        type: "video",
+        name: "Provider Smoke 视频",
+        folder: "Others",
+        createdAt: Date.now(),
+        metadata: {
+          assetId: persistedVideo.assetId,
+          persistence: "indexeddb",
+          source: "provider-smoke",
+          target,
+          remoteUrl: artifact.url,
+        },
+      };
+
+      setNodes((nds) => {
+        const nextNodes = [...nds, videoNode];
+        nodesRef.current = nextNodes;
+        return nextNodes;
+      });
+      addAsset(videoAsset);
+      appendVideoAnalysisChains([videoNode]);
+      dismissCanvasHint();
+    },
+    [
+      addAsset,
+      appendVideoAnalysisChains,
+      dismissCanvasHint,
+      reactFlowInstance,
+      setNodes,
+    ],
   );
 
   // ========================================================================
@@ -7055,30 +8590,9 @@ function StarCanvasInner({
       const node = nodesRef.current.find((n) => n.id === nodeId);
       if (!node) return;
 
-      // Don't persist runtime-only URLs to localStorage, except sketchImageDataUrl:
-      // sketches are intentionally used as lightweight image-to-image references.
-      let src = node.data.sketchImageDataUrl || node.data.imageUrl || node.data.assetUrl;
-      if (src && !node.data.sketchImageDataUrl && (src.startsWith("blob:") || src.startsWith("data:"))) {
-        src = undefined;
-      }
-
-      const asset: AssetItem = {
-        id: `asset_${generateId()}`,
-        type: "image",
-        name: node.data.fileName || node.data.title || "Untitled",
-        src,
-        folder: "Others",
-        createdAt: Date.now(),
-        metadata: {
-          assetId: node.data.assetId,
-          persistence: node.data.persistence,
-          source: node.data.source,
-        },
-      };
-
-      addAsset(asset);
+      syncImageNodeToAssetLibrary(node);
     },
-    [nodes, addAsset],
+    [syncImageNodeToAssetLibrary],
   );
 
   // ========================================================================
@@ -7086,46 +8600,80 @@ function StarCanvasInner({
   // ========================================================================
   const handleRegenerateShot = useCallback(
     async (nodeId: string) => {
-      const node = nodes.find((n) => n.id === nodeId);
-      if (!node) return;
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      if (!node?.data.shot) return;
       const data = node.data as Record<string, unknown>;
-      const prompt = (data.prompt as string) || (data.content as string) || "";
+      const prompt =
+        (data.prompt as string) ||
+        node.data.shot.visualPrompt ||
+        (data.content as string) ||
+        "";
       if (!prompt) return;
 
       try {
-        const res = await fetch("/api/ai/generate-image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, size: "1024x1024" }),
+        const result = await generateImageFromPrompt({
+          prompt,
+          size: "1024x1024",
+        });
+        const latestNode = nodesRef.current.find((n) => n.id === nodeId);
+        if (!latestNode?.data.shot) return;
+        const generatedAt = new Date().toISOString();
+        const { shotNode, imageNode, edge } = createShotImageArtifacts({
+          shotNode: latestNode,
+          existingNodes: nodesRef.current as Node<CanvasNodeData>[],
+          existingEdges: edgesRef.current,
+          generationResult: {
+            imageUrl: result.imageUrl,
+            assetId: result.assetId,
+            model: result.model,
+            generationId: result.requestId,
+            enhancedPrompt: result.prompt,
+          },
+          prompt,
+          generatedAt,
+          generationFinishedAt: Date.now(),
+          imageNodeId: latestNode.data.shot.generatedImageNodeId || generateId(),
         });
 
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        const result = await res.json();
-        const imageUrl = result.imageUrl || result.data?.[0]?.b64_json;
+        setNodes((nds) => {
+          const imageExists = nds.some((item) => item.id === imageNode.id);
+          const updated = nds.map((item) => {
+            if (item.id === nodeId) return shotNode;
+            if (item.id === imageNode.id) return imageNode;
+            return item;
+          });
+          const nextNodes = imageExists ? updated : [...updated, imageNode];
+          nodesRef.current = nextNodes;
+          return nextNodes;
+        });
 
-        if (imageUrl) {
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === nodeId
-                ? {
-                    ...n,
-                    data: {
-                      ...n.data,
-                      imageUrl: imageUrl.startsWith("data:")
-                        ? imageUrl
-                        : `data:image/png;base64,${imageUrl}`,
-                      regeneratedAt: Date.now(),
-                    },
-                  }
-                : n,
-            ),
+        setEdges((eds) => {
+          const filtered = eds.filter(
+            (existingEdge) =>
+              existingEdge.id !== edge.id &&
+              !(
+                existingEdge.source === nodeId &&
+                existingEdge.target === imageNode.id &&
+                (existingEdge.data as Record<string, unknown> | undefined)
+                  ?.relation === "generated-image"
+              ),
           );
-        }
+          const nextEdges = [
+            ...filtered,
+            {
+              ...edge,
+              style: { stroke: DESIGN_TOKENS.nodeEdge, strokeWidth: 1.5 },
+            },
+          ];
+          edgesRef.current = nextEdges;
+          return nextEdges;
+        });
+        syncImageNodeToAssetLibrary(imageNode);
       } catch (err) {
         console.error("[RegenerateShot] Failed:", err);
       }
     },
-    [nodes, setNodes],
+    [setEdges, setNodes, syncImageNodeToAssetLibrary],
   );
 
   // ========================================================================
@@ -7207,7 +8755,7 @@ function StarCanvasInner({
           referenceImage,
         });
 
-        setNodes((nds) =>
+        applyNodeUpdates((nds) =>
           nds.map((item) =>
             item.id === nodeId
               ? { ...item, data: { ...item.data, generation } }
@@ -7299,8 +8847,8 @@ function StarCanvasInner({
           },
         };
 
-        setNodes((nds) => [...nds, newNode]);
-        setEdges((eds) => [
+        applyNodeUpdates((nds) => [...nds, newNode]);
+        applyEdgeUpdates((eds) => [
           ...eds,
           {
             id: `edge-${nodeId}-${newNode.id}`,
@@ -7312,7 +8860,7 @@ function StarCanvasInner({
           },
         ]);
 
-        setNodes((nds) =>
+        applyNodeUpdates((nds) =>
           nds.map((item) =>
             item.id === nodeId && item.data.generation?.requestId === requestId
               ? {
@@ -7501,13 +9049,7 @@ function StarCanvasInner({
       setNodes((nds) =>
         nds.map((n) =>
           n.id === selectedNodeId && n.data?.shot
-            ? {
-                ...n,
-                data: {
-                  ...n.data,
-                  shot: { ...n.data.shot, ...patch },
-                },
-              }
+            ? applyShotParameterPatchToNode(n, patch)
             : n,
         ),
       );
@@ -7518,12 +9060,16 @@ function StarCanvasInner({
   // ========================================================================
   // RENDER
   // ========================================================================
+  const isBlankCanvas = nodes.length === 0;
+  const rightDockOffset = chatOpen ? CHAT_PANEL_WIDTH + 20 : 20;
+
   return (
     <>
       <BatchProgressBar ref={batchProgressRef} />
       <StoryboardBatchProgressOverlay
         job={storyboardBatchJob}
         onDismiss={handleDismissStoryboardBatchJob}
+        rightOffset={rightDockOffset}
       />
       <SelectionToolbar
         selectedCount={selectionCount}
@@ -7550,7 +9096,7 @@ function StarCanvasInner({
           const selected = nodes.filter((n) => n.selected);
           if (selected.length > 0) {
             const layouted = quickLayout(selected, [], 3);
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 const laid = layouted.find((l: any) => l.id === n.id);
                 return laid ? { ...n, position: laid.position } : n;
@@ -7572,6 +9118,7 @@ function StarCanvasInner({
         node={showPropertyPanel ? selectedNode : null}
         onClose={() => setShowPropertyPanel(false)}
         onUpdateData={handlePropertyUpdate}
+        rightOffset={rightDockOffset}
       />
       {selectedNode?.type === "shot" && selectedNode?.data?.shot && (
         <ShotParameterPanel
@@ -7585,10 +9132,9 @@ function StarCanvasInner({
       )}
       <div className="relative h-screen w-screen overflow-hidden startrails-flow">
       <div
-        className="fixed left-20 top-3 z-20 flex items-center overflow-x-auto scrollbar-none"
+        className="fixed left-20 top-3 z-20 flex items-center gap-2 overflow-x-auto scrollbar-none"
         style={{ right: chatOpen ? CHAT_PANEL_WIDTH : 0 }}
       >
-        {/* ── Logo / Title ── */}
         <div
           className="pointer-events-none flex items-center gap-2 rounded-2xl border px-3.5 py-2 shadow-lg backdrop-blur-xl"
           style={{
@@ -7611,123 +9157,185 @@ function StarCanvasInner({
           </div>
         </div>
 
-        {/* ── Separator ── */}
-        <div className="mx-2 h-6 w-px" style={{ backgroundColor: DESIGN_TOKENS.border }} />
-        <ExportDropdown
-          onExportProjectPackage={handleExportProjectPackage}
-          onExportStoryboardPdf={handleExportStoryboardPdf}
-          onPrintStoryboardPdf={handlePrintStoryboardPdf}
-          onExportScreenplay={handleExportScreenplay}
-          onExportStoryboardCsv={handleExportStoryboardCsv}
-          onExportCharacterCsv={handleExportCharacterCsv}
-          onExportSubtitles={handleExportSubtitles}
-          onExportCompositionScript={handleExportCompositionScript}
-          onExportToJianyingDraft={handleExportToJianyingDraft}
-          onExportJianyingCompatible={handleExportJianyingCompatible}
-        />
-        {/* ── Separator ── */}
-        <div className="mx-2 h-6 w-px" style={{ backgroundColor: DESIGN_TOKENS.border }} />
-        <BibleDropdown
-          characterLibraryCount={characterLibraryItems.length}
-          sceneCount={sceneBibleItems.length}
-          onOpenProjectBible={() => setShowProjectBiblePanel((v) => !v)}
-          onOpenCharacterBible={() => setShowCharacterBiblePanel(true)}
-          onOpenSceneBible={() => setShowSceneBiblePanel(true)}
-          onOpenStyleBible={() => setShowStyleBiblePanel(true)}
-          onToggleEmotionCurve={() => setShowEmotionCurve((v) => !v)}
-        />
         <button
           type="button"
-          onClick={() => setShowShotList((v) => !v)}
+          onClick={handleRunScriptPipeline}
           className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
           style={{
-            borderColor: showShotList ? "rgba(59, 130, 246, 0.5)" : DESIGN_TOKENS.border,
-            backgroundColor: showShotList ? "rgba(59, 130, 246, 0.18)" : "rgba(18,18,24,0.7)",
-            color: DESIGN_TOKENS.textSecondary,
+            borderColor: "rgba(168, 85, 247, 0.42)",
+            backgroundColor: "rgba(76, 29, 149, 0.36)",
+            color: DESIGN_TOKENS.text,
           }}
-          title="分镜表格视图（Shot List）"
-          data-testid="shot-list-toggle"
+          title="选中剧本/文本节点，一键生成文字分镜、镜头、9宫格和视频提示词"
         >
-          <Table2 size={14} strokeWidth={1.7} />
-          <span>分镜</span>
+          <Clapperboard size={14} strokeWidth={1.7} />
+          <span>生成分镜流水线</span>
         </button>
-        <button
-          type="button"
-          onClick={() => setShowStyleLibrary((v) => !v)}
-          className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
-          style={{
-            borderColor: showStyleLibrary ? "rgba(168, 85, 247, 0.5)" : DESIGN_TOKENS.border,
-            backgroundColor: showStyleLibrary ? "rgba(168, 85, 247, 0.18)" : "rgba(18,18,24,0.7)",
-            color: DESIGN_TOKENS.textSecondary,
-          }}
-          title="影视画风库（100+风格预设）"
-          data-testid="style-library-toggle"
-        >
-          <Palette size={14} strokeWidth={1.7} />
-          <span>画风</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowAngleControl((v) => !v)}
-          className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
-          style={{
-            borderColor: showAngleControl ? "rgba(249, 115, 22, 0.5)" : DESIGN_TOKENS.border,
-            backgroundColor: showAngleControl ? "rgba(249, 115, 22, 0.18)" : "rgba(18,18,24,0.7)",
-            color: DESIGN_TOKENS.textSecondary,
-          }}
-          title="拖拽旋转角色角度"
-          data-testid="angle-control-toggle"
-        >
-          <RotateCcw size={14} strokeWidth={1.7} />
-          <span>角度</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowVersionCompare((v) => !v)}
-          className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
-          style={{
-            borderColor: showVersionCompare ? "rgba(34, 211, 238, 0.5)" : DESIGN_TOKENS.border,
-            backgroundColor: showVersionCompare ? "rgba(34, 211, 238, 0.18)" : "rgba(18,18,24,0.7)",
-            color: DESIGN_TOKENS.textSecondary,
-          }}
-          title="版本对比"
-          data-testid="version-compare-toggle"
-        >
-          <GitCompare size={14} strokeWidth={1.7} />
-          <span>版本</span>
-        </button>
-        {productionRunQueue && (
-          <button
-            type="button"
-            onClick={() => setShowProductionQueue((value) => !value)}
-            className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
-            style={{
-              borderColor: showProductionQueue ? DESIGN_TOKENS.borderStrong : DESIGN_TOKENS.border,
-              backgroundColor: showProductionQueue ? "rgba(255,255,255,0.08)" : "rgba(18,18,24,0.7)",
-              color: DESIGN_TOKENS.textSecondary,
-            }}
-            title="查看当前画布的生产运行队列（视觉/配音/字幕）"
-            data-testid="production-run-queue-toggle"
-          >
-            <ListChecks size={14} strokeWidth={1.7} />
-            <span>生产队列 {productionRunQueue.totalTasks}</span>
-          </button>
+
+        {isBlankCanvas ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowSettings(true)}
+              className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+              style={{
+                borderColor: DESIGN_TOKENS.border,
+                backgroundColor: "rgba(18,18,24,0.72)",
+                color: DESIGN_TOKENS.textSecondary,
+              }}
+              title="配置模型与中转站"
+            >
+              <Settings2 size={14} strokeWidth={1.7} />
+              <span>模型设置</span>
+            </button>
+            <button
+              type="button"
+              onClick={onboarding.open}
+              className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+              style={{
+                borderColor: DESIGN_TOKENS.border,
+                backgroundColor: "rgba(18,18,24,0.72)",
+                color: DESIGN_TOKENS.textSecondary,
+              }}
+              title="查看新手引导"
+            >
+              <Sparkles size={14} strokeWidth={1.7} />
+              <span>新手引导</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowHelp((prev) => !prev)}
+              className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+              style={{
+                borderColor: DESIGN_TOKENS.border,
+                backgroundColor: "rgba(18,18,24,0.72)",
+                color: showHelp ? DESIGN_TOKENS.text : DESIGN_TOKENS.textSecondary,
+              }}
+              title="快捷键帮助"
+            >
+              <HelpCircle size={14} strokeWidth={1.7} />
+              <span>帮助</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="mx-2 h-6 w-px" style={{ backgroundColor: DESIGN_TOKENS.border }} />
+            <ExportDropdown
+              onExportProjectPackage={handleExportProjectPackage}
+              onExportStoryboardPdf={handleExportStoryboardPdf}
+              onPrintStoryboardPdf={handlePrintStoryboardPdf}
+              onExportScreenplay={handleExportScreenplay}
+              onExportStoryboardCsv={handleExportStoryboardCsv}
+              onExportCharacterCsv={handleExportCharacterCsv}
+              onExportSubtitles={handleExportSubtitles}
+              onExportCompositionScript={handleExportCompositionScript}
+              onExportToJianyingDraft={handleExportToJianyingDraft}
+              onExportJianyingCompatible={handleExportJianyingCompatible}
+            />
+            <div className="mx-2 h-6 w-px" style={{ backgroundColor: DESIGN_TOKENS.border }} />
+            <BibleDropdown
+              characterLibraryCount={characterLibraryItems.length}
+              sceneCount={sceneBibleItems.length}
+              onOpenProjectBible={() => setShowProjectBiblePanel((v) => !v)}
+              onOpenCharacterBible={() => setShowCharacterBiblePanel(true)}
+              onOpenSceneBible={() => setShowSceneBiblePanel(true)}
+              onOpenStyleBible={() => setShowStyleBiblePanel(true)}
+              onToggleEmotionCurve={() => setShowEmotionCurve((v) => !v)}
+            />
+            <button
+              type="button"
+              onClick={() => setShowShotList((v) => !v)}
+              className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+              style={{
+                borderColor: showShotList ? "rgba(59, 130, 246, 0.5)" : DESIGN_TOKENS.border,
+                backgroundColor: showShotList ? "rgba(59, 130, 246, 0.18)" : "rgba(18,18,24,0.7)",
+                color: DESIGN_TOKENS.textSecondary,
+              }}
+              title="分镜表格视图（Shot List）"
+              data-testid="shot-list-toggle"
+            >
+              <Table2 size={14} strokeWidth={1.7} />
+              <span>分镜</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowStyleLibrary((v) => !v)}
+              className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+              style={{
+                borderColor: showStyleLibrary ? "rgba(168, 85, 247, 0.5)" : DESIGN_TOKENS.border,
+                backgroundColor: showStyleLibrary ? "rgba(168, 85, 247, 0.18)" : "rgba(18,18,24,0.7)",
+                color: DESIGN_TOKENS.textSecondary,
+              }}
+              title="影视画风库（100+风格预设）"
+              data-testid="style-library-toggle"
+            >
+              <Palette size={14} strokeWidth={1.7} />
+              <span>画风</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAngleControl((v) => !v)}
+              className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+              style={{
+                borderColor: showAngleControl ? "rgba(249, 115, 22, 0.5)" : DESIGN_TOKENS.border,
+                backgroundColor: showAngleControl ? "rgba(249, 115, 22, 0.18)" : "rgba(18,18,24,0.7)",
+                color: DESIGN_TOKENS.textSecondary,
+              }}
+              title="拖拽旋转角色角度"
+              data-testid="angle-control-toggle"
+            >
+              <RotateCcw size={14} strokeWidth={1.7} />
+              <span>朝向</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowVersionCompare((v) => !v)}
+              className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+              style={{
+                borderColor: showVersionCompare ? "rgba(34, 211, 238, 0.5)" : DESIGN_TOKENS.border,
+                backgroundColor: showVersionCompare ? "rgba(34, 211, 238, 0.18)" : "rgba(18,18,24,0.7)",
+                color: DESIGN_TOKENS.textSecondary,
+              }}
+              title="版本对比"
+              data-testid="version-compare-toggle"
+            >
+              <GitCompare size={14} strokeWidth={1.7} />
+              <span>版本</span>
+            </button>
+            {productionRunQueue && (
+              <button
+                type="button"
+                onClick={() => setShowProductionQueue((value) => !value)}
+                className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+                style={{
+                  borderColor: showProductionQueue ? DESIGN_TOKENS.borderStrong : DESIGN_TOKENS.border,
+                  backgroundColor: showProductionQueue ? "rgba(255,255,255,0.08)" : "rgba(18,18,24,0.7)",
+                  color: DESIGN_TOKENS.textSecondary,
+                }}
+                title="查看当前画布的生产运行队列（视觉/配音/字幕）"
+                data-testid="production-run-queue-toggle"
+              >
+                <ListChecks size={14} strokeWidth={1.7} />
+                <span>生产队列 {productionRunQueue.totalTasks}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowShotPlanning((value) => !value)}
+              className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+              style={{
+                borderColor: showShotPlanning ? DESIGN_TOKENS.borderStrong : DESIGN_TOKENS.border,
+                backgroundColor: showShotPlanning ? "rgba(255,255,255,0.08)" : "rgba(18,18,24,0.7)",
+                color: DESIGN_TOKENS.textSecondary,
+              }}
+              title="制片规划"
+              data-testid="shot-planning-toggle"
+            >
+              <ClipboardList size={14} strokeWidth={1.7} />
+              <span>制片规划</span>
+            </button>
+          </>
         )}
-        <button
-          type="button"
-          onClick={() => setShowShotPlanning((value) => !value)}
-          className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
-          style={{
-            borderColor: showShotPlanning ? DESIGN_TOKENS.borderStrong : DESIGN_TOKENS.border,
-            backgroundColor: showShotPlanning ? "rgba(255,255,255,0.08)" : "rgba(18,18,24,0.7)",
-            color: DESIGN_TOKENS.textSecondary,
-          }}
-          title="制片规划"
-          data-testid="shot-planning-toggle"
-        >
-          <ClipboardList size={14} strokeWidth={1.7} />
-          <span>制片规划</span>
-        </button>
       </div>
 
       {selectedShotCount >= 2 && (
@@ -7962,7 +9570,7 @@ function StarCanvasInner({
       {/* Hidden file input */}
       <input
         type="file"
-        accept="image/*"
+        accept="image/*,video/*"
         multiple
         ref={fileInputRef}
         onChange={handleFileChange}
@@ -7993,7 +9601,7 @@ function StarCanvasInner({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={(connection) => {
-            setEdges((eds) =>
+            applyEdgeUpdates((eds) =>
               addEdge(
                 {
                   ...connection,
@@ -8075,14 +9683,17 @@ function StarCanvasInner({
               color="rgba(255,255,255,0.12)"
             />
           )}
-          <MiniMap
-            nodeStrokeColor="rgba(168, 85, 247, 0.3)"
-            nodeColor="rgba(168, 85, 247, 0.1)"
-            maskColor="rgba(0,0,0,0.5)"
-            style={{ background: "rgba(18,18,24,0.85)" }}
-            pannable
-            zoomable
-          />
+          {!isBlankCanvas && isMiniMapVisible && (
+            <MiniMap
+              position="bottom-right"
+              nodeStrokeColor="rgba(168, 85, 247, 0.3)"
+              nodeColor="rgba(168, 85, 247, 0.1)"
+              maskColor="rgba(0,0,0,0.5)"
+              style={{ background: "rgba(18,18,24,0.85)" }}
+              pannable
+              zoomable
+            />
+          )}
         </ReactFlow>
       </div>
 
@@ -8129,7 +9740,9 @@ function StarCanvasInner({
           onUploadImage={handleUploadClick}
           onCreateTextNode={() => handleAddNode("content", undefined, "storyboard")}
           onImportScript={() => setShowScriptImportPanel(true)}
-          onImportReferenceVideo={() => setShowReverseStoryboard(true)}
+          onImportReferenceVideo={openReferenceVideoEntry}
+          onOpenSettings={() => setShowSettings(true)}
+          onOpenOnboarding={onboarding.open}
           chatOpen={chatOpen}
           chatPanelWidth={CHAT_PANEL_WIDTH}
           leftToolbarWidth={LEFT_TOOLBAR_SAFE_WIDTH}
@@ -8139,6 +9752,7 @@ function StarCanvasInner({
 
       {/* Left Toolbar */}
       <LeftToolbar
+        isBlankCanvas={isBlankCanvas}
         onOpenAssetLibrary={openAssetLibrary}
         onToggleAddNodePanel={() => setShowAddNodePanel((prev) => !prev)}
         isAddNodePanelOpen={showAddNodePanel}
@@ -8153,9 +9767,10 @@ function StarCanvasInner({
         onToggleTimeline={() => setShowTimeline((prev) => !prev)}
         onOpenPanorama={() => setShowPanorama(true)}
         onOpenCrewAgent={() => setShowCrewAgentPanel(true)}
-        onOpenReverseStoryboard={() => setShowReverseStoryboard(true)}
+        onOpenReverseStoryboard={openReferenceVideoEntry}
         onOpenShotLibrary={() => setShowShotLibrary(true)}
         onOpenAIScript={() => setShowAIScript(true)}
+        onOpenIssueCenter={() => setShowIssueCenter(true)}
         onOpenOnboarding={onboarding.toggle}
         onOpenFileUpload={() => setShowFileUpload(true)}
       />
@@ -8172,7 +9787,7 @@ function StarCanvasInner({
         onImport={(json) => {
           const template = workflowTemplates.importFromJSON(json);
           if (!template) {
-            alert("导入失败：文件格式无效。请确保使用 StarCanvas 导出的模板文件。");
+            showCanvasNotice("error", "模板导入失败", "文件格式无效，请确认使用的是 StarCanvas 导出的模板文件。");
           }
         }}
       />
@@ -8188,10 +9803,18 @@ function StarCanvasInner({
         onUploadImage={handleUploadClick}
         onUploadDocument={handleDocumentUploadClick}
         onImportScript={() => setShowScriptImportPanel(true)}
-        onImportVideoRemix={() => setShowVideoRemixPanel(true)}
+        onImportReferenceVideo={openReferenceVideoEntry}
+        onOpenVideoRemix={openReferenceVideoEntry}
         onOpenProjectBible={() => setShowProjectBiblePanel(true)}
         onCreateVideoWorkflow={handleCreateVideoWorkflow}
         onOpenAssetLibrary={openAssetLibrary}
+      />
+
+      <ReferenceVideoEntryPanel
+        isOpen={showReferenceVideoEntry}
+        onClose={() => setShowReferenceVideoEntry(false)}
+        onChooseStoryboard={handleChooseReferenceStoryboard}
+        onChooseStructure={handleChooseReferenceStructure}
       />
 
       {/* User Menu Portal */}
@@ -8208,14 +9831,13 @@ function StarCanvasInner({
           >
             <button
               onClick={() => {
-                // TODO: 接入真实登录
-                alert("登录功能：接入 Auth0 / Clerk / Supabase Auth");
+                setShowSettings(true);
                 setShowUserMenu(false);
               }}
               className="flex w-full items-center gap-2 px-4 py-2 text-sm transition-colors hover:bg-white/5"
               style={{ color: DESIGN_TOKENS.text }}
             >
-              <span>登录 / 注册</span>
+              <span>模型与中转站设置</span>
             </button>
             <div
               className="mx-2 my-1 h-px"
@@ -8223,22 +9845,23 @@ function StarCanvasInner({
             />
             <button
               onClick={() => {
-                setShowSettings(true);
+                setShowWorkspaceHistory(true);
                 setShowUserMenu(false);
               }}
               className="flex w-full items-center gap-2 px-4 py-2 text-sm transition-colors hover:bg-white/5"
               style={{ color: DESIGN_TOKENS.textSecondary }}
             >
-              <span>设置</span>
+              <span>工作区记录</span>
             </button>
             <button
               onClick={() => {
+                onboarding.open();
                 setShowUserMenu(false);
               }}
               className="flex w-full items-center gap-2 px-4 py-2 text-sm transition-colors hover:bg-white/5"
               style={{ color: DESIGN_TOKENS.textMuted }}
             >
-              <span>退出</span>
+              <span>新手引导</span>
             </button>
           </div>,
           document.body,
@@ -8367,6 +9990,7 @@ function StarCanvasInner({
           </div>,
           document.body,
         )}
+      {!isBlankCanvas && (
       <div
         className="fixed bottom-3 left-3 z-20 flex items-center gap-1 rounded-full border px-2 py-1.5"
         style={{
@@ -8378,7 +10002,7 @@ function StarCanvasInner({
         {/* 布局视图 - 使用 dagre 算法 */}
         <button
           onClick={() => {
-            setNodes((nds) => {
+            applyNodeUpdates((nds) => {
               const layoutedNodes = quickLayout(nds, edges, 3);
               // 布局后自动适应当前可见画布区域，避免被右侧聊天面板遮挡
               fitViewToVisibleCanvas();
@@ -8401,6 +10025,19 @@ function StarCanvasInner({
           title="显示/隐藏网格"
         >
           <Grid3X3 size={14} strokeWidth={1.5} />
+        </button>
+        <button
+          type="button"
+          data-testid="minimap-toggle"
+          onClick={() => setIsMiniMapVisible((prev) => !prev)}
+          className="flex h-7 w-7 items-center justify-center rounded-full transition-colors hover:bg-white/10"
+          style={{
+            color: isMiniMapVisible ? DESIGN_TOKENS.accent : DESIGN_TOKENS.textMuted,
+          }}
+          title={isMiniMapVisible ? "隐藏小地图" : "显示小地图"}
+          aria-label={isMiniMapVisible ? "隐藏小地图" : "显示小地图"}
+        >
+          <Eye size={14} strokeWidth={1.5} />
         </button>
         <div
           className="mx-1 h-3 w-px"
@@ -8536,6 +10173,7 @@ function StarCanvasInner({
           </>
         )}
       </div>
+      )}
 
       {/* Canvas Context Menu */}
       {typeof document !== "undefined" &&
@@ -8692,6 +10330,21 @@ function StarCanvasInner({
                 createDocumentDerivedNode(contextMenu.nodeId, "storyboard");
             }}
             onComposeSelectedShots={handleComposeSelectedShots}
+            onCreatePromptFromRemix={() => {
+              if (contextMenu?.type === "node") {
+                handleCreatePromptFromRemix(contextMenu.nodeId);
+              }
+            }}
+            onCreateStoryboardFromRemix={() => {
+              if (contextMenu?.type === "node") {
+                handleCreateStoryboardFromRemix(contextMenu.nodeId);
+              }
+            }}
+            onQueueProductionFromRemix={() => {
+              if (contextMenu?.type === "node") {
+                handleQueueProductionFromRemix(contextMenu.nodeId);
+              }
+            }}
             selectedShotCount={selectedShotCount}
             isWorkflowRunning={workflowRunner.state.isRunning}
             nodeKind={
@@ -8827,7 +10480,7 @@ function StarCanvasInner({
           onClose={() => setShowCinematicParams(false)}
           selectedNodeId={selectedNodeId}
           onApplyToNode={(nodeId: string, prompt: string, params: CinematicParams) => {
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 if (n.id !== nodeId) return n;
                 const previousPrompt = n.data.prompt || n.data.content || "";
@@ -8846,7 +10499,7 @@ function StarCanvasInner({
           onClose={() => setShowColorGrade(false)}
           selectedNodeId={selectedNodeId}
           onApplyToNode={(nodeId: string, promptSuffix: string) => {
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 if (n.id !== nodeId) return n;
                 const previousPrompt = n.data.prompt || n.data.content || "";
@@ -8865,7 +10518,7 @@ function StarCanvasInner({
           onClose={() => setShowReverseStoryboard(false)}
           selectedNodeId={selectedNodeId}
           onImportShots={(shots, videoMeta) => {
-            setNodes((nds) => {
+            applyNodeUpdates((nds) => {
               const nodes = importStoryboardDraftToCanvas(
                 shots.map((s) => ({
                   id: s.id,
@@ -8882,6 +10535,46 @@ function StarCanvasInner({
               completeStep("import-script-to-canvas")
               return [...nds, ...nodes]
             })
+          }}
+        />
+      )}
+
+      {showVideoRemix && (
+        <VideoRemixPanel
+          isOpen={showVideoRemix}
+          onClose={() => setShowVideoRemix(false)}
+          onImportRemix={(payload) => {
+            const structure = payload.result.template.structure
+              .map((step) => `${step.timestamp} ${step.type}: ${step.description}`)
+              .join("\n")
+            const summary = `${payload.result.template.name}\n${payload.result.template.hookPattern}\n${structure}`.trim()
+            const id = `node-remix-${Date.now()}`
+            applyNodeUpdates((nds) => [
+              ...nds,
+              {
+                id,
+                type: "workflow",
+                position: {
+                  x: 160 + nds.length * 32,
+                  y: 180 + nds.length * 24,
+                },
+                data: {
+                  title: `结构拆解：${payload.videoName}`,
+                  nodeKind: "remix-analysis",
+                  workflowRole: "Remix Analyst",
+                  status: "done",
+                  content: summary,
+                  summary,
+                  generationOutput: {
+                    status: "ready",
+                    result: payload.result,
+                  },
+                  runMeta: createSucceededRunMeta({ message: "参考视频结构拆解完成" }),
+                  outputs: [{ label: "复刻结构", type: "text" }],
+                  createdAt: Date.now(),
+                },
+              },
+            ])
           }}
         />
       )}
@@ -8908,7 +10601,7 @@ function StarCanvasInner({
           onClose={() => setShowShotLibrary(false)}
           selectedNodeId={selectedNodeId}
           onApplyToNode={(nodeId: string, shotPrompt: string) => {
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 if (n.id !== nodeId) return n
                 const previousPrompt = n.data.prompt || n.data.content || ""
@@ -8929,7 +10622,7 @@ function StarCanvasInner({
           onClose={() => setShowAIScript(false)}
           selectedNodeId={selectedNodeId}
           onImportShots={(shots) => {
-            setNodes((nds) => {
+            applyNodeUpdates((nds) => {
               const nodes = importStoryboardDraftToCanvas(
                 shots.map((s) => ({
                   id: s.id,
@@ -8951,7 +10644,7 @@ function StarCanvasInner({
 
       {/* 时间轴面板 (TimelinePanel — react-timeline-editor) */}
       {/* 底部时间轴展开按钮 */}
-      {!showTimeline && (
+      {!showTimeline && !isBlankCanvas && (
         <div
           className="fixed bottom-0 left-1/2 z-30 -translate-x-1/2"
           style={{ marginBottom: "8px" }}
@@ -8973,26 +10666,28 @@ function StarCanvasInner({
           </button>
         </div>
       )}
-      <TimelinePanel
-        isOpen={showTimeline}
-        onClose={() => setShowTimeline(false)}
-        clips={timelineClips}
-        currentNodeTime={timelineCurrentTime}
-        onSeek={setTimelineCurrentTime}
-        isPlaying={isTimelinePlaying}
-        onTogglePlay={toggleTimelinePlay}
-        onClipMove={(clipId, newStartTime) => {
-          setNodes((nds) =>
-            nds.map((n) =>
-              `tl-clip-${n.id}` === clipId
-                ? { ...n, data: { ...n.data, timelineStartTimeSeconds: newStartTime } }
-                : n,
-            ),
-          );
-        }}
-      />
+      {(!isBlankCanvas || showTimeline) && (
+        <TimelinePanel
+          isOpen={showTimeline}
+          onClose={() => setShowTimeline(false)}
+          clips={timelineClips}
+          currentNodeTime={timelineCurrentTime}
+          onSeek={setTimelineCurrentTime}
+          isPlaying={isTimelinePlaying}
+          onTogglePlay={toggleTimelinePlay}
+          onClipMove={(clipId, newStartTime) => {
+            applyNodeUpdates((nds) =>
+              nds.map((n) =>
+                `tl-clip-${n.id}` === clipId
+                  ? { ...n, data: { ...n.data, timelineStartTimeSeconds: newStartTime } }
+                  : n,
+              ),
+            );
+          }}
+        />
+      )}
 
-      {/* 全景预𪾢面板 (PanoramaPanel — react-pannellum) */}
+      {/* 全景预览面板 (PanoramaPanel — react-pannellum) */}
       {showPanorama && (
         <PanoramaPanel
           isOpen={showPanorama}
@@ -9005,7 +10700,7 @@ function StarCanvasInner({
               : undefined
           }
           onApplyToNode={(nodeId: string, panoramaPrompt: string) => {
-            setNodes((nds) =>
+            applyNodeUpdates((nds) =>
               nds.map((n) => {
                 if (n.id !== nodeId) return n;
                 const previousPrompt = n.data.prompt || n.data.content || "";
@@ -9076,7 +10771,7 @@ function StarCanvasInner({
                 selectedNodeId={selectedNodeId}
                 onSelectShot={(nodeId: string) => { setSelectedNodeId(nodeId); setShowShotList(false) }}
                 onRunShot={(nodeId: string) => { workflowRunner.runNode(nodeId) }}
-                onExportJianying={() => { downloadJianyingDraft(nodes) }}
+                onExportJianying={handleExportToJianyingDraft}
                 onExportScript={handleExportCompositionScript}
               />
             </div>
@@ -9085,32 +10780,31 @@ function StarCanvasInner({
         )}
 
       {/* 影视画风库 */}
-      <StyleLibraryPanel
-        isOpen={showStyleLibrary}
-        onClose={() => setShowStyleLibrary(false)}
-        currentPrompt={selectedNode?.data?.shot?.visualPrompt || selectedNode?.data?.prompt || ""}
-        onApplyStyle={(enhancedPrompt) => {
-          const targetId = selectedNodeId
-          if (!targetId) return
-          // Update the visual prompt of the selected shot/image node
-          if (selectedNode?.data?.shot) {
-            // Shot node
-            const shotPatch = { visualPrompt: enhancedPrompt }
-            setNodes((nds) =>
-              nds.map((n) =>
-                n.id === targetId ? { ...n, data: { ...n.data, shot: { ...n.data.shot!, ...shotPatch } } } : n,
-              ),
-            )
-          } else {
-            // Image/Content node
-            setNodes((nds) =>
-              nds.map((n) =>
-                n.id === targetId ? { ...n, data: { ...n.data, prompt: enhancedPrompt, visualPrompt: enhancedPrompt } } : n,
-              ),
-            )
-          }
-        }}
-      />
+      {showStyleLibrary && (
+        <StyleLibraryPanel
+          isOpen={showStyleLibrary}
+          onClose={() => setShowStyleLibrary(false)}
+          currentPrompt={selectedNode?.data?.shot?.visualPrompt || selectedNode?.data?.prompt || ""}
+          onApplyStyle={(enhancedPrompt) => {
+            const targetId = selectedNodeId
+            if (!targetId) return
+            if (selectedNode?.data?.shot) {
+              const shotPatch = { visualPrompt: enhancedPrompt }
+              applyNodeUpdates((nds) =>
+                nds.map((n) =>
+                  n.id === targetId ? { ...n, data: { ...n.data, shot: { ...n.data.shot!, ...shotPatch } } } : n,
+                ),
+              )
+            } else {
+              applyNodeUpdates((nds) =>
+                nds.map((n) =>
+                  n.id === targetId ? { ...n, data: { ...n.data, prompt: enhancedPrompt, visualPrompt: enhancedPrompt } } : n,
+                ),
+              )
+            }
+          }}
+        />
+      )}
 
       {/* 拖拽角度控制 */}
       {showAngleControl && (
@@ -9123,18 +10817,18 @@ function StarCanvasInner({
           }}
         >
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-xs font-medium" style={{ color: "rgba(255,255,255,0.8)" }}>角度控制</span>
+            <span className="text-xs font-medium" style={{ color: "rgba(255,255,255,0.8)" }}>角色朝向</span>
             <button onClick={() => setShowAngleControl(false)} className="rounded p-1 hover:bg-white/10" style={{ color: "rgba(255,255,255,0.5)" }}>
               <X size={14} />
             </button>
           </div>
           <DraggableAngleControl
+            angle={selectedNode?.data?.characterFacingAngle ?? 0}
             characterImageUrl={selectedNode?.data?.resultUrl || selectedNode?.data?.shot?.generatedImageUrl || undefined}
             onChange={(angle) => {
-              if (selectedNode?.data?.shot) {
-                // Update shot camera angle parameter
-                setNodes((nds) => nds.map((n) =>
-                  n.id === selectedNodeId ? { ...n, data: { ...n.data, shot: { ...n.data.shot!, cameraAngle: angle } } } : n
+              if (selectedNodeId) {
+                applyNodeUpdates((nds) => nds.map((n) =>
+                  n.id === selectedNodeId ? { ...n, data: { ...n.data, characterFacingAngle: angle } } : n
                 ))
               }
             }}
@@ -9143,19 +10837,23 @@ function StarCanvasInner({
       )}
 
       {/* 版本对比面板 */}
-      <VersionComparePanel
-        isOpen={showVersionCompare}
-        onClose={() => setShowVersionCompare(false)}
-        snapshots={snapshotStoreSnapshots}
-        currentSnapshotId={latestSnapshotId}
-        onRestore={(snapshotId: string) => {
-          const snap = snapshotStoreSnapshots.find((s) => s.id === snapshotId)
-          if (snap) {
-            setNodes(snap.nodes)
-            setEdges(snap.edges)
-          }
-        }}
-      />
+      {showVersionCompare && (
+        <VersionComparePanel
+          isOpen={showVersionCompare}
+          onClose={() => setShowVersionCompare(false)}
+          snapshots={snapshotStoreSnapshots}
+          currentSnapshotId={latestSnapshotId}
+          onRestore={(snapshotId: string) => {
+            const snap = snapshotStoreSnapshots.find((s) => s.id === snapshotId)
+            if (snap) {
+              nodesRef.current = snap.nodes
+              edgesRef.current = snap.edges
+              setNodes(snap.nodes)
+              setEdges(snap.edges)
+            }
+          }}
+        />
+      )}
 
       {/* AI 影视创作剧组面𤋈 (CrewAgentPanel — 7 Agent) */}
       {showCrewAgentPanel && (
@@ -9183,7 +10881,7 @@ function StarCanvasInner({
             }
             Object.entries(results).forEach(([roleId, output]) => {
               if (!output) return
-              setNodes((nds) => [
+              applyNodeUpdates((nds) => [
                 ...nds,
                 {
                   id: `crew-${roleId}-${Date.now()}`,
@@ -9213,6 +10911,10 @@ function StarCanvasInner({
           onClose={() => setShowExportPreflight(false)}
           nodes={nodes}
           timelineOrder={timelineClips.map((c) => c.id.replace(/^tl-(video|audio|subtitle)-/, ""))}
+          initialExportType={exportPreflightType}
+          productionPreflight={canvasProductionRunManifest?.productionPreflight ?? null}
+          onResolveProductionIssue={handleResolveProductionIssue}
+          onApplyProductionFix={handleApplyProductionFixDraft}
           onPerformExport={performJianyingExport}
         />
       )}
@@ -9234,30 +10936,29 @@ function StarCanvasInner({
               },
               position,
             });
-            setNodes((nds) => [...nds, docNode]);
+            applyNodeUpdates((nds) => [...nds, docNode]);
           }}
-        />
-      )}
-
-      {/* Legacy Character Asset Library Panel */}
-      {showCharacterLibrary &&
-        typeof document !== "undefined" &&
-        createPortal(
-          <CharacterAssetLibraryPanel
-            items={characterLibraryItems}
-            onApplyAssetPatch={handleApplyCharacterAssetPatch}
-            onClose={() => setShowCharacterLibrary(false)}
-          />,
-          document.body,
-        )}
-
-        {/* === 恢复孤立组件 === */}
-      {/* 镜头角度/景别 (AngleControlPanel) */}
-      {showAngleControl && (
-        <AngleControlPanel
-          isOpen={showAngleControl}
-          onClose={() => setShowAngleControl(false)}
-          selectedNodeId={selectedNodeId}
+          onVideoImported={(video, position) => {
+            const videoNode = createUploadedVideoNode({
+              id: generateId(),
+              title: video.title,
+              url: video.url,
+              fileName: video.fileName,
+              fileSize: video.fileSize,
+              mimeType: video.mimeType,
+              durationMs: video.durationMs,
+              width: video.width,
+              height: video.height,
+              assetId: video.assetId,
+              persistence: "indexeddb",
+              position,
+            });
+            const nextNodes = [...nodesRef.current, videoNode];
+            nodesRef.current = nextNodes;
+            setNodes(nextNodes);
+            appendVideoAnalysisChains([videoNode]);
+          }}
+          onProjectPackageImported={handleImportProjectPackage}
         />
       )}
 
@@ -9272,6 +10973,18 @@ function StarCanvasInner({
           scriptImportOpen={showScriptImportPanel}
           showRunPanel={showRunPanel}
           runEventCount={nodes.filter((n: any) => n.data?.runMeta?.runStatus).length}
+        />
+      )}
+      {showIssueCenter && (
+        <CanvasIssueCenterPanel
+          isOpen={showIssueCenter}
+          issues={canvasIssues}
+          onClose={() => setShowIssueCenter(false)}
+          rightOffset={rightDockOffset}
+          onResolveIssue={(issue) => {
+            setShowIssueCenter(false);
+            handleResolveProductionIssue(issue.shotId, issue.action);
+          }}
         />
       )}
 
@@ -9298,14 +11011,21 @@ function StarCanvasInner({
         createPortal(
           <ProductionRunQueuePanel
             queue={activeProductionQueue}
+            rightOffset={rightDockOffset}
             onClose={() => {
               setShowProductionQueue(false);
               if (planningRunQueue) {
                 useShotPlanningRunQueueStore.getState().clear();
               }
             }}
+            onResolveIssue={handleResolveProductionIssue}
+            onApplyProductionFix={handleApplyProductionFixDraft}
             isRunning={productionExecutor.isRunning}
+            isPaused={productionExecutor.isPaused}
             onStart={productionExecutor.start}
+            onPause={productionExecutor.pause}
+            onResume={productionExecutor.resume}
+            onAbort={productionExecutor.abort}
             execState={productionExecutor.execState}
             onRetryTask={productionExecutor.retryTask}
             onSkipTask={productionExecutor.skipTask}
@@ -9322,12 +11042,14 @@ function StarCanvasInner({
             projectId={projectId ?? null}
             projectTitle={projectTitle}
             nodes={planningNodes}
+            sourceNodes={nodes}
           />,
           document.body,
         )}
 
       {/* Asset Library Panel */}
-      {typeof document !== "undefined" &&
+      {assetLibrary.isOpen &&
+        typeof document !== "undefined" &&
         createPortal(
           <AssetLibraryPanel
             isOpen={assetLibrary.isOpen}
@@ -9339,7 +11061,7 @@ function StarCanvasInner({
             onFolderChange={setAssetLibraryFolder}
             onToggleFavorite={toggleAssetFavorite}
             onDeleteAsset={removeAsset}
-            onSelectAsset={(asset) => {
+            onSelectAsset={async (asset) => {
               // Add asset to canvas
               let position = { x: 400, y: 300 };
               if (reactFlowInstance) {
@@ -9349,19 +11071,121 @@ function StarCanvasInner({
                 });
               }
 
+              const persistedAssetId =
+                typeof asset.metadata?.assetId === "string"
+                  ? asset.metadata.assetId
+                  : undefined;
+              const persistedAssetUrl =
+                asset.type === "image"
+                  ? (
+                      asset.src
+                      || (
+                        persistedAssetId
+                          ? await hydrateImageAsset(persistedAssetId)
+                          : null
+                      )
+                    )
+                  : asset.type === "video"
+                    ? (
+                        asset.src
+                        || (
+                          persistedAssetId
+                            ? await hydrateMediaAsset(persistedAssetId)
+                            : null
+                        )
+                      )
+                    : asset.src;
+
+              const assetPrompt =
+                typeof asset.metadata?.prompt === "string"
+                  ? asset.metadata.prompt
+                  : "";
+              const assetNegativePrompt =
+                typeof asset.metadata?.negativePrompt === "string"
+                  ? asset.metadata.negativePrompt
+                  : undefined;
+              const isPromptAsset = asset.type === "prompt";
+
               const newNode: Node<CanvasNodeData> = {
-                id: generateId(),
-                type: asset.type === "image" ? "image" : "content",
+                id: typeof asset.metadata?.promptNodeId === "string"
+                  ? `${asset.metadata.promptNodeId}-asset-${Date.now()}`
+                  : generateId(),
+                type: asset.type === "image" ? "image" : asset.type === "video" ? "video" : "content",
                 position,
                 data: {
                   title: asset.name,
-                  imageUrl: asset.src,
-                  assetUrl: asset.src,
-                  nodeKind: asset.type === "image" ? "uploaded-image" : "text",
+                  imageUrl: asset.type === "image" ? persistedAssetUrl ?? undefined : undefined,
+                  assetUrl:
+                    asset.type === "image" || asset.type === "video"
+                      ? persistedAssetUrl ?? undefined
+                      : undefined,
+                  resultUrl: asset.type === "video" ? persistedAssetUrl ?? undefined : undefined,
+                  assetId: persistedAssetId,
+                  persistence:
+                    asset.metadata?.persistence === "indexeddb"
+                    || asset.metadata?.persistence === "remote"
+                    || asset.metadata?.persistence === "missing"
+                      ? asset.metadata.persistence
+                      : undefined,
+                  nodeKind:
+                    asset.type === "image"
+                      ? "uploaded-image"
+                      : asset.type === "video"
+                        ? "uploaded-video"
+                        : isPromptAsset
+                          ? "prompt"
+                          : "text",
+                  content: isPromptAsset ? assetPrompt : undefined,
+                  prompt: isPromptAsset ? assetPrompt : undefined,
+                  text: isPromptAsset ? assetPrompt : undefined,
+                  negativePrompt: isPromptAsset ? assetNegativePrompt : undefined,
+                  syncToAssetLibrary: isPromptAsset ? true : undefined,
+                  assetLibraryType: isPromptAsset ? "prompt" : undefined,
+                  assetLibraryFolder: isPromptAsset ? asset.folder : undefined,
+                  assetLibraryTags: Array.isArray(asset.tags) ? asset.tags : undefined,
+                  generationOutput:
+                    isPromptAsset && asset.metadata
+                      ? {
+                          type: asset.metadata.source === "reverse-prompt" ? "reverse-prompt" : "asset-prompt",
+                          prompt: assetPrompt,
+                          negativePrompt: assetNegativePrompt,
+                          sourceNodeId:
+                            typeof asset.metadata.sourceNodeId === "string"
+                              ? asset.metadata.sourceNodeId
+                              : undefined,
+                          promptNodeId:
+                            typeof asset.metadata.promptNodeId === "string"
+                              ? asset.metadata.promptNodeId
+                              : undefined,
+                          sourceAssetId:
+                            typeof asset.metadata.sourceAssetId === "string"
+                              ? asset.metadata.sourceAssetId
+                              : undefined,
+                        }
+                      : undefined,
                 },
               };
 
-              setNodes((nds) => [...nds, newNode]);
+              if (asset.type === "video") {
+                const videoNode = createUploadedVideoNode({
+                  id: newNode.id,
+                  title: asset.name,
+                  url: persistedAssetUrl || "",
+                  assetId: persistedAssetId,
+                  persistence:
+                    asset.metadata?.persistence === "indexeddb"
+                    || asset.metadata?.persistence === "remote"
+                    || asset.metadata?.persistence === "missing"
+                      ? asset.metadata.persistence
+                      : undefined,
+                  position,
+                  source: "generated",
+                });
+                applyNodeUpdates((nds) => [...nds, videoNode]);
+                appendVideoAnalysisChains([videoNode]);
+              } else {
+                applyNodeUpdates((nds) => [...nds, newNode]);
+              }
               closeAssetLibrary();
             }}
           />,
@@ -9369,18 +11193,13 @@ function StarCanvasInner({
         )}
 
       {/* Script Import Panel */}
-      <ScriptImportPanel
-        isOpen={showScriptImportPanel}
-        onClose={() => setShowScriptImportPanel(false)}
-        onImportScript={handleImportScript}
-      />
-
-      {/* Video Remix Panel */}
-      <VideoRemixPanel
-        isOpen={showVideoRemixPanel}
-        onClose={() => setShowVideoRemixPanel(false)}
-        onImportRemix={handleImportRemix}
-      />
+      {showScriptImportPanel && (
+        <ScriptImportPanel
+          isOpen={showScriptImportPanel}
+          onClose={() => setShowScriptImportPanel(false)}
+          onImportScript={handleImportScript}
+        />
+      )}
 
       {/* Settings Panel */}
       {showSettings &&
@@ -9389,6 +11208,7 @@ function StarCanvasInner({
           <SettingsPanel
             isOpen={showSettings}
             onClose={() => setShowSettings(false)}
+            onImportProviderSmokeArtifact={handleImportProviderSmokeArtifact}
           />,
           document.body,
         )}
@@ -9451,23 +11271,27 @@ function StarCanvasInner({
         )}
 
       {/* P2-3A: Workflow Run Panel */}
-      <WorkflowRunPanel
-        isOpen={showRunPanel}
-        onClose={() => {
-          setShowRunPanel(false);
-          // 面板关闭时保留最后一个 run 的 events 供下次查看
-          // 新 run 开始时 events 会被清空重建
-        }}
-        events={runEvents}
-        isRunning={workflowRunner.state.isRunning}
-      />
+      {showRunPanel && (
+        <WorkflowRunPanel
+          isOpen={showRunPanel}
+          onClose={() => {
+            setShowRunPanel(false);
+            // 面板关闭时保留最后一个 run 的 events 供下次查看
+            // 新 run 开始时 events 会被清空重建
+          }}
+          events={runEvents}
+          isRunning={workflowRunner.state.isRunning}
+        />
+      )}
 
       {/* Prompt Preview Panel (Phase 1-c Step 2) */}
-      <PromptPreviewPanel
-        isOpen={showPromptPreview}
-        onClose={closePromptPreview}
-        nodeId={promptPreviewNodeId}
-      />
+      {showPromptPreview && (
+        <PromptPreviewPanel
+          isOpen={showPromptPreview}
+          onClose={closePromptPreview}
+          nodeId={promptPreviewNodeId}
+        />
+      )}
 
       {/* Source Trace Panel (Phase 1-d) */}
       {showSourceTrace &&
@@ -9511,6 +11335,52 @@ function StarCanvasInner({
         </button>
       )}
 
+      {canvasNotice && (
+        <div className="pointer-events-none fixed right-5 top-20 z-[75] flex max-w-[360px] justify-end">
+          <div
+            className="pointer-events-auto rounded-2xl border px-4 py-3 shadow-2xl"
+            style={{
+              backgroundColor: "rgba(18, 20, 24, 0.94)",
+              borderColor: `${CANVAS_NOTICE_ACCENT[canvasNotice.kind]}55`,
+              backdropFilter: "blur(20px)",
+              boxShadow: "0 18px 48px rgba(0,0,0,0.34)",
+            }}
+          >
+            <div className="flex items-start gap-3">
+              <div
+                className="mt-1 h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: CANVAS_NOTICE_ACCENT[canvasNotice.kind] }}
+              />
+              <div className="min-w-0 flex-1">
+                <div
+                  className="text-sm font-semibold"
+                  style={{ color: DESIGN_TOKENS.text }}
+                >
+                  {canvasNotice.title}
+                </div>
+                {canvasNotice.description && (
+                  <p
+                    className="mt-1 text-xs leading-5"
+                    style={{ color: DESIGN_TOKENS.textMuted }}
+                  >
+                    {canvasNotice.description}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setCanvasNotice(null)}
+                className="rounded-full p-1 transition hover:bg-white/10"
+                style={{ color: DESIGN_TOKENS.textMuted }}
+                aria-label="关闭提示"
+              >
+                <X size={14} strokeWidth={1.8} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* 多节点批量操作面板 */}
       <BatchActionPanel
@@ -9523,8 +11393,8 @@ function StarCanvasInner({
           if (selectedIds.length < 2) return
           switch (action) {
             case "delete-selected":
-              setNodes((nds) => nds.filter((n) => !n.selected))
-              setEdges((eds) => eds.filter((e) => {
+              applyNodeUpdates((nds) => nds.filter((n) => !n.selected))
+              applyEdgeUpdates((eds) => eds.filter((e) => {
                 const ns = nodes.filter(n => n.selected)
                 return !ns.some(n => n.id === e.source || n.id === e.target)
               }))
@@ -9539,7 +11409,7 @@ function StarCanvasInner({
                 selected: false,
                 position: { x: n.position.x + offset.x, y: n.position.y + offset.y }
               }))
-              setNodes((nds) => nds.map(n => ({ ...n, selected: false })).concat(newNodes))
+              applyNodeUpdates((nds) => nds.map(n => ({ ...n, selected: false })).concat(newNodes))
               break
             }
             case "generate-all-images":
@@ -9591,7 +11461,7 @@ function StarCanvasInner({
             // Create an image node on the canvas with the edited poster
             const now = Date.now()
             const nodeId = `poster-${now}`
-            setNodes((nds) => [
+            applyNodeUpdates((nds) => [
               ...nds,
               {
                 id: nodeId,

@@ -1,3 +1,9 @@
+# ARCHIVE — 2026-06-11 历史地毯式审计快照
+
+> 警告: 本文档是阶段性审计结果，不是当前主仓的唯一能力事实源。
+> 当前能力事实请先看: `docs/reference/current-capability-map.md`
+> 使用规则: 如本文结论与当前代码、当前测试、`current-capability-map.md` 冲突，一律以后者为准。
+
 # StarCanvas 地毯式审计报告
 
 > 审计日期：2026-06-11  
@@ -71,14 +77,14 @@
 
 | # | 路由 | 调用方 | 调用方状态 | 建议 |
 |---|------|--------|-----------|------|
-| 1 | `/api/ai/camera-control` | `newWorkflowServices.ts` | 该 util 仅被 VideoRemixPanel 使用，但 camera-control 端点未被实际调用 | 接入 CameraControl 到 CinematicParamPanel |
+| 1 | `/api/ai/camera-control` | `newWorkflowServices.ts` | 当前主流程已切到参考视频逆向分镜，旧 remix util 不再是主入口 | 迁移到真实镜头/机位工作流，或清理旧 util |
 | 2 | `/api/ai/generate-image-ideogram` | `StoryboardShotEditorPanel` | 该组件未接入 | 接入 StoryboardShotEditorPanel 后自动解决 |
-| 3 | `/api/ai/generate-poster` | `newWorkflowServices.ts` | 仅被引用但路径未实际使用 | 接入海报生成到 ExportDropdown |
+| 3 | `/api/ai/generate-poster` | `newWorkflowServices.ts` | 可见入口已收敛为“海报提示词”，避免误导为直接出图；底层接口待接入真实海报生成闭环 | 接入海报生成到 ExportDropdown 或保留为提示词节点 |
 | 4 | `/api/ai/generate-video` | `useChainVideoGeneration.ts` | 该 hook 完全未被使用 | 接入链式视频生成或移除此路由 |
-| 5 | `/api/ai/generate-video-vidu` | `videoGenerationService.ts` | 此 util 被 useWorkflowRunner 间接使用但 vidu 路径可能未被调用 | 验证后接入或移除 |
-| 6 | `/api/ai/reverse-prompt` | **无** | 完全无引用 | 接入到 ImageNode 的"反推提示词"功能，或移除 |
-| 7 | `/api/ai/remix-analysis` | `newWorkflowServices.ts` | 已被 VideoRemixPanel 使用（间接活） | 确认实际调用路径，保留或优化 |
-| 8 | `/api/ai/talking-photo` | `newWorkflowServices.ts` | 路径存在但未被实际调用 | 接入照片说话功能或移除 |
+| 5 | `/api/ai/generate-video-vidu` | `videoGenerationService.ts` | useWorkflowRunner 默认走 Vidu；Seedance/Kling/Runway 未接线时已改为明确报错，不再静默 mock 成功 | 继续增强 Vidu 配置和错误提示 |
+| 6 | `/api/ai/reverse-prompt` | **无** | Slash 可见入口已撤下，底层工具待接入 ImageNode 右键菜单 | 接入到 ImageNode 的"反推提示词"功能，或移除 |
+| 7 | `/api/ai/remix-analysis` | `newWorkflowServices.ts` | 旧 VideoRemixPanel 已删除，可见入口已撤下，底层分析能力待并入参考视频逆向分镜 | 并入参考视频分析链路，或移除旧接口 |
+| 8 | `/api/ai/talking-photo` | `newWorkflowServices.ts` | 可见入口已撤下，API 保留 not_ready 合同和部署指南 | 接入照片说话功能后再恢复入口，或移除旧链路 |
 
 ### 3.2 正常使用的路由
 
@@ -204,7 +210,7 @@ Stores barrel export (`index.ts`) 已正确导出所有 4 个 store。
 
 | # | 文件 | 行号 | 内容 | 建议 |
 |---|------|------|------|------|
-| 1 | `utils/videoGenerationService.ts` | 197 | `TODO: Replace with real API call when API key is configured` | 配置 Vidu API key 或标记为可选功能 |
+| 1 | `utils/videoGenerationService.ts` | - | Seedance/Kling/Runway 真实请求未接线 | 已禁止静默 fallback mock；后续接入真实后端或从可选项移除 |
 | 2 | `StarCanvas.tsx` | 7744 | `TODO: 接入真实登录` | 接入 master 分支的 auth 模块 |
 
 ---

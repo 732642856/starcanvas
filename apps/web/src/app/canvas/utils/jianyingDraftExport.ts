@@ -6,12 +6,12 @@
 // 2. 生成剪映兼容格式的 ZIP 包（视频 + SRT 字幕 + 音频）
 // ============================================================================
 //
-// 参考文档：docs/剪映草稿导出格式逆向与一键拉片实现方案.md
+// 参考文档：docs/剪映草稿导出格式逆向与参考视频分析实现方案.md
 // 所有时间单位均为微秒（1 秒 = 1,000,000 微秒）
 //
 // ============================================================================
 
-import { generateId } from "./generateId";
+import { generateId } from "./generateId.ts";
 
 // 剪映草稿要求 UUID v4 格式的 ID（草稿 ID、素材 ID），使用 generateUuid() 生成。
 // 轨道/片段等内部 ID 使用项目中已有的 generateId()。
@@ -189,6 +189,8 @@ export interface JianyingVideoNodeInput {
   title: string;
   /** 视频 URL */
   videoUrl: string;
+  /** Completed durable server asset ID required for production export */
+  videoAssetId?: string;
   /** 视频时长（秒） */
   durationSeconds: number;
   /** 视频宽度 */
@@ -211,6 +213,16 @@ export interface JianyingVideoNodeInput {
   rotation?: number;
   /** 文件名（用于导出） */
   fileName?: string;
+}
+
+export class JianyingExportPreflightError extends Error {
+  readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(`Jianying export requires a completed durable video asset:\n${issues.join("\n")}`);
+    this.name = "JianyingExportPreflightError";
+    this.issues = issues;
+  }
 }
 
 /** 音频节点输入 */
@@ -368,17 +380,54 @@ export function getCurrentIsoTime(): string {
  * @returns 文件名
  */
 export function extractFileName(url: string): string {
+  if (/^(data|blob):/i.test(url)) return "";
   try {
     const parsed = new URL(url);
     const pathname = parsed.pathname;
     const segments = pathname.split("/");
     const last = segments[segments.length - 1];
-    if (last && last.includes(".")) return last;
+    if (last && last.includes(".")) return decodeURIComponent(last);
   } catch {
     // URL 解析失败，使用默认逻辑
   }
   // 使用时间戳生成唯一文件名
   return `media_${Date.now()}`;
+}
+
+function sanitizePackageFileName(fileName: string, fallbackBase: string, fallbackExt: string): string {
+  const trimmed = fileName
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "_")
+    .replace(/^\.+/, "")
+    .replace(/[. ]+$/g, "");
+  const withExt = /\.[A-Za-z0-9]{2,8}$/.test(trimmed)
+    ? trimmed
+    : `${trimmed || fallbackBase}${fallbackExt}`;
+  const dotIndex = withExt.lastIndexOf(".");
+  const base = dotIndex > 0 ? withExt.slice(0, dotIndex) : withExt;
+  const ext = dotIndex > 0 ? withExt.slice(dotIndex) : fallbackExt;
+  const safeBase = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(base) ? `${base}_` : base;
+  return `${safeBase}${ext}`;
+}
+
+function uniquePackageFileName(
+  fileName: string | undefined,
+  fallbackBase: string,
+  fallbackExt: string,
+  used: Set<string>,
+): string {
+  const safeName = sanitizePackageFileName(fileName ?? `${fallbackBase}${fallbackExt}`, fallbackBase, fallbackExt);
+  const dotIndex = safeName.lastIndexOf(".");
+  const base = dotIndex > 0 ? safeName.slice(0, dotIndex) : safeName;
+  const ext = dotIndex > 0 ? safeName.slice(dotIndex) : fallbackExt;
+  let candidate = safeName;
+  let suffix = 2;
+  while (used.has(candidate.toLowerCase())) {
+    candidate = `${base}-${suffix}${ext}`;
+    suffix += 1;
+  }
+  used.add(candidate.toLowerCase());
+  return candidate;
 }
 
 // ============================================================================
@@ -742,289 +791,72 @@ export function generateSrtFromNodes(
   return lines.join("\n");
 }
 
-// ============================================================================
-// ZIP 打包工具（纯前端实现，不依赖第三方库）
-// ============================================================================
+function parseSrtSegments(
+  srtContent: string,
+): JianyingSubtitleNodeInput["segments"] {
+  const normalized = srtContent.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
 
-/**
- * 本地文件头签名
- */
-const LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
-const CENTRAL_DIR_HEADER_SIGNATURE = 0x02014b50;
-const END_OF_CENTRAL_DIR_SIGNATURE = 0x06054b50;
+  return normalized
+    .split(/\n{2,}/)
+    .map((block) => {
+      const lines = block
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const timeLineIndex = lines.findIndex((line) => line.includes("-->"));
+      if (timeLineIndex === -1) return null;
 
-/**
- * CRC-32 查表法计算
- */
-const crc32Table: Uint32Array | null = null;
+      const [startRaw, endRaw] = lines[timeLineIndex]!
+        .split("-->")
+        .map((part) => part.trim());
+      const startSeconds = parseDurationString(startRaw ?? "");
+      const endSeconds = parseDurationString(endRaw ?? "");
+      const text = lines.slice(timeLineIndex + 1).join("\n").trim();
 
-/**
- * 计算数据的 CRC-32 校验值
- *
- * @param data - 输入数据
- * @returns CRC-32 值
- */
-function calculateCrc32(data: Uint8Array): number {
-  // 延迟初始化查表
-  const table = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let crc = i;
-    for (let j = 0; j < 8; j++) {
-      crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
-    }
-    table[i] = crc;
-  }
+      if (
+        startSeconds === null ||
+        endSeconds === null ||
+        endSeconds <= startSeconds ||
+        text.length === 0
+      ) {
+        return null;
+      }
 
-  let crc = 0xffffffff;
-  for (let i = 0; i < data.length; i++) {
-    crc = table[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
+      return { startSeconds, endSeconds, text };
+    })
+    .filter((segment): segment is JianyingSubtitleNodeInput["segments"][number] =>
+      Boolean(segment),
+    );
 }
 
-/**
- * ZIP 文件条目描述
- */
-interface ZipEntry {
-  /** 文件路径 */
-  path: string;
-  /** 文件数据 */
-  data: Uint8Array;
-  /** CRC-32 */
-  crc32: number;
-  /** 压缩大小 */
-  compressedSize: number;
-  /** 未压缩大小 */
-  uncompressedSize: number;
-  /** 压缩方法（0=不压缩，8=deflate） */
-  compressionMethod: number;
+function readDurationSeconds(data: { duration?: string; durationSeconds?: number }): number {
+  if (typeof data.durationSeconds === "number" && data.durationSeconds > 0) {
+    return data.durationSeconds;
+  }
+  if (data.duration) {
+    const parsed = parseDurationString(data.duration);
+    if (parsed !== null && parsed > 0) return parsed;
+  }
+  return 5;
 }
 
-/**
- * 创建 ZIP 文件（Store 模式，不压缩）
- *
- * @param entries - ZIP 条目列表
- * @returns ZIP 文件的 ArrayBuffer
- */
-function createZipStore(entries: Array<{ path: string; data: Uint8Array }>): ArrayBuffer {
-  const zEntries: ZipEntry[] = entries.map((entry) => {
-    const crc32 = calculateCrc32(entry.data);
-    return {
-      path: entry.path,
-      data: entry.data,
-      crc32,
-      compressedSize: entry.data.length,
-      uncompressedSize: entry.data.length,
-      compressionMethod: 0, // Store（不压缩）
-    };
+// ============================================================================
+// ZIP 打包工具
+// ============================================================================
+
+async function createZipStore(entries: Array<{ path: string; data: Uint8Array }>): Promise<ArrayBuffer> {
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+
+  for (const entry of entries) {
+    zip.file(entry.path, entry.data);
+  }
+
+  return zip.generateAsync({
+    type: "arraybuffer",
+    compression: "STORE",
   });
-
-  // 计算总大小
-  let totalSize = 0;
-  const localHeaders: Array<{ offset: number; size: number }> = [];
-
-  for (const entry of zEntries) {
-    const pathBytes = new TextEncoder().encode(entry.path);
-    const localHeaderSize = 30 + pathBytes.length + entry.data.length;
-    localHeaders.push({
-      offset: totalSize,
-      size: localHeaderSize,
-    });
-    totalSize += localHeaderSize;
-  }
-
-  // 中央目录
-  const centralDirOffset = totalSize;
-  const centralDirEntries: Uint8Array[] = [];
-
-  for (let i = 0; i < zEntries.length; i++) {
-    const entry = zEntries[i];
-    const pathBytes = new TextEncoder().encode(entry.path);
-    const header = localHeaders[i];
-
-    const buffer = new ArrayBuffer(46 + pathBytes.length);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // 中央目录文件头签名
-    view.setUint32(offset, CENTRAL_DIR_HEADER_SIGNATURE, true);
-    offset += 4;
-    // 版本由哪个系统产生
-    view.setUint16(offset, 20, true);
-    offset += 2;
-    // 版本需要
-    view.setUint16(offset, 20, true);
-    offset += 2;
-    // 通用位标志
-    view.setUint16(offset, 0, true);
-    offset += 2;
-    // 压缩方法
-    view.setUint16(offset, entry.compressionMethod, true);
-    offset += 2;
-    // 最后修改时间
-    view.setUint16(offset, 0, true);
-    offset += 2;
-    // 最后修改日期
-    view.setUint16(offset, 0, true);
-    offset += 2;
-    // CRC-32
-    view.setUint32(offset, entry.crc32, true);
-    offset += 4;
-    // 压缩大小
-    view.setUint32(offset, entry.compressedSize, true);
-    offset += 4;
-    // 未压缩大小
-    view.setUint32(offset, entry.uncompressedSize, true);
-    offset += 4;
-    // 文件名长度
-    view.setUint16(offset, pathBytes.length, true);
-    offset += 2;
-    // 扩展字段长度
-    view.setUint16(offset, 0, true);
-    offset += 2;
-    // 文件注释长度
-    view.setUint16(offset, 0, true);
-    offset += 2;
-    // 磁盘号开始
-    view.setUint16(offset, 0, true);
-    offset += 2;
-    // 内部文件属性
-    view.setUint16(offset, 0, true);
-    offset += 2;
-    // 外部文件属性
-    view.setUint32(offset, 0, true);
-    offset += 4;
-    // 相对偏移
-    view.setUint32(offset, header.offset, true);
-    offset += 4;
-
-    // 文件名
-    const result = new Uint8Array(buffer.byteLength + pathBytes.length);
-    result.set(new Uint8Array(buffer), 0);
-    result.set(pathBytes, buffer.byteLength);
-
-    centralDirEntries.push(result);
-  }
-
-  // 中央目录结束记录
-  const centralDirSize = centralDirEntries.reduce((sum, e) => sum + e.length, 0);
-  const eocdBuffer = new ArrayBuffer(22);
-  const eocdView = new DataView(eocdBuffer);
-  let eocdOffset = 0;
-
-  eocdView.setUint32(eocdOffset, END_OF_CENTRAL_DIR_SIGNATURE, true);
-  eocdOffset += 4;
-  // 磁盘编号
-  eocdView.setUint16(eocdOffset, 0, true);
-  eocdOffset += 2;
-  // 中央目录开始磁盘编号
-  eocdView.setUint16(eocdOffset, 0, true);
-  eocdOffset += 2;
-  // 该磁盘上的中央目录条目数
-  eocdView.setUint16(eocdOffset, zEntries.length, true);
-  eocdOffset += 2;
-  // 中央目录条目总数
-  eocdView.setUint16(eocdOffset, zEntries.length, true);
-  eocdOffset += 2;
-  // 中央目录大小
-  eocdView.setUint32(eocdOffset, centralDirSize, true);
-  eocdOffset += 4;
-  // 中央目录偏移
-  eocdView.setUint32(eocdOffset, centralDirOffset, true);
-  eocdOffset += 4;
-  // 注释长度
-  eocdView.setUint16(eocdOffset, 0, true);
-  eocdOffset += 2;
-
-  // ── 组装完整 ZIP ──
-  const eocdBytes = new Uint8Array(eocdBuffer);
-  const totalLength = centralDirOffset + centralDirSize + eocdBytes.length;
-  const zipBuffer = new Uint8Array(totalLength);
-  let writeOffset = 0;
-
-  // 写入本地文件头和文件数据
-  for (let i = 0; i < zEntries.length; i++) {
-    const entry = zEntries[i];
-
-    // 本地文件头
-    writeOffset = writeLocalFileHeader(zipBuffer, writeOffset, entry);
-
-    // 文件数据
-    zipBuffer.set(entry.data, writeOffset);
-    writeOffset += entry.data.length;
-  }
-
-  // 写入中央目录
-  for (const entry of centralDirEntries) {
-    zipBuffer.set(entry, writeOffset);
-    writeOffset += entry.length;
-  }
-
-  // 写入中央目录结束记录
-  zipBuffer.set(eocdBytes, writeOffset);
-  writeOffset += eocdBytes.length;
-
-  return zipBuffer.buffer as ArrayBuffer;
-}
-
-/**
- * 写入 ZIP 本地文件头
- *
- * @param buffer - 目标缓冲区
- * @param offset - 写入偏移
- * @param entry - ZIP 条目
- * @returns 写入后的偏移
- */
-function writeLocalFileHeader(
-  buffer: Uint8Array,
-  offset: number,
-  entry: ZipEntry,
-): number {
-  const pathBytes = new TextEncoder().encode(entry.path);
-  const headerSize = 30 + pathBytes.length;
-  const headerBuffer = new ArrayBuffer(30);
-  const view = new DataView(headerBuffer);
-  let headerOffset = 0;
-
-  // 本地文件头签名
-  view.setUint32(headerOffset, LOCAL_FILE_HEADER_SIGNATURE, true);
-  headerOffset += 4;
-  // 提取版本
-  view.setUint16(headerOffset, 20, true);
-  headerOffset += 2;
-  // 通用位标志
-  view.setUint16(headerOffset, 0, true);
-  headerOffset += 2;
-  // 压缩方法
-  view.setUint16(headerOffset, entry.compressionMethod, true);
-  headerOffset += 2;
-  // 最后修改时间
-  view.setUint16(headerOffset, 0, true);
-  headerOffset += 2;
-  // 最后修改日期
-  view.setUint16(headerOffset, 0, true);
-  headerOffset += 2;
-  // CRC-32
-  view.setUint32(headerOffset, entry.crc32, true);
-  headerOffset += 4;
-  // 压缩大小
-  view.setUint32(headerOffset, entry.compressedSize, true);
-  headerOffset += 4;
-  // 未压缩大小
-  view.setUint32(headerOffset, entry.uncompressedSize, true);
-  headerOffset += 4;
-  // 文件名长度
-  view.setUint16(headerOffset, pathBytes.length, true);
-  headerOffset += 2;
-  // 扩展字段长度
-  view.setUint16(headerOffset, 0, true);
-
-  // 写入本地文件头
-  const headerBytes = new Uint8Array(headerBuffer);
-  buffer.set(headerBytes, offset);
-  buffer.set(pathBytes, offset + 30);
-
-  return offset + headerSize;
 }
 
 /**
@@ -1072,12 +904,39 @@ export async function buildJianyingCompatiblePackage(
   audioNodes: JianyingAudioNodeInput[],
   subtitleNodes: JianyingSubtitleNodeInput[],
 ): Promise<JianyingCompatiblePackage> {
+  const preflightIssues = videoNodes
+    .filter((node) => node.videoUrl && !node.videoAssetId)
+    .map((node) => `视频「${node.title || node.id}」缺少 completed durable video asset id`);
+  if (preflightIssues.length > 0) {
+    throw new JianyingExportPreflightError(preflightIssues);
+  }
+  const usedVideoFileNames = new Set<string>();
+  const usedAudioFileNames = new Set<string>();
+  const packageVideoNodes = videoNodes.map((node, index) => ({
+    ...node,
+    fileName: uniquePackageFileName(
+      node.fileName ?? extractFileName(node.videoUrl),
+      `video_${index + 1}`,
+      ".mp4",
+      usedVideoFileNames,
+    ),
+  }));
+  const packageAudioNodes = audioNodes.map((node, index) => ({
+    ...node,
+    fileName: uniquePackageFileName(
+      node.fileName ?? extractFileName(node.audioUrl),
+      `audio_${index + 1}`,
+      ".mp3",
+      usedAudioFileNames,
+    ),
+  }));
   const entries: Array<{ path: string; data: Uint8Array }> = [];
   const files: Array<{ path: string; size: number }> = [];
+  const downloadFailures: string[] = [];
   const baseDir = "JianYingCompatible";
 
   // ── 添加 README ──
-  const readmeContent = buildReadmeContent(videoNodes, audioNodes, subtitleNodes);
+  const readmeContent = buildReadmeContent(packageVideoNodes, packageAudioNodes, subtitleNodes);
   entries.push({
     path: `${baseDir}/README.txt`,
     data: stringToUint8Array(readmeContent),
@@ -1093,8 +952,8 @@ export async function buildJianyingCompatiblePackage(
   files.push({ path: `${baseDir}/subtitles.srt`, size: srtContent.length });
 
   // ── 添加视频文件 ──
-  for (let i = 0; i < videoNodes.length; i++) {
-    const videoNode = videoNodes[i];
+  for (let i = 0; i < packageVideoNodes.length; i++) {
+    const videoNode = packageVideoNodes[i];
     const fileName = videoNode.fileName ?? `video_${i + 1}.mp4`;
     try {
       const videoData = await fetchAsUint8Array(videoNode.videoUrl);
@@ -1104,13 +963,13 @@ export async function buildJianyingCompatiblePackage(
       });
       files.push({ path: `${baseDir}/videos/${fileName}`, size: videoData.length });
     } catch (error) {
-      console.warn(`无法下载视频文件 [${videoNode.title}]: ${(error as Error).message}`);
+      downloadFailures.push(`视频「${videoNode.title}」: ${(error as Error).message}`);
     }
   }
 
   // ── 添加音频文件 ──
-  for (let i = 0; i < audioNodes.length; i++) {
-    const audioNode = audioNodes[i];
+  for (let i = 0; i < packageAudioNodes.length; i++) {
+    const audioNode = packageAudioNodes[i];
     const fileName = audioNode.fileName ?? `audio_${i + 1}.mp3`;
     try {
       const audioData = await fetchAsUint8Array(audioNode.audioUrl);
@@ -1120,12 +979,16 @@ export async function buildJianyingCompatiblePackage(
       });
       files.push({ path: `${baseDir}/audios/${fileName}`, size: audioData.length });
     } catch (error) {
-      console.warn(`无法下载音频文件 [${audioNode.title}]: ${(error as Error).message}`);
+      downloadFailures.push(`音频「${audioNode.title}」: ${(error as Error).message}`);
     }
   }
 
+  if (downloadFailures.length > 0) {
+    throw new Error(`剪映兼容包素材下载失败：\n${downloadFailures.join("\n")}`);
+  }
+
   // ── 添加剪映草稿 JSON ──
-  const result = exportToJianyingDraft(videoNodes, audioNodes, subtitleNodes);
+  const result = exportToJianyingDraft(packageVideoNodes, packageAudioNodes, subtitleNodes);
   entries.push({
     path: `${baseDir}/draft_content.json`,
     data: stringToUint8Array(result.draftContentJson),
@@ -1136,7 +999,7 @@ export async function buildJianyingCompatiblePackage(
   });
 
   // ── 创建 ZIP ──
-  const zipBuffer = createZipStore(entries);
+  const zipBuffer = await createZipStore(entries);
 
   return {
     zipBuffer,
@@ -1261,14 +1124,40 @@ function downloadBlob(blob: Blob, fileName: string): void {
  * @param nodes - 画布节点列表
  * @returns 视频节点输入列表
  */
+export const JIANYING_VIDEO_NODE_KINDS = new Set([
+  "uploaded-video",
+  "video",
+  "video-generation",
+  "video-result",
+  "talking-photo",
+]);
+
 export function extractVideoNodesFromCanvas(
-  nodes: Array<{ id: string; data: { title?: string; resultUrl?: string; duration?: string; videoDurationMs?: number; videoWidth?: number; videoHeight?: number; videoFps?: number; shot?: { id?: string } } }>,
+  nodes: Array<{
+    id: string;
+    data: {
+      title?: string;
+      nodeKind?: string;
+      resultUrl?: string;
+      assetUrl?: string;
+      imageUrl?: string;
+      duration?: string;
+      videoDurationMs?: number;
+      videoWidth?: number;
+      videoHeight?: number;
+      videoFps?: number;
+      videoAssetId?: string;
+      assetId?: string;
+      fileName?: string;
+      shot?: { id?: string };
+    };
+  }>,
 ): JianyingVideoNodeInput[] {
   const result: JianyingVideoNodeInput[] = [];
-
   for (const node of nodes) {
-    // 只处理有 resultUrl 的节点（代表有生成结果）
-    if (!node.data.resultUrl) continue;
+    if (!JIANYING_VIDEO_NODE_KINDS.has(node.data.nodeKind ?? "")) continue;
+    const videoUrl = node.data.resultUrl || node.data.assetUrl || node.data.imageUrl;
+    if (!videoUrl) continue;
 
     // 优先使用 videoDurationMs（毫秒），然后尝试 duration（字符串），最后默认 5 秒
     let durationSeconds = 5;
@@ -1281,14 +1170,16 @@ export function extractVideoNodesFromCanvas(
       }
     }
 
-    result.push({
+      result.push({
       id: node.id,
       title: node.data.title ?? "视频节点",
-      videoUrl: node.data.resultUrl,
+      videoUrl,
+      videoAssetId: node.data.videoAssetId ?? node.data.assetId,
       durationSeconds,
       width: node.data.videoWidth ?? DEFAULT_CANVAS_WIDTH,
       height: node.data.videoHeight ?? DEFAULT_CANVAS_HEIGHT,
       fps: node.data.videoFps,
+      fileName: node.data.fileName,
       startOffsetSeconds: 0,
       volume: 1.0,
       scale: 1.0,
@@ -1308,21 +1199,70 @@ export function extractVideoNodesFromCanvas(
  * @returns 音频节点输入列表
  */
 export function extractAudioNodesFromCanvas(
-  nodes: Array<{ id: string; data: { title?: string; shot?: { voiceAudioUrl?: string; voiceConfig?: { text?: string } } } }>,
+  nodes: Array<{
+    id: string;
+    data: {
+      title?: string;
+      nodeKind?: string;
+      resultUrl?: string;
+      assetUrl?: string;
+      audioUrl?: string;
+      voiceAudioUrl?: string;
+      duration?: string;
+      durationSeconds?: number;
+      startOffsetSeconds?: number;
+      timelineStartTimeSeconds?: number;
+      fileName?: string;
+      shot?: { voiceAudioUrl?: string; voiceConfig?: { text?: string } };
+    };
+  }>,
 ): JianyingAudioNodeInput[] {
   const result: JianyingAudioNodeInput[] = [];
 
   for (const node of nodes) {
     const shot = node.data.shot;
-    if (!shot?.voiceAudioUrl) continue;
+    const audioUrl =
+      node.data.audioUrl ||
+      node.data.resultUrl ||
+      node.data.assetUrl ||
+      node.data.voiceAudioUrl ||
+      shot?.voiceAudioUrl;
+    if (!audioUrl) continue;
+
+    const nodeKind = node.data.nodeKind || "";
+    const isAudioNode =
+      nodeKind.includes("audio") ||
+      nodeKind.includes("tts") ||
+      nodeKind === "bgm" ||
+      Boolean(shot?.voiceAudioUrl);
+    if (!isAudioNode) continue;
+
+    let durationSeconds = 5;
+    if (typeof node.data.durationSeconds === "number" && node.data.durationSeconds > 0) {
+      durationSeconds = node.data.durationSeconds;
+    } else if (node.data.duration) {
+      const parsed = parseDurationString(node.data.duration);
+      if (parsed !== null && parsed > 0) {
+        durationSeconds = parsed;
+      }
+    }
+
+    const startOffsetCandidate = node.data.startOffsetSeconds ?? node.data.timelineStartTimeSeconds;
+    const startOffsetSeconds =
+      typeof startOffsetCandidate === "number" &&
+      Number.isFinite(startOffsetCandidate) &&
+      startOffsetCandidate >= 0
+        ? startOffsetCandidate
+        : 0;
 
     result.push({
       id: node.id,
       title: node.data.title ?? "音频节点",
-      audioUrl: shot.voiceAudioUrl,
-      durationSeconds: 5, // 从 URL 无法得知时长，使用默认值
-      startOffsetSeconds: 0,
+      audioUrl,
+      durationSeconds,
+      startOffsetSeconds,
       volume: 1.0,
+      fileName: node.data.fileName,
     });
   }
 
@@ -1336,7 +1276,27 @@ export function extractAudioNodesFromCanvas(
  * @returns 字幕节点输入列表
  */
 export function extractSubtitleNodesFromCanvas(
-  nodes: Array<{ id: string; data: { title?: string; shot?: { subtitleTimeline?: { startTimeSeconds?: number; durationSeconds?: number; segments?: Array<{ index: number; startSeconds: number; endSeconds: number; text: string }>; srtContent?: string } }; srtContent?: string; segments?: Array<{ index: number; start: number; end: number; text: string }> } }>,
+  nodes: Array<{
+    id: string;
+    data: {
+      title?: string;
+      nodeKind?: string;
+      text?: string;
+      content?: string;
+      duration?: string;
+      durationSeconds?: number;
+      shot?: {
+        subtitleTimeline?: {
+          startTimeSeconds?: number;
+          durationSeconds?: number;
+          segments?: Array<{ index: number; startSeconds: number; endSeconds: number; text: string }>;
+          srtContent?: string;
+        };
+      };
+      srtContent?: string;
+      segments?: Array<{ index: number; start: number; end: number; text: string }>;
+    };
+  }>,
 ): JianyingSubtitleNodeInput[] {
   const result: JianyingSubtitleNodeInput[] = [];
 
@@ -1371,6 +1331,37 @@ export function extractSubtitleNodesFromCanvas(
       });
       continue;
     }
+
+    const srtContent = node.data.srtContent || shot?.subtitleTimeline?.srtContent;
+    if (srtContent && srtContent.trim().length > 0) {
+      result.push({
+        id: node.id,
+        title: node.data.title ?? "字幕节点",
+        segments: parseSrtSegments(srtContent),
+        srtContent,
+      });
+      continue;
+    }
+
+    const text = node.data.text || node.data.content;
+    if (
+      node.data.nodeKind?.includes("subtitle") &&
+      text &&
+      text.trim().length > 0
+    ) {
+      result.push({
+        id: node.id,
+        title: node.data.title ?? "字幕节点",
+        segments: [
+          {
+            startSeconds: 0,
+            endSeconds: readDurationSeconds(node.data),
+            text: text.trim(),
+          },
+        ],
+      });
+      continue;
+    }
   }
 
   return result;
@@ -1388,7 +1379,10 @@ export function extractSubtitleNodesFromCanvas(
  * @param duration - 时长字符串
  * @returns 秒数，解析失败返回 null
  */
-function parseDurationString(duration: string): number | null {
+function parseDurationString(duration: string | number): number | null {
+  if (typeof duration === "number") {
+    return Number.isFinite(duration) && duration > 0 ? duration : null;
+  }
   // 尝试 ISO 时长格式 PT5S
   const isoMatch = duration.match(/^PT(\d+(?:\.\d+)?)S$/);
   if (isoMatch) return parseFloat(isoMatch[1]);

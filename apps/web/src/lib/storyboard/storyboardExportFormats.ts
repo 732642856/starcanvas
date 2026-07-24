@@ -200,6 +200,9 @@ export function generateStoryboardTableCsv(
     "字幕",
     "后期备注",
     "警告",
+    "来源类型",
+    "来源时间码",
+    "参考帧",
   ];
 
   const shots = sortedBriefs(briefs);
@@ -219,6 +222,9 @@ export function generateStoryboardTableCsv(
       s.subtitle.text ?? "",
       s.handoff.notes ?? "",
       s.handoff.warnings?.join("；") ?? "",
+      s.handoff.source?.type ?? "",
+      formatSourceTime(s.handoff.source?.timeSec, s.handoff.source?.timestampMs),
+      s.handoff.source?.referenceImageUrl ?? "",
     ];
     rows.push(row.map(csvQuote).join(","));
   }
@@ -229,6 +235,17 @@ export function generateStoryboardTableCsv(
 export function storyboardTableFilename(projectName: string): string {
   const safe = projectName.replace(/[\/\\:*?"<>|]/g, "-").replace(/\s+/g, "_").slice(0, 80);
   return `${safe}_分镜表.csv`;
+}
+
+function formatSourceTime(timeSec?: number, timestampMs?: number): string {
+  const seconds = typeof timeSec === "number"
+    ? timeSec
+    : typeof timestampMs === "number"
+      ? timestampMs / 1000
+      : undefined;
+  return typeof seconds === "number" && Number.isFinite(seconds)
+    ? `${Math.round(seconds * 10) / 10}s`
+    : "";
 }
 
 // ============================================================================

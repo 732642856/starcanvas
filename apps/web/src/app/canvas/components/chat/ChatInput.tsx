@@ -14,7 +14,7 @@ import type { AssetItem } from "../canvas/types"
 import { getCachedDefaultImageModel } from "@/lib/ai/client"
 import { getModelOptions } from "@/lib/ai/imageProviderCapabilities"
 
-// copse.top 实际支持的 AI 模型列表
+// 默认模型列表；用户可在设置面板中替换为自己的中转站模型
 export type AiModel =
   | "gpt-5.4"
   | "gpt-5.4-mini"
@@ -50,11 +50,20 @@ const IMAGE_MODEL_OPTIONS = getModelOptions()
 const DEFAULT_IMAGE_OPTION = IMAGE_MODEL_OPTIONS[0]
 
 const MODEL_OPTIONS: ModelOption[] = [
-  { value: "gpt-5.5", label: "GPT-5.5", provider: "copse.top", desc: "最强推理+创作", type: "text" },
-  { value: "gpt-5.4", label: "GPT-5.4", provider: "copse.top", desc: "高性能多模态", type: "text" },
-  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", provider: "copse.top", desc: "快速响应", type: "text" },
-  { value: DEFAULT_IMAGE_OPTION.value, label: DEFAULT_IMAGE_OPTION.label, provider: "copse.top", desc: "高质量图像生成", type: "image" },
+  { value: "gpt-5.5", label: "GPT-5.5", provider: "default", desc: "最强推理+创作", type: "text" },
+  { value: "gpt-5.4", label: "GPT-5.4", provider: "default", desc: "高性能多模态", type: "text" },
+  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", provider: "default", desc: "快速响应", type: "text" },
+  { value: DEFAULT_IMAGE_OPTION.value, label: DEFAULT_IMAGE_OPTION.label, provider: "default", desc: "高质量图像生成", type: "image" },
 ]
+
+function dispatchCanvasNotice(title: string, description: string, kind: "info" | "warning" | "error" = "info") {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(
+    new CustomEvent("starcanvas:notice", {
+      detail: { kind, title, description },
+    }),
+  )
+}
 
 interface ChatInputProps {
   value: string
@@ -300,6 +309,7 @@ export function ChatInput({
       >
         <textarea
           ref={textareaRef}
+          data-testid="chat-input"
           value={value}
           onChange={(e) => handleInputChange(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -457,7 +467,7 @@ export function ChatInput({
                 }
                 recognition.start()
               } else {
-                alert("您的浏览器不支持语音识别，请使用 Chrome 浏览器")
+                dispatchCanvasNotice("当前浏览器不支持语音输入", "请使用 Chrome 或其他支持 SpeechRecognition 的浏览器。", "warning")
               }
             }}
             disabled={disabled || isGenerating}

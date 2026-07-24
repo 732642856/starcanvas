@@ -13,6 +13,7 @@ import { mergeProviderConfig } from "@/lib/ai/provider-config"
 import type { AiProviderOverrides } from "@/lib/ai/provider-config"
 import { normalizeUpstreamError, normalizeClientError } from "@/lib/ai/errors"
 import { MOODBOARD_SYSTEM_PROMPT, buildMoodboardUserMessage } from "@/lib/ai/agents/agent-moodboard"
+import { fetchWithTimeout } from "@/lib/ai/server-fetch"
 
 // ── SSE Helper ──────────────────────────────────────────────────────────────
 
@@ -32,11 +33,8 @@ async function callChatForPrompts(
   description: string,
   config: { baseUrl: string; apiKey: string; model: string; timeoutMs: number },
 ): Promise<MoodboardPromptItem[]> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), config.timeoutMs)
-
   try {
-    const res = await fetch(`${config.baseUrl}/chat/completions`, {
+    const res = await fetchWithTimeout(`${config.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -51,10 +49,7 @@ async function callChatForPrompts(
         temperature: 0.8,
         response_format: { type: "json_object" },
       }),
-      signal: controller.signal,
-    })
-
-    clearTimeout(timer)
+    }, config.timeoutMs)
 
     if (!res.ok) {
       const text = await res.text()
@@ -96,7 +91,6 @@ async function callChatForPrompts(
 
     throw new Error("无法从 AI 响应中解析出 moodboard 提示词数组")
   } catch (error) {
-    clearTimeout(timer)
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("AI 请求超时，请稍后重试")
     }
@@ -116,11 +110,8 @@ async function callImageGeneration(
   prompt: string,
   config: { baseUrl: string; apiKey: string; imageModel: string; timeoutMs: number },
 ): Promise<ImageGenResult> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), config.timeoutMs)
-
   try {
-    const res = await fetch(`${config.baseUrl}/images/generations`, {
+    const res = await fetchWithTimeout(`${config.baseUrl}/images/generations`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -133,10 +124,7 @@ async function callImageGeneration(
         size: "1792x1024",
         response_format: "b64_json",
       }),
-      signal: controller.signal,
-    })
-
-    clearTimeout(timer)
+    }, config.timeoutMs)
 
     if (!res.ok) {
       const text = await res.text()
@@ -161,7 +149,6 @@ async function callImageGeneration(
       model: config.imageModel,
     }
   } catch (error) {
-    clearTimeout(timer)
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("图片生成请求超时")
     }

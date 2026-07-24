@@ -10,6 +10,8 @@ import { useCallback, useRef, useState } from "react"
 // ============================================================================
 
 import type { AiProviderOverrides } from "@/lib/ai/provider-config"
+import { shouldApplySessionApiKeyForTask } from "@/lib/ai/providerSessionScope"
+import { readUseMockPreference } from "@/lib/ai/user-settings"
 
 /**
  * 从 browser storage 读取当前 BYOK 配置（不持久化的 API Key + localStorage 的 baseUrl/model/mock）。
@@ -24,11 +26,7 @@ function getRuntimeProviderOverrides(): AiProviderOverrides {
     // API Key — sessionStorage 优先，fallback 到 localStorage（用户显式选择"跨标签记住"）
     const sessionKey = window.sessionStorage.getItem("startrails_session_api_key")
     const localKey = window.localStorage.getItem("startrails_ui_api_key")
-    if (sessionKey) {
-      overrides.sessionApiKey = sessionKey
-    } else if (localKey) {
-      overrides.sessionApiKey = localKey
-    }
+    const scopedSessionKey = sessionKey || localKey || ""
 
     // Base URL — localStorage
     const baseUrl = localStorage.getItem("startrails_api_base_url")
@@ -48,8 +46,16 @@ function getRuntimeProviderOverrides(): AiProviderOverrides {
     if (timeoutRaw) overrides.timeoutMs = Number(timeoutRaw)
 
     // Mock toggle
-    const useMock = localStorage.getItem("startrails_use_mock") !== "false"
+    const useMock = readUseMockPreference()
     if (useMock) overrides.useMock = true
+
+    if (shouldApplySessionApiKeyForTask({
+      taskType: "text",
+      sessionApiKey: scopedSessionKey,
+      routeHint: overrides,
+    })) {
+      overrides.sessionApiKey = scopedSessionKey
+    }
   } catch { /* storage 不可用时忽略 */ }
 
   return overrides

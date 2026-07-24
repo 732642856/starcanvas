@@ -2,8 +2,8 @@
 // Cost Estimation — 根据 usage 数据估算美元成本
 // ============================================================================
 
-import { findPricing } from "./modelPricing"
-import type { AITaskType } from "./aiUsageTypes"
+import { findPricing } from "./modelPricing.ts"
+import type { AITaskType } from "./aiUsageTypes.ts"
 
 export interface EstimateInput {
   provider: string

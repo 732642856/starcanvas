@@ -114,6 +114,22 @@ export function normalizeGenerationError(input: NormalizeGenerationErrorInput): 
   }
 
   if (
+    status === 524 ||
+    lower.includes("524") ||
+    lower.includes("a timeout occurred")
+  ) {
+    return {
+      code: "PROVIDER_TIMEOUT",
+      status,
+      provider,
+      userMessage: "图片生成超时，请稍后重试。",
+      detail: "上游服务返回 524 A Timeout Occurred，通常表示网关等待生成结果超时。",
+      retryable: true,
+      raw,
+    }
+  }
+
+  if (
     errorName === "AbortError" ||
     lower.includes("aborterror") ||
     lower.includes("timeout") ||

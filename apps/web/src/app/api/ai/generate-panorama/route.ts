@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { mergeProviderConfig } from "@/lib/ai/provider-config"
 import { normalizeUpstreamError, normalizeClientError } from "@/lib/ai/errors"
+import { fetchWithTimeout } from "@/lib/ai/server-fetch"
 
 // ── 全景类型与 Prompt 模板 ───────────────────────────────────────────────────
 
@@ -102,11 +103,8 @@ async function generateImage(params: {
   timeoutMs: number
 }): Promise<{ b64_json: string; revised_prompt?: string }> {
   const { prompt, size, model, baseUrl, apiKey, timeoutMs } = params
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-
   try {
-    const upstream = await fetch(`${baseUrl}/images/generations`, {
+    const upstream = await fetchWithTimeout(`${baseUrl}/images/generations`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -119,10 +117,7 @@ async function generateImage(params: {
         size,
         response_format: "b64_json",
       }),
-      signal: controller.signal,
-    })
-
-    clearTimeout(timer)
+    }, timeoutMs)
 
     if (!upstream.ok) {
       const text = await upstream.text()
@@ -142,7 +137,6 @@ async function generateImage(params: {
       revised_prompt: image.revised_prompt,
     }
   } catch (error) {
-    clearTimeout(timer)
     throw error
   }
 }

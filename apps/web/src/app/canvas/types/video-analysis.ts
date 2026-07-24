@@ -22,6 +22,12 @@ export interface VideoKeyframeRef {
   height?: number
   /** 帧描述（分析后填充，V1 Mock 为空） */
   description?: string
+  /** 关键帧选择原因 */
+  selectionReason?: "scene-change" | "representative" | "uniform-fallback"
+  /** 场景段序号（本地抽帧/分析阶段填充） */
+  sceneIndex?: number
+  /** 与上一候选帧之间的视觉变化分数 */
+  changeScore?: number
 }
 
 /** 字幕/对白片段 */
@@ -47,6 +53,26 @@ export interface VideoEvent {
   /** 事件标签 */
   label: string
   /** 事件描述 */
+  description?: string
+  /** 置信度 (0-1) */
+  confidence?: number
+}
+
+/** 本地场景/镜头段检测结果 */
+export interface VideoSceneSegment {
+  /** 场景段序号 (0-based) */
+  sceneIndex: number
+  /** 开始时间 (ms) */
+  startMs: number
+  /** 结束时间 (ms) */
+  endMs: number
+  /** 本段代表关键帧序号 */
+  representativeFrameIndex: number
+  /** 本段包含的关键帧序号 */
+  frameIndexes: number[]
+  /** 与上一段之间的视觉变化分数 (0-1) */
+  changeScore: number
+  /** 场景段描述 */
   description?: string
   /** 置信度 (0-1) */
   confidence?: number
@@ -82,6 +108,8 @@ export interface VideoAnalysisResult {
   captions?: VideoCaption[]
   /** 事件检测结果（V2） */
   events?: VideoEvent[]
+  /** 本地场景/镜头段检测结果 */
+  scenes?: VideoSceneSegment[]
   /** 物体检测结果（V2） */
   objects?: VideoObject[]
   /** 原始响应（调试用，V1 Mock 用 { mode: "mock", frameCount } 标记） */

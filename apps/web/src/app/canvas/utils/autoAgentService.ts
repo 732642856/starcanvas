@@ -1,13 +1,52 @@
 import type { ApplyActionsReport, ChatCanvasAction } from "../features/canvas/actions/chatActions.ts"
 import { detectIntent, getActionDescription, type AutoAgentAction } from "../../../lib/ai/agents/agent-auto.ts"
-import { generateImageFromPrompt } from "./imageGeneration.ts"
-import { generateMoodboard } from "./moodboardService.ts"
+import { getStoredProviderSmokeReadinessStatus, loadStoredProviderSmokeResults } from "../../../lib/ai/providerSmokeResult.ts"
+import { resolveImageGenerationSize } from "./imageGeneration.ts"
+import { buildUnknownImageResultMessage, isUnknownImageResultError } from "./productionImageRetry.ts"
+import { parseStoryboardTextToShots } from "./storyboardParser.ts"
+import { generateDirectorStoryboardText } from "../../../lib/slashCommands/runStoryboardAssistantCommand.ts"
 
 type AutoAgentCanvasContext = {
   nodes?: Array<Record<string, any>>
   selectedNode?: Record<string, any>
   mentionedNodes?: Array<Record<string, any>>
   canvasStats?: Record<string, any>
+  pendingClarificationAnswer?: {
+    clarificationId?: string
+    threadId?: string
+    messageId?: string
+    question?: string
+    options?: string[]
+    answer?: string
+  }
+}
+
+const CASUAL_CHAT_PATTERN =
+  /^(你好|您好|哈喽|嗨|hello|hi|hey|谢谢|感谢|辛苦了|收到|好的|ok|晚安|早上好|下午好|晚上好)([!！。~～\s]*)$/i
+
+const CREATIVE_INTENT_PATTERN =
+  /(短片|视频|镜头|分镜|剧本|故事|创意|角色|场景|概念图|参考图|制作圣经|项目圣经|画布|工作流|生成|拍|脚本|预告片|剧情|广告片|短剧)/
+
+export function shouldFallbackToPlainChat(
+  action: AutoAgentAction,
+  userInput: string,
+): boolean {
+  const trimmed = userInput.trim()
+
+  if (CASUAL_CHAT_PATTERN.test(trimmed)) {
+    return true
+  }
+
+  if (CREATIVE_INTENT_PATTERN.test(trimmed)) {
+    return false
+  }
+
+  return action.confidence < 0.6 || action.intent === "chat" || action.intent === "unknown"
+}
+
+function shouldAskCreativeClarification(action: AutoAgentAction, userInput: string): boolean {
+  return !shouldFallbackToPlainChat(action, userInput) &&
+    (action.confidence < 0.6 || action.intent === "chat" || action.intent === "unknown")
 }
 
 type GeneratedImagePayload = {
@@ -15,11 +54,20 @@ type GeneratedImagePayload = {
   prompt: string
   model: string
   revisedPrompt?: string
+  assetId?: string
+}
+
+function isRetryableImageFailure(
+  error: unknown,
+): error is Error & { retryable?: boolean; status?: number; code?: string } {
+  return error instanceof Error &&
+    Boolean((error as { retryable?: boolean }).retryable)
 }
 
 export type AutoAgentProcessOptions = {
   canvasContext?: AutoAgentCanvasContext
   signal?: AbortSignal
+  expandStoryboard?: boolean
   imageModel?: string
   onProgress?: (status: string) => void
   onText?: (text: string) => void
@@ -84,6 +132,45 @@ function createImageAction(params: {
   }
 }
 
+function createCreativeClarificationAction(userInput: string): ChatCanvasAction {
+  const summary = userInput.trim().slice(0, 80)
+  return {
+    action: "ask_clarification",
+    question: `你想先走哪条主路径？如果直接回复文字，请补 3 个锚点：导演/叙事风格、这场戏的故事功能、希望观众感受到的情绪。（${summary}）`,
+    options: ["生成分镜", "拆成制作圣经", "生成视觉概念图", "建立视频生成任务"],
+    clarificationId: `auto-agent-creative-${Date.now()}`,
+    description: "低置信度创作请求需要先确认主路径",
+    data: {
+      source: "auto-agent",
+      reason: "low-confidence-creative-intent",
+      originalInput: userInput,
+    },
+  }
+}
+
+function buildDirectorStoryboardPrompt(script: string, options?: {
+  genre?: string
+  style?: string
+  targetPlatform?: string
+  directorBrief?: string
+}): string {
+  const contextLine = [
+    options?.genre ? `类型：${options.genre}` : "",
+    options?.style ? `风格：${options.style}` : "",
+    options?.targetPlatform ? `平台：${options.targetPlatform}` : "",
+  ].filter(Boolean).join("；")
+
+  return [
+    "请将以下内容拆成专业影视分镜。",
+    "先判断这场戏的故事功能、情绪基调、预计镜头数与视频时长，再输出可执行分镜。",
+    "硬性要求：先锁定人物、场景、车辆、道具、服装等资产；每格必须包含镜头标题、景别、固定焦段、机位、拍摄方向、运镜、时长、画面描述、动作、对白/字幕、英文生图/生视频 prompt；保持轴线、左右关系与空间锚点连续；不要使用模糊二选一表达。",
+    contextLine,
+    options?.directorBrief ? `导演补充：${options.directorBrief}` : "",
+    "",
+    script,
+  ].filter(Boolean).join("\n")
+}
+
 function summarizeShotNodes(canvasContext?: AutoAgentCanvasContext) {
   return (canvasContext?.nodes ?? [])
     .filter((node) => node.nodeKind === "shot" || node.type === "shot")
@@ -112,7 +199,9 @@ function buildCharacterComplianceReport(canvasContext?: AutoAgentCanvasContext) 
       const missing: string[] = []
       if (!character.visualSignature) missing.push("外貌签名")
       if (!character.costume) missing.push("服装")
-      if (!character.referenceAssetId && !character.frontViewUrl && !character.avatarUrl) missing.push("参考图")
+      if (!character.referenceAssetId && !character.frontViewAssetId && !character.frontViewUrl && !character.avatarUrl) {
+        missing.push("参考图")
+      }
       if (missing.length > 0) {
         findings.push(`- ${node.title ?? "未命名镜头"} / ${name}：缺少 ${missing.join("、")}。`)
       }
@@ -182,6 +271,8 @@ function buildScriptToConceptActions(action: AutoAgentAction, userInput: string)
   const script = asText(action.params.script, userInput)
   const genre = asText(action.params.genre, "未指定题材")
   const style = asText(action.params.style, "cinematic concept art, consistent visual bible")
+  const directorBrief = asText(action.params.directorBrief, "")
+  const directorBriefData = directorBrief ? { directorBrief } : {}
   const visualConceptPrompt = `A cinematic key visual concept art for ${genre}, ${style}, based on: ${script.slice(0, 700)}`
 
   return [
@@ -192,7 +283,7 @@ function buildScriptToConceptActions(action: AutoAgentAction, userInput: string)
       prompt: `请把以下剧本拆成 6-9 个关键镜头，并输出景别、运镜、画面描述和生图 prompt。\n\n${script}`,
       x: 120,
       y: 120,
-      data: { storyboardAssistantStage: "story" },
+      data: { storyboardAssistantStage: "story", ...directorBriefData },
     }),
     createContentAction({
       title: "角色概念图 Prompt",
@@ -201,6 +292,7 @@ function buildScriptToConceptActions(action: AutoAgentAction, userInput: string)
       prompt: `Character concept sheet, ${style}, ${genre}, main cast extracted from: ${script.slice(0, 500)}`,
       x: 460,
       y: 120,
+      data: directorBriefData,
     }),
     createContentAction({
       title: "场景概念图 Prompt",
@@ -209,6 +301,7 @@ function buildScriptToConceptActions(action: AutoAgentAction, userInput: string)
       prompt: `Environment concept art, ${style}, ${genre}, locations extracted from: ${script.slice(0, 500)}`,
       x: 800,
       y: 120,
+      data: directorBriefData,
     }),
     createContentAction({
       title: "整体视觉概念图生成",
@@ -225,6 +318,7 @@ function buildScriptToConceptActions(action: AutoAgentAction, userInput: string)
         summary: "Auto Agent 已准备好整体视觉概念图提示词，可直接运行生成关键视觉图。",
         autoAgentIntent: "script-to-concept",
         autoRunRecommended: true,
+        ...directorBriefData,
       },
     }),
     {
@@ -233,6 +327,375 @@ function buildScriptToConceptActions(action: AutoAgentAction, userInput: string)
       description: "运行整体视觉概念图生成节点",
     },
   ]
+}
+
+type CharacterAssetSeed = {
+  id: string
+  name: string
+  role: string
+  notes?: string
+}
+
+const CHARACTER_ROLE_PATTERN = /(女主|男主|主角|反派|配角|同伴|母亲|父亲|姐姐|妹妹|哥哥|弟弟|侦探|医生|警察|导演)\s*([一-龥]{2,3})/g
+const CHARACTER_ACTION_PATTERN = /(?:^|[\n。；;，,]|\d+[.、]\s*)([一-龥]{2,3})(?=(?:在|替|发现|走|回|带|接|说|看|拿|进入|离开|站|坐|追|喊|望))/g
+const NAME_TRAILING_STOP_CHARS = new Set(["在", "带", "走", "回", "和", "与", "的", "把", "向", "被", "从", "发", "看", "听", "说", "拿"])
+
+function normalizeCharacterSeedName(name: string): string {
+  let normalized = name.trim()
+  if (normalized.length >= 3) {
+    const lastChar = normalized.at(-1)
+    if (lastChar && NAME_TRAILING_STOP_CHARS.has(lastChar)) normalized = normalized.slice(0, -1)
+  }
+  return normalized
+}
+
+function toCharacterSeedId(name: string): string {
+  return `character-${[...name].map((char) => char.charCodeAt(0).toString(36)).join("-")}`
+}
+
+function extractCharacterAssetSeeds(script: string): CharacterAssetSeed[] {
+  const seeds: CharacterAssetSeed[] = []
+  const seen = new Set<string>()
+
+  for (const match of script.matchAll(CHARACTER_ROLE_PATTERN)) {
+    const role = asText(match[1])
+    const name = normalizeCharacterSeedName(asText(match[2]))
+    if (!role || !name || seen.has(name)) continue
+    seen.add(name)
+    seeds.push({
+      id: toCharacterSeedId(name),
+      name,
+      role,
+      notes: "Auto Agent 从源剧本称谓中提取的角色种子，请在角色资产库补齐外貌签名、服装、道具和参考图。",
+    })
+  }
+
+  for (const match of script.matchAll(CHARACTER_ACTION_PATTERN)) {
+    const name = normalizeCharacterSeedName(asText(match[1]))
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    seeds.push({
+      id: toCharacterSeedId(name),
+      name,
+      role: "角色",
+      notes: "Auto Agent 从导演分镜中的人物动作提取的角色种子，请补齐角色定位和视觉资产。",
+    })
+  }
+
+  return seeds
+}
+
+function buildProductionAssetBibleActions(action: AutoAgentAction, userInput: string): ChatCanvasAction[] {
+  const script = asText(action.params.script, userInput)
+  const goal = asText(action.params.goal, "制作资产拆解")
+  const genre = asText(action.params.genre, "未指定题材")
+  const style = asText(action.params.style, "cinematic visual bible")
+  const targetPlatform = asText(action.params.targetPlatform, "short-drama")
+  const directorBrief = asText(action.params.directorBrief, "")
+  const directorBriefData = directorBrief ? { directorBrief } : {}
+  const scriptExcerpt = script.slice(0, 1200)
+  const storyboardSource = asText(action.params.storyboardText, script)
+  const characterAssetSeeds = extractCharacterAssetSeeds(`${script}\n${storyboardSource}`)
+  const storyboardShots = parseStoryboardTextToShots(storyboardSource).map((shot) => ({
+    title: shot.title,
+    content: shot.description,
+    prompt: shot.visualPrompt,
+    duration: shot.duration,
+    cameraMovement: shot.cameraMovement,
+    shotType: shot.shotType,
+  }))
+
+  return [
+    createContentAction({
+      title: `制作圣经：${goal.slice(0, 28)}`,
+      nodeKind: "document",
+      content: [
+        "# Project Bible / 制作圣经总览",
+        "",
+        `制作目标：${goal}`,
+        `题材：${genre}`,
+        `视觉风格：${style}`,
+        `目标平台：${targetPlatform}`,
+        "",
+        "## 节点链路",
+        "1. 源剧本：保留用户输入，作为后续所有节点的单一事实源。",
+        "2. 角色资产 Bible：提取人物身份、外貌签名、服装、道具、声线和参考图需求。",
+        "3. 场景资产 Bible：提取地点、时间、天气、光线、色彩、陈设和氛围。",
+        "4. 道具服装资产清单：提取可复用资产、连续性约束和缺口。",
+        "5. 分镜拆解任务：把剧本拆成可生产镜头。",
+        "6. 一致性与缺口检查：检查角色、场景、道具、时间线和生产风险。",
+      ].join("\n"),
+      x: 80,
+      y: 80,
+      data: {
+        productionBibleKind: "overview",
+        pipelineGoal: goal,
+        pipelineStyle: style,
+        targetPlatform,
+        autoAgentIntent: "extract-production-assets",
+        ...directorBriefData,
+      },
+    }),
+    createContentAction({
+      title: `源剧本：${goal.slice(0, 28)}`,
+      nodeKind: "document",
+      content: script,
+      prompt: `Use this source script as the canonical production input. Preserve named characters, locations, props, timeline clues and episode structure.\n\n${script}`,
+      x: 460,
+      y: 80,
+      data: {
+        productionBibleKind: "source-script",
+        pipelineGoal: goal,
+        genre,
+        style,
+        targetPlatform,
+        ...directorBriefData,
+      },
+    }),
+    createContentAction({
+      title: "角色资产 Bible",
+      nodeKind: "document",
+      content: [
+        "# 角色资产 Bible",
+        "",
+        "请从源剧本提取主要/次要角色，并为每个角色维护可复用制作信息：",
+        "- 姓名、定位、首次登场",
+        "- 年龄与外形签名、发型、服装、道具",
+        "- 声线、人物关系、动机",
+        "- 连续性规则、缺失参考、建议补充参考镜头",
+        "",
+        "源剧本摘录：",
+        scriptExcerpt,
+      ].join("\n"),
+      prompt: `Extract a detailed character bible from this ${genre} script. For every character include name, role, first appearance, age range, physical signature, face/hair, costume, props, voice tone, relationships, motivation, continuity rules, missing references, and suggested reference shots. Style: ${style}.\n\n${script}`,
+      x: 80,
+      y: 360,
+      data: {
+        productionBibleKind: "character-bible",
+        assetCategory: "character",
+        syncToAssetLibrary: true,
+        assetLibraryType: "character",
+        assetLibraryFolder: "Character",
+        assetLibraryTags: ["project-bible", "character", genre, targetPlatform].filter(Boolean),
+        characterAssetSeeds,
+        pipelineGoal: goal,
+        ...directorBriefData,
+      },
+    }),
+    createContentAction({
+      title: "场景资产 Bible",
+      nodeKind: "document",
+      content: [
+        "# 场景资产 Bible",
+        "",
+        "请从源剧本提取可复用场景资产：",
+        "- 场景地点、时间、天气",
+        "- 灯光、色彩、情绪",
+        "- 陈设、重复出现的道具、可用镜头语言",
+        "- 连续性规则、缺失参考",
+        "",
+        "源剧本摘录：",
+        scriptExcerpt,
+      ].join("\n"),
+      prompt: `Extract a detailed scene bible from this ${genre} script. For every location include location name, time of day, weather, lighting, color palette, mood, set dressing, recurring props, camera potential, continuity rules, missing references, and reusable environment prompt fragments. Style: ${style}.\n\n${script}`,
+      x: 460,
+      y: 360,
+      data: {
+        productionBibleKind: "scene-bible",
+        assetCategory: "scene",
+        syncToAssetLibrary: true,
+        assetLibraryType: "scene",
+        assetLibraryFolder: "Scene",
+        assetLibraryTags: ["project-bible", "scene", genre, targetPlatform].filter(Boolean),
+        pipelineGoal: goal,
+        ...directorBriefData,
+      },
+    }),
+    createContentAction({
+      title: "道具服装资产清单",
+      nodeKind: "document",
+      content: [
+        "# 道具 / 服装 / 实物资产清单",
+        "",
+        "请把源剧本拆成可追踪制作资产：",
+        "- props, costumes, vehicles, weapons, practical effects",
+        "- ownerCharacter / firstShot / recurrence / continuityRisk",
+        "- neededImageReference / neededVideoReference / promptFragment",
+        "",
+        "源剧本摘录：",
+        scriptExcerpt,
+      ].join("\n"),
+      prompt: `Extract production assets from this ${genre} script: props, costumes, vehicles, weapons, practical effects, signage, documents, key visual symbols. For each item include owner character, first shot, recurrence, continuity risk, required image/video references, and reusable prompt fragments. Style: ${style}.\n\n${script}`,
+      x: 840,
+      y: 360,
+      data: {
+        productionBibleKind: "props-costumes",
+        assetCategory: "prop-costume",
+        syncToAssetLibrary: true,
+        assetLibraryType: "other",
+        assetLibraryFolder: "Item",
+        assetLibraryTags: ["project-bible", "props", "costume", genre, targetPlatform].filter(Boolean),
+        pipelineGoal: goal,
+        ...directorBriefData,
+      },
+    }),
+    createContentAction({
+      title: "分镜拆解任务",
+      nodeKind: "storyboard",
+      content: script,
+      prompt: buildDirectorStoryboardPrompt(script, { genre, style, targetPlatform, directorBrief }),
+      x: 80,
+      y: 650,
+      data: {
+        productionBibleKind: "storyboard-task",
+        storyboardAssistantStage: "storyboard-text",
+        pipelineGoal: goal,
+        genre,
+        style,
+        targetPlatform,
+        ...directorBriefData,
+      },
+    }),
+    ...(storyboardShots.length > 0 ? [{
+      action: "generate_storyboard" as const,
+      sourceNodeId: "分镜拆解任务",
+      shots: storyboardShots,
+      description: `已从制作圣经脚本拆出 ${storyboardShots.length} 个 Shot`,
+    }] : []),
+    createContentAction({
+      title: "一致性与缺口检查",
+      nodeKind: "document",
+      content: [
+        "# 制作一致性与缺口检查",
+        "",
+        "检查维度：",
+        "- 角色外貌、服装、道具跨镜头是否一致",
+        "- 场景时间、天气、灯光、陈设是否连续",
+        "- 道具首次出现/重复出现是否有生产资产",
+        "- 分镜是否缺失关键转场、情绪转折、对白或字幕",
+        "- 哪些资产需要补参考图、补配音、补视频素材",
+      ].join("\n"),
+      prompt: `Audit the production bible, character bible, scene bible, props/costumes list and storyboard plan for continuity gaps. Return prioritized issues with severity P0/P1/P2, affected character/scene/asset, missing evidence, and concrete next action.\n\nSource script:\n${script}`,
+      x: 460,
+      y: 650,
+      data: {
+        productionBibleKind: "continuity-audit",
+        pipelineGoal: goal,
+        ...directorBriefData,
+      },
+    }),
+    {
+      action: "open_panel",
+      panel: "project_bible",
+      description: "打开 Project Bible，继续编辑角色、场景与视觉圣经。",
+    },
+  ]
+}
+
+function getClarificationOriginalInput(action: ChatCanvasAction): string {
+  const originalInput = action.action === "ask_clarification" ? action.data?.originalInput : undefined
+  return typeof originalInput === "string" && originalInput.trim() ? originalInput.trim() : ""
+}
+
+function inferCreativeClarificationRoute(answer: string): "storyboard" | "bible" | "concept" | "video" {
+  if (/制作圣经|资产拆解|项目圣经|production bible/i.test(answer)) return "bible"
+  if (/概念图|视觉概念|concept art/i.test(answer)) return "concept"
+  if (/视频生成任务|视频任务|生成视频|生视频|\bvideo\b/i.test(answer)) return "video"
+  return "storyboard"
+}
+
+function extractCreativeClarificationDetails(answer: string): string {
+  const trimmed = answer.trim()
+  if (!trimmed) return ""
+
+  const routeOnly = trimmed.replace(/[\s,，。；;！!？?]/g, "")
+  if (
+    routeOnly === "生成分镜" ||
+    routeOnly === "分镜" ||
+    routeOnly === "故事板" ||
+    routeOnly === "拆成制作圣经" ||
+    routeOnly === "制作圣经" ||
+    routeOnly === "生成视觉概念图" ||
+    routeOnly === "概念图" ||
+    routeOnly === "建立视频生成任务" ||
+    routeOnly === "视频生成任务"
+  ) {
+    return ""
+  }
+
+  return trimmed
+}
+
+export function buildAutoAgentClarificationResponseActions(
+  clarification: ChatCanvasAction,
+  answer: string,
+): ChatCanvasAction[] {
+  if (clarification.action !== "ask_clarification") return []
+
+  const originalInput = getClarificationOriginalInput(clarification)
+  const source = originalInput || clarification.question
+  const normalizedAnswer = answer.trim()
+  const route = inferCreativeClarificationRoute(normalizedAnswer)
+
+  if (route === "bible") {
+    const directorBrief = extractCreativeClarificationDetails(normalizedAnswer)
+    return buildProductionAssetBibleActions({
+      intent: "extract-production-assets",
+      params: {
+        script: source,
+        directorBrief,
+        goal: "一句话创意制作资产拆解",
+        genre: "短片",
+        style: "cinematic visual bible",
+        targetPlatform: "short-drama",
+      },
+      description: "正在拆解制作资产并生成项目圣经",
+      confidence: 0.8,
+    }, source)
+  }
+
+  if (route === "concept") {
+    const directorBrief = extractCreativeClarificationDetails(normalizedAnswer)
+    return buildScriptToConceptActions({
+      intent: "script-to-concept",
+      params: {
+        script: source,
+        directorBrief,
+        genre: "短片",
+        style: "cinematic concept art, consistent visual bible",
+      },
+      description: "正在把创意转成视觉概念图任务",
+      confidence: 0.8,
+    }, source)
+  }
+
+  if (route === "video") {
+    const directorBrief = extractCreativeClarificationDetails(normalizedAnswer)
+    return buildAutoAgentPlanningActions({
+      intent: "generate-video",
+      params: {
+        prompt: source,
+        directorBrief,
+        style: "cinematic short film",
+      },
+      description: "正在建立视频生成任务",
+      confidence: 0.8,
+    }, source)
+  }
+
+  const directorBrief = extractCreativeClarificationDetails(normalizedAnswer)
+  return buildAutoAgentPlanningActions({
+    intent: "generate-storyboard",
+    params: {
+      script: source,
+      directorBrief,
+      genre: "短片",
+      style: "cinematic",
+      targetPlatform: "short-drama",
+    },
+    description: "正在把创意拆成分镜",
+    confidence: 0.8,
+  }, source)
 }
 
 /**
@@ -373,13 +836,48 @@ export function buildAutoAgentPlanningActions(action: AutoAgentAction, userInput
   switch (action.intent) {
     case "generate-storyboard": {
       const script = asText(action.params.script, userInput)
-      return [createContentAction({
-        title: "Auto Agent 分镜草案",
+      const directorBrief = asText(action.params.directorBrief, "")
+      const sourceTitle = "Auto Agent 分镜草案"
+      const storyboardContent = directorBrief ? `${script}\n\n导演补充：${directorBrief}` : script
+      const sourceNode = createContentAction({
+        title: sourceTitle,
         nodeKind: "storyboard",
-        content: script,
-        prompt: `请将以下内容拆成专业影视分镜，包含镜头标题、景别、运镜、时长、画面描述、对白、英文生图 prompt。\n\n${script}`,
-        data: { storyboardAssistantStage: "storyboard-text", genre: action.params.genre, style: action.params.style },
-      })]
+        content: storyboardContent,
+        prompt: buildDirectorStoryboardPrompt(script, {
+          genre: asText(action.params.genre, ""),
+          style: asText(action.params.style, ""),
+          targetPlatform: asText(action.params.targetPlatform, "short-drama"),
+          directorBrief,
+        }),
+        data: {
+          storyboardAssistantStage: "storyboard-text",
+          genre: action.params.genre,
+          style: action.params.style,
+          ...(directorBrief ? { directorBrief } : {}),
+        },
+      })
+      const shots = parseStoryboardTextToShots(script).map((shot) => ({
+        title: shot.title,
+        content: shot.description,
+        prompt: shot.visualPrompt,
+        duration: shot.duration,
+        cameraMovement: shot.cameraMovement,
+        shotType: shot.shotType,
+      }))
+
+      if (shots.length === 0) return [sourceNode]
+
+      return [sourceNode, {
+        action: "generate_storyboard",
+        title: sourceTitle,
+        sourceNodeId: sourceTitle,
+        shots,
+        description: `已从创意拆出 ${shots.length} 个 Shot`,
+      }, {
+        action: "open_panel",
+        panel: "production_queue",
+        description: "打开生产队列，准备继续生成分镜图、视频、配音和字幕。",
+      }]
     }
     case "generate-character": {
       const description = asText(action.params.description, userInput)
@@ -396,6 +894,8 @@ export function buildAutoAgentPlanningActions(action: AutoAgentAction, userInput
       return [createContentAction({ title: "批量组镜变化方案", nodeKind: "document", content: buildBatchShotVariationReport(userInput, canvasContext) })]
     case "script-to-concept":
       return buildScriptToConceptActions(action, userInput)
+    case "extract-production-assets":
+      return buildProductionAssetBibleActions(action, userInput)
     case "analyze-script":
       return [createContentAction({
         title: "剧本分析任务单",
@@ -403,7 +903,13 @@ export function buildAutoAgentPlanningActions(action: AutoAgentAction, userInput
         content: [`# 剧本分析`, "", asText(action.params.script, userInput), "", `分析方向：${asText(action.params.analysisType, "角色、场景、节奏、视觉风格")}`].join("\n"),
       })]
     case "generate-video":
-      return [createContentAction({ title: "视频生成任务单", nodeKind: "video-generation", content: asText(action.params.prompt, userInput), prompt: asText(action.params.prompt, userInput) })]
+      return [createContentAction({
+        title: "视频生成任务单",
+        nodeKind: "video-generation",
+        content: asText(action.params.prompt, userInput),
+        prompt: asText(action.params.prompt, userInput),
+        data: asText(action.params.directorBrief, "") ? { directorBrief: asText(action.params.directorBrief, "") } : undefined,
+      })]
     case "generate-tts":
       return [createContentAction({ title: "配音生成任务单", nodeKind: "tts", content: asText(action.params.text, userInput), prompt: asText(action.params.voice, "自动选择声线") })]
     case "multi-step-pipeline":
@@ -427,7 +933,16 @@ export async function processWithAutoAgent(
     progress("Auto Agent 正在理解创作意图...")
     const action = await detectIntent(userInput, options.canvasContext, options.signal)
 
-    if (action.confidence < 0.6 || action.intent === "chat" || action.intent === "unknown") {
+    if (shouldAskCreativeClarification(action, userInput)) {
+      progress("已识别为创作需求，正在确认下一步...")
+      const clarification = createCreativeClarificationAction(userInput)
+      options.onActions?.([clarification])
+      options.onText?.("我先确认一下创作方向，避免把你的创意误当普通聊天。")
+      options.onComplete?.()
+      return action
+    }
+
+    if (shouldFallbackToPlainChat(action, userInput)) {
       progress("未识别到明确创作动作，切回普通对话...")
       if (options.onFallbackChat) {
         await options.onFallbackChat()
@@ -440,26 +955,86 @@ export async function processWithAutoAgent(
 
     progress(getActionDescription(action))
 
+    if (action.intent === "extract-production-assets" && options.expandStoryboard) {
+      try {
+        progress("导演组正在把创意扩展为可执行文字分镜...")
+        action.params.storyboardText = await generateDirectorStoryboardText({
+          storyText: asText(action.params.script, userInput),
+          nodeId: "auto-agent-production-bible",
+        })
+      } catch (error) {
+        console.warn("[AUTO_AGENT_STORYBOARD_EXPANSION]", error)
+        progress("导演分镜扩展暂不可用，先以基础镜头结构继续。")
+      }
+    }
+
     if (action.intent === "generate-image") {
+      const latestImageSmoke = loadStoredProviderSmokeResults().image
+      if (getStoredProviderSmokeReadinessStatus(latestImageSmoke) === "blocked") {
+        const smokeMessage = `最近一次真实生图 smoke 失败：${latestImageSmoke?.summaryTitle || "图片链路未就绪"}。${latestImageSmoke?.message || "请先在设置面板修复或切换 provider。"}`
+        options.onText?.(smokeMessage)
+        throw new Error(smokeMessage)
+      }
+
+      const { generateImageFromPrompt } = await import("./imageGeneration.ts")
       const prompt = asText(action.params.prompt, userInput)
-      const result = await generateImageFromPrompt({
-        prompt,
-        model: options.imageModel ?? "gpt-image-2",
-        size: asText(action.params.size, "1792x1024"),
-        requestId: `auto-agent-image-${Date.now()}`,
-      })
-      options.onImageGenerated?.({
-        imageUrl: result.imageUrl,
-        prompt: result.prompt || prompt,
-        model: result.model || options.imageModel || "gpt-image-2",
-        revisedPrompt: result.revisedPrompt,
-      })
-      options.onText?.("图片已生成，可添加到画布继续迭代。")
-      options.onComplete?.()
-      return action
+      const requestedAspectRatio = typeof action.params.aspectRatio === "string" ? action.params.aspectRatio : undefined
+      const requestedSize = resolveImageGenerationSize(
+        typeof action.params.size === "string" ? action.params.size : undefined,
+        requestedAspectRatio,
+      )
+      try {
+        const result = await generateImageFromPrompt({
+          prompt,
+          model: options.imageModel ?? "gpt-image-2",
+          size: requestedSize,
+          requestId: `auto-agent-image-${Date.now()}`,
+        })
+        options.onImageGenerated?.({
+          imageUrl: result.imageUrl,
+          prompt: result.prompt || prompt,
+          model: result.model || options.imageModel || "gpt-image-2",
+          revisedPrompt: result.revisedPrompt,
+          assetId: result.assetId,
+        })
+        options.onText?.("图片已生成，已自动添加到画布继续迭代。")
+        options.onComplete?.()
+        return action
+      } catch (error) {
+        const unknownOutcome = isUnknownImageResultError(error)
+        if (!isRetryableImageFailure(error) && !unknownOutcome) {
+          throw error
+        }
+
+        progress("真实生图暂时失败，正在回退到可重试 prompt...")
+        const errorMessage = unknownOutcome
+          ? buildUnknownImageResultMessage(error)
+          : error instanceof Error ? error.message : "图片生成失败，请稍后重试。"
+        const report = options.onActions?.([createContentAction({
+          title: "概念图待重试 Prompt",
+          nodeKind: "prompt",
+          content: prompt,
+          prompt,
+          data: {
+            autoAgentIntent: "generate-image",
+            preferredImageModel: options.imageModel ?? "gpt-image-2",
+            preferredAspectRatio: requestedAspectRatio,
+            preferredImageSize: requestedSize,
+            imageGenerationDeferred: true,
+            imageGenerationError: errorMessage,
+          },
+        })])
+        const handoffMessage = report?.applied
+          ? "已改为可重试 Prompt 节点，并放到画布继续迭代。"
+          : "已改为可重试 Prompt 节点，确认后可加入画布继续迭代。"
+        options.onText?.(`${errorMessage}\n${handoffMessage}`)
+        options.onComplete?.()
+        return action
+      }
     }
 
     if (action.intent === "generate-moodboard") {
+      const { generateMoodboard } = await import("./moodboardService.ts")
       const description = asText(action.params.description, userInput)
       const result = await generateMoodboard(description, (item) => progress(item.message))
       const actions = result.images.map((image, index) => createImageAction({
@@ -503,6 +1078,9 @@ export async function processWithAutoAgent(
     return action
   } catch (error: any) {
     const normalized = error instanceof Error ? error : new Error(String(error))
+    if ((normalized as Error & { code?: string }).code === "UNSUPPORTED_PROVIDER_CAPABILITY") {
+      options.onText?.(`当前模型/Provider 配置不兼容：${normalized.message}`)
+    }
     options.onError?.(normalized)
     throw normalized
   }

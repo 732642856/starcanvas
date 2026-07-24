@@ -98,6 +98,26 @@ describe("exportShotPlanningBoardToMarkdown", () => {
     assert.ok(md.includes("- **Style Preset**: `style-noir`"));
   });
 
+  it("includes source metadata and reference frame when present", () => {
+    const board = createShotPlanningBoardFromStoryboard({
+      projectId: "proj-source",
+      nodes: [
+        {
+          id: "node-ref",
+          title: "Reference Shot",
+          sourceType: "reference-video",
+          sourceTimeSec: 12.5,
+          referenceImageUrl: "data:image/jpeg;base64,frame",
+        },
+      ],
+      now: new Date("2026-06-17T00:00:00Z"),
+    });
+    const md = exportShotPlanningBoardToMarkdown(board);
+
+    assert.ok(md.includes("- **Source**: reference-video @ 12.5s"));
+    assert.ok(md.includes("- **Reference Frame**: data:image/jpeg;base64,frame"));
+  });
+
   it("does not include absent optional fields", () => {
     const board = makeBoardWithStatuses(["todo", "ready", "done"]);
     const md = exportShotPlanningBoardToMarkdown(board);

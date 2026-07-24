@@ -12,6 +12,7 @@
 import { useCallback, useRef, useState } from "react"
 import type { Node } from "@xyflow/react"
 import type { CanvasNodeData } from "../components/canvas/types"
+import { getRuntimeProviderState } from "@/lib/ai/client"
 
 // ── 类型 ──────────────────────────────────────────────
 
@@ -76,12 +77,20 @@ export function useChainVideoGeneration() {
       })
 
       try {
+        const runtimeProvider = await getRuntimeProviderState("video")
         const prompt = shot.prompt || `cinematic shot, ${shot.title || ""}`
         const requestBody: Record<string, unknown> = {
+          prompt,
           imageUrl: previousFrameUrl || shot.imageUrl,
-          motionPrompt: prompt,
-          durationSeconds: 5,
-          backend: "vidu",
+          duration: 5,
+          ...(runtimeProvider.overrides ? {
+            overrides: {
+              baseUrl: runtimeProvider.overrides.baseUrl,
+              sessionApiKey: runtimeProvider.overrides.sessionApiKey,
+              videoModel: runtimeProvider.overrides.videoModel,
+              timeoutMs: runtimeProvider.overrides.timeoutMs,
+            },
+          } : {}),
         }
 
         // 调用视频生成 API
@@ -130,7 +139,7 @@ export function useChainVideoGeneration() {
                   shotTitle: shot.title || `镜头 ${i + 1}`,
                   percent: pct,
                 })
-              } else if (event.type === "complete" && event.videoUrl) {
+              } else if (event.type === "result" && event.videoUrl) {
                 videoUrl = event.videoUrl
               }
             } catch {

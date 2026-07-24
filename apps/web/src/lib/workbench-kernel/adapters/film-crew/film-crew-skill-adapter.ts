@@ -36,6 +36,8 @@ interface FilmCrewInputs {
   title?: string
   mode?: AgentOperationMode
   canvasNodes?: AgentContext["canvasNodes"]
+  /** Only server-validated LocalSkill context may populate this field. */
+  localSkillContext?: string
 }
 
 function inputError(code: string, message: string): FilmCrewSkillAdapterError {
@@ -92,6 +94,7 @@ function mapInputs(inputs: unknown): AgentContext {
   const characterRelations = optionalString(value.characterRelations, "characterRelations")
   const additionalNotes = optionalString(value.additionalNotes, "additionalNotes")
   const title = optionalString(value.title, "title")
+  const localSkillContext = optionalString(value.localSkillContext, "localSkillContext")
   return {
     script: value.content,
     genre: value.genre ?? "剧情",
@@ -102,6 +105,7 @@ function mapInputs(inputs: unknown): AgentContext {
     ...(characterRelations === undefined ? {} : { characterRelations }),
     ...(additionalNotes === undefined ? {} : { additionalNotes }),
     ...(title === undefined ? {} : { title }),
+    ...(localSkillContext === undefined ? {} : { localSkillContext }),
     ...(value.canvasNodes === undefined ? {} : { canvasNodes: value.canvasNodes }),
   }
 }

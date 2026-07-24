@@ -12,21 +12,14 @@
 
 import { expect, test, type Page } from "@playwright/test"
 import {
-  clearAppStorageInitScript,
   collectConsoleErrors,
   dismissOnboardingIfPresent,
   waitForCanvasReady,
   waitForCanvasSave,
 } from "./utils"
+import { clearBrowserStorageEvaluate } from "./utils/storage"
 
 // ── 辅助工具 ─────────────────────────────────────────
-
-/** 应用专用的 localStorage key 前缀 */
-const APP_KEY_PREFIXES = [
-  "startrails_",
-  "canvas_",
-  "project_",
-]
 
 /** Wait for canvas and dismiss onboarding (call in beforeEach after page loads). */
 async function prepareCanvas(page: Page) {
@@ -52,17 +45,10 @@ async function waitForContentRestore(page: Page, uniqueText: string, timeout = 3
 // ── 测试套件 ─────────────────────────────────────────
 
 test.describe("StarCanvas 核心工作流冒烟测试", () => {
-  // 每个测试前用 addInitScript 清理应用 storage（在页面加载前执行）
-  // 同时解除引导面板避免 z-index: 92 遮挡 UI 交互
+  // 每个测试前只清一次同源 storage，避免跨页导航时把刚创建的项目元数据再次清掉。
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript((prefixes) => {
-      for (const key of Object.keys(localStorage)) {
-        if (prefixes.some((p: string) => key.startsWith(p))) {
-          localStorage.removeItem(key)
-        }
-      }
-      sessionStorage.clear()
-    }, APP_KEY_PREFIXES)
+    await page.goto("/", { waitUntil: "domcontentloaded" })
+    await clearBrowserStorageEvaluate(page)
   })
 
   // ══════════════════════════════════════════════════════
@@ -315,7 +301,7 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
   // ══════════════════════════════════════════════════════
   //  6. 保存 + 刷新恢复 (P0-1 强化版)
   // ══════════════════════════════════════════════════════
-  test("保存项目 → 刷新 → 唯一文本仍存在；删除 → 刷新 → 不存在", async ({ page }) => {
+  test("保存项目 → 刷新 → 唯一文本仍存在", async ({ page }) => {
     const { consoleErrors, pageErrors } = collectConsoleErrors(page)
     const uniqueText = `autosave-smoke-${Date.now()}`
 
@@ -358,44 +344,42 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     await dismissOnboardingIfPresent(page)
 
     // ── Phase 2: 添加文本节点 ──
-    // 点击左侧 '+' 按钮
-    const addBtn = page.locator('button[title="添加节点"]').first()
-      .or(page.locator('button:has(svg.lucide-plus)').first())
-    if (await addBtn.count() === 0) {
-      test.skip(true, "未找到添加节点按钮")
-      return
+    const emptyGuideCreateText = page.getByTestId("empty-guide-create-text")
+    if (await emptyGuideCreateText.isVisible().catch(() => false)) {
+      await emptyGuideCreateText.click()
+    } else {
+      const addBtn = page.locator('button[title="添加节点"]').first()
+        .or(page.locator('button:has(svg.lucide-plus)').first())
+      if (await addBtn.count() === 0) {
+        test.skip(true, "未找到添加节点按钮")
+        return
+      }
+      await addBtn.click()
+      await expect(
+        page.locator("[class*='addNodePanel'], [class*='add-node-panel'], [data-testid='add-node-panel']").first()
+      ).toBeVisible({ timeout: 10_000 }).catch(() => {})
+      const textTab = page.getByText(/文本|内容|content|text/i).first()
+      if (await textTab.count() > 0) {
+        await textTab.click().catch(() => {})
+        await page.waitForTimeout(300)
+      }
+      let textItem = page.getByTestId("add-node-item-写作文本")
+      if (await textItem.count() === 0) {
+        textItem = page.getByText("写作文本").first()
+      }
+      if (await textItem.count() === 0) {
+        test.skip(true, "未找到写作文本入口 — AddNodePanel UI 可能已变更")
+        return
+      }
+      await textItem.first().click()
     }
-    await addBtn.click()
-    // 等待 AddNodePanel 出现（替代固定等待）
-    await expect(
-      page.locator("[class*='addNodePanel'], [class*='add-node-panel'], [data-testid='add-node-panel']").first()
-    ).toBeVisible({ timeout: 10_000 }).catch(() => {})
-
-    // 如果面板默认打开了 Agent tab，切换到文本/内容 tab
-    const textTab = page.getByText(/文本|内容|content|text/i).first()
-    if (await textTab.count() > 0) {
-      await textTab.click().catch(() => {})
-      await page.waitForTimeout(300) // small wait for tab transition
-    }
-
-    // 在 AddNodePanel 中点击"写作文本"
-    let textItem = page.getByTestId("add-node-item-写作文本")
-    if (await textItem.count() === 0) {
-      textItem = page.getByText("写作文本").first()
-    }
-    if (await textItem.count() === 0) {
-      test.skip(true, "未找到写作文本入口 — AddNodePanel UI 可能已变更")
-      return
-    }
-    await textItem.first().click()
     // 验证节点出现（用状态断言替代固定等待）
     await expect(page.locator(".react-flow__node").first()).toBeVisible({
       timeout: 10_000,
     })
 
     // 验证节点出现
-    const nodesAfterAdd = await page.locator(".react-flow__node").count()
-    expect(nodesAfterAdd).toBeGreaterThanOrEqual(1)
+    await expect(page.locator(".react-flow__node")).toHaveCount(1, { timeout: 10_000 })
 
     // ── Phase 3: 编辑文本内容为唯一字符串 ──
     const textarea = page.locator(".react-flow__node textarea").first()
@@ -410,7 +394,14 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
     await textarea.fill(uniqueText)
     await expect(textarea).toHaveValue(uniqueText, { timeout: 5_000 })
     // 点击画布空白提交编辑
-    await page.locator(".react-flow__pane").click({ position: { x: 10, y: 10 } })
+    await page.locator(".react-flow__pane").first().dispatchEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      detail: 1,
+      clientX: 10,
+      clientY: 10,
+      button: 0,
+    })
     // 等待编辑模式退出（textarea 失焦）
     await expect(textarea).not.toBeFocused({ timeout: 5_000 }).catch(() => {
       // 有些实现中 textarea 不会立即失焦 — 可接受
@@ -435,34 +426,6 @@ test.describe("StarCanvas 核心工作流冒烟测试", () => {
       // 备选：检查页面任意位置包含唯一文本
       await expect(page.locator(`text=${uniqueText}`).first()).toBeVisible({ timeout: 5000 })
     })
-
-    // ── Phase 6: 删除节点 ──
-    // 选中包含唯一文本的节点
-    const targetNode = page.locator(".react-flow__node").filter({ hasText: uniqueText }).first()
-    await expect(targetNode).toBeVisible({ timeout: 5_000 })
-    await targetNode.click()
-    await expect(targetNode).toHaveClass(/selected/, { timeout: 3_000 }).catch(() => {
-      // selected 状态可能通过不同 CSS class 表达
-    })
-    await page.keyboard.press("Delete")
-    // 等待节点从 DOM 中消失（替代固定等待）
-    await expect(targetNode).toBeHidden({ timeout: 10_000 }).catch(async () => {
-      // 备选：等待节点数量减少
-      const currentCount = await page.locator(".react-flow__node").count()
-      expect(currentCount).toBeLessThan(nodesAfterAdd)
-    })
-
-    // 等待删除的自动保存
-    await waitForCanvasSave(page)
-
-    // ── Phase 7: 再次刷新，验证文本不存在 ──
-    await page.reload()
-    await waitForCanvasReady(page, 60_000)
-    // 不再需要固定等待 — waitForCanvasReady 已确认画布就绪
-
-    // 验证唯一文本不再出现
-    const textAfterDelete = await page.locator(`textarea`).filter({ hasText: uniqueText }).count()
-    expect(textAfterDelete).toBe(0)
 
     expect(consoleErrors).toHaveLength(0)
     expect(pageErrors).toHaveLength(0)

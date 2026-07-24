@@ -7,6 +7,10 @@
 // ============================================================================
 
 import * as Sentry from "@sentry/nextjs";
+import {
+  persistMediaBlob,
+  type LocalMediaAsset,
+} from "../../../lib/assets/localMediaStore.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -555,9 +559,43 @@ export async function registerVoiceClone(params: {
   refText?: string
   tags?: string[]
 }): Promise<{ profileId: string }> {
-  // Stub: return a mock profile ID
-  await new Promise((resolve) => setTimeout(resolve, 1500))
-  return { profileId: `vc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
+  const baseUrl = process.env.NEXT_PUBLIC_VOICE_CLONE_BASE_URL || "http://localhost:8765"
+  const form = new FormData()
+  form.append("audio", params.audioFile)
+  form.append("character_id", params.characterId)
+  form.append("character_name", params.characterName)
+  if (params.refText) form.append("ref_text", params.refText)
+  if (params.tags?.length) form.append("tags", params.tags.join(","))
+
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}/api/voice-clone/register`, {
+      method: "POST",
+      body: form,
+    })
+  } catch {
+    throw new TtsError({
+      message: "声线克隆服务未启动或无法访问。请先启动本地服务：uvicorn services.voice_clone.main:app --host 0.0.0.0 --port 8765，或配置 NEXT_PUBLIC_VOICE_CLONE_BASE_URL。",
+      code: "BACKEND_UNAVAILABLE",
+      retryable: false,
+    })
+  }
+
+  const data = await response.json().catch(() => null) as {
+    profile_id?: string
+    detail?: string
+    message?: string
+  } | null
+
+  if (!response.ok || !data?.profile_id) {
+    throw new TtsError({
+      message: data?.detail || data?.message || "声线克隆注册失败",
+      code: "API_ERROR",
+      retryable: response.status >= 500,
+    })
+  }
+
+  return { profileId: data.profile_id }
 }
 
 /**
@@ -574,7 +612,7 @@ export function invalidateProfileCache(): void {
  */
 export async function generateTtsAudio(params: {
   text: string
-  voiceConfig?: { instruct?: string; refAudioId?: string; refText?: string; speed?: number }
+  voiceConfig?: { instruct?: string; refAudioId?: string; refText?: string; speed?: number; backend?: TtsBackend }
   backend?: TtsBackend
 }): Promise<{ audioBlob: Blob }> {
   const { text, voiceConfig, backend } = params
@@ -582,14 +620,29 @@ export async function generateTtsAudio(params: {
     throw new TtsGenerationError("请输入要合成的台词")
   }
 
+  const selectedBackend = backend ?? voiceConfig?.backend
+  if (selectedBackend === "mock") {
+    const result = await generateTts({
+      text: text.trim(),
+      voiceDescription: voiceConfig?.instruct,
+      speed: voiceConfig?.speed,
+      backend: "mock",
+    })
+    const base64 = result.audioBase64.replace(/^data:audio\/\w+;base64,/, "")
+    const binaryStr = atob(base64)
+    const bytes = new Uint8Array(binaryStr.length)
+    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+    return { audioBlob: new Blob([bytes], { type: "audio/wav" }) }
+  }
+
   // Use Kokoro if no explicit backend override
-  const useKokoro = !backend || backend === "kokoro"
+  const useKokoro = !selectedBackend || selectedBackend === "kokoro"
   if (useKokoro) {
     const result = await generateTts({
       text: text.trim(),
       voiceDescription: voiceConfig?.instruct,
       speed: voiceConfig?.speed,
-      backend: "kokoro",
+      backend: selectedBackend ?? "kokoro",
     })
     const binaryStr = atob(result.audioBase64)
     const bytes = new Uint8Array(binaryStr.length)
@@ -664,10 +717,35 @@ export async function generateTtsAudio(params: {
  * Voice Panel — Persist TTS audio blob to local storage.
  */
 export async function persistTtsAudio(
-  _blob: Blob,
-  _options: { fileName: string },
+  blob: Blob,
+  options: {
+    fileName: string;
+    saveFn?: (asset: LocalMediaAsset) => Promise<void>;
+    createObjectUrlFn?: (assetId: string, blob: Blob) => string;
+    createAssetIdFn?: () => string;
+  },
 ): Promise<{ objectUrl: string; assetId: string }> {
-  const objectUrl = URL.createObjectURL(_blob)
-  const assetId = `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  return { objectUrl, assetId }
+  if (options.saveFn || options.createObjectUrlFn || options.createAssetIdFn) {
+    const assetId = options.createAssetIdFn?.() ?? crypto.randomUUID();
+    const now = Date.now();
+    await options.saveFn?.({
+      id: assetId,
+      blob,
+      kind: "audio",
+      fileName: options.fileName,
+      mimeType: blob.type || "audio/wav",
+      size: blob.size,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const objectUrl =
+      options.createObjectUrlFn?.(assetId, blob) ?? URL.createObjectURL(blob);
+    return { objectUrl, assetId };
+  }
+
+  return persistMediaBlob(blob, {
+    kind: "audio",
+    fileName: options.fileName,
+    mimeType: blob.type || "audio/wav",
+  });
 }

@@ -51,7 +51,7 @@ interface PlanCanvasActionsInput {
 }
 
 type AgentNodeType = "text" | "prompt" | "image" | "storyboard" | "reference" | "group"
-type CanvasActionType = "create_node" | "update_node" | "delete_node" | "connect_nodes" | "create_group" | "layout_canvas" | "generate_prompt" | "split_storyboard" | "generate_image_prompt" | "generate_storyboard" | "ask_clarification" | "no_action" | "select_node" | "open_panel" | "generate_image" | "sync_storyboard" | "focus_canvas"
+type CanvasActionType = "create_node" | "update_node" | "delete_node" | "connect_nodes" | "create_group" | "layout_canvas" | "generate_prompt" | "split_storyboard" | "generate_image_prompt" | "generate_storyboard" | "ask_clarification" | "no_action" | "select_node" | "open_panel" | "configure_provider" | "generate_image" | "sync_storyboard" | "focus_canvas"
 type AgentStepStatus = "done" | "running" | "pending" | "warning"
 
 interface CanvasAgentStatusStep {
@@ -503,7 +503,7 @@ export class GenerationService {
     const { user, organization } = await this.projectsService.ensureDevContext()
     const messages = this.sanitizeChatMessages(input.messages)
 
-    if (!messages.length || !messages.some((message) => message.role === "user" && message.content.trim())) {
+    if (!messages.length || !messages.some((message) => message.role === "user" && this.chatMessageContentText(message.content).trim())) {
       throw new BadRequestException("messages with at least one user message are required")
     }
 
@@ -891,11 +891,12 @@ export class GenerationService {
       "内部专家分工：1) Director 理解创作目标和下一步；2) Canvas Operator 决定节点、连接、选中和视图；3) Storyboard Artist 拆镜头/首帧/镜头意图；4) Visual Prompt Expert 写可生成的图像/视频/音频提示；5) Asset Router 判断上传素材用途。",
       "最终不要暴露专家讨论，只输出 JSON，不要 Markdown，不要解释文字。",
       "JSON 格式必须严格为：{\"assistantMessage\":\"给用户看的中文回复\",\"statusSteps\":[{\"label\":\"已读取节点\",\"status\":\"done\",\"detail\":\"读取了 3 个节点\"}],\"actions\":[{\"type\":\"操作类型\",\"params\":{}}],\"suggestions\":[{\"label\":\"继续拆分镜\",\"prompt\":\"把当前故事拆成 6 个镜头\",\"mode\":\"STORYBOARD\"}],\"needsUserConfirmation\":false,\"confidence\":0.82}。",
-      "只能使用这些 action type：create_node, update_node, delete_node, connect_nodes, create_group, layout_canvas, generate_image_prompt, generate_storyboard, ask_clarification, no_action, select_node, open_panel, generate_image, sync_storyboard, focus_canvas。不要主动输出 generate_prompt 或 split_storyboard，旧名字仅用于兼容。",
+      "只能使用这些 action type：create_node, update_node, delete_node, connect_nodes, create_group, layout_canvas, generate_image_prompt, generate_storyboard, ask_clarification, no_action, select_node, open_panel, configure_provider, generate_image, sync_storyboard, focus_canvas。不要主动输出 generate_prompt 或 split_storyboard，旧名字仅用于兼容。",
       "只能使用这 6 个 node_type：text, prompt, image, storyboard, reference, group。不要输出 previs、uploaded-image、image-result 等旧类型。",
       "create_node params：node_type、title、content、prompt、position。prompt 必须是可直接交给生成模型的具体创作提示，不要只写'生成图片'。",
       "update_node/delete_node params：node_id，以及要更新的 title/content/prompt。connect_nodes params：source_node_id、target_node_id。如果刚创建连续节点不知道真实 id，可以省略 id，前端会按最近节点连接。",
-      "create_group params：title、node_ids、position。layout_canvas params：layout，可选 horizontal、vertical、grid。open_panel params.panel 可为 chat/storyboard/previs/models/queue/asset/profile。",
+      "create_group params：title、node_ids、position。layout_canvas params：layout，可选 horizontal、vertical、grid。open_panel params.panel 可为 chat/storyboard/previs/models/queue/asset/profile/settings。",
+      "configure_provider params：可包含 baseUrl、apiKey、defaultModel、imageModel、videoModel、timeoutMs、keyStorageMode、openSettings。仅当用户明确要求帮他配置中转站 / API Key / 模型时使用。",
       "generate_image_prompt params：node_id 可选、prompt/content 必填；用于把用户模糊意图整理为可生图/首帧/视频首帧提示词并写入画布节点。",
       "generate_storyboard params：shots 数组，每项包含 title、content、prompt；用于把故事拆成多个 storyboard/prompt 节点。",
       "statusSteps 要体现真实读取过程，例如：已读取节点、已读取选中节点、已分析媒体、已生成动作计划。suggestions 给 2-4 个下一步按钮。confidence 为 0-1 数字。",
@@ -975,7 +976,7 @@ export class GenerationService {
       split_storyboard: "generate_storyboard",
     }
     const normalized = aliases[type] ?? type
-    const allowedTypes = new Set<CanvasActionType>(["create_node", "update_node", "delete_node", "connect_nodes", "create_group", "layout_canvas", "generate_prompt", "split_storyboard", "generate_image_prompt", "generate_storyboard", "ask_clarification", "no_action", "select_node", "open_panel", "generate_image", "sync_storyboard", "focus_canvas"])
+    const allowedTypes = new Set<CanvasActionType>(["create_node", "update_node", "delete_node", "connect_nodes", "create_group", "layout_canvas", "generate_prompt", "split_storyboard", "generate_image_prompt", "generate_storyboard", "ask_clarification", "no_action", "select_node", "open_panel", "configure_provider", "generate_image", "sync_storyboard", "focus_canvas"])
     return allowedTypes.has(normalized as CanvasActionType) ? normalized as CanvasActionType : null
   }
 
@@ -1070,6 +1071,12 @@ export class GenerationService {
         role: message.role,
         content: typeof message.content === "string" ? message.content.trim().slice(0, 8000) : message.content,
       }))
+  }
+
+  private chatMessageContentText(content: ChatCompletionMessage["content"]) {
+    if (typeof content === "string") return content
+    if (Array.isArray(content)) return content.map((part) => String(part.text ?? "")).join(" ")
+    return ""
   }
 
   private buildDirectorChatSystemPrompt(canvas: Record<string, unknown>, options?: { includeCanvasContext?: boolean }): ChatCompletionMessage {

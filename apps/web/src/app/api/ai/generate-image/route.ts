@@ -6,7 +6,23 @@ import { NextRequest, NextResponse } from "next/server"
 import { normalizeGenerationError } from "@/lib/ai/normalizeGenerationError"
 import { getImageProviderCapability } from "@/lib/ai/imageProviderCapabilities"
 import { fetchWithTimeout } from "@/lib/ai/server-fetch"
-import { getProvider } from "@/lib/ai/provider-registry"
+import { getProvider, mergeProviderConfig, type AiProviderOverrides } from "@/lib/ai/provider-registry"
+import { buildImageEditFormData } from "./image-edit-form"
+import { resolveImageRetryAttempts } from "./retry-attempts"
+import { shouldRetryImageUpstreamStatus } from "./retry-policy"
+import {
+  resolveImageFallbackModels,
+  resolveImageGenerationMode,
+  resolveImageQuality,
+  shouldFallbackImageModel,
+} from "./fallback-policy"
+import {
+  completeImageGenerationJob,
+  createImageGenerationJob,
+  failImageGenerationJob,
+  getImageGenerationJob,
+  markImageGenerationJobRunning,
+} from "./job-store"
 
 // ── Config ──────────────────────────────────────────────────────────────────
 // 通过 Provider Registry 统一读取，不再直接读 process.env
@@ -20,19 +36,26 @@ function getImageConfig() {
     retryAttempts: Math.max(1, Number(process.env.AI_IMAGE_RETRY_ATTEMPTS || 2)),
   }
 }
+
+function getImageConfigFromOverrides(overrides?: AiProviderOverrides) {
+  if (!overrides) return getImageConfig()
+
+  const provider = mergeProviderConfig(overrides)
+  return {
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    timeoutMs: provider.timeoutMs,
+    enhanceTimeoutMs: Math.min(provider.timeoutMs, 30000),
+    retryAttempts: Math.max(1, Number(process.env.AI_IMAGE_RETRY_ATTEMPTS || 2)),
+  }
+}
 const IS_DEV = process.env.NODE_ENV !== "production"
 
 /** 仅在开发环境输出日志 */
 function devLog(...args: unknown[]) { if (IS_DEV) console.log(...args) }
 function devDebug(...args: unknown[]) { if (IS_DEV) console.debug(...args) }
-const RETRYABLE_UPSTREAM_STATUSES = new Set([429, 500, 502, 503, 504])
-
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function shouldRetryUpstreamStatus(status: number): boolean {
-  return RETRYABLE_UPSTREAM_STATUSES.has(status)
 }
 
 function getRetryDelayMs(attempt: number): number {
@@ -128,52 +151,20 @@ function buildMultimodalImageMessage(prompt: string, dataUrl: string) {
   }]
 }
 
-function dataUrlToBlob(dataUrl: string): Blob {
-  const [header, base64] = dataUrl.split(",")
-  const mimeType = header.match(/data:(.*?);base64/)?.[1] || "image/png"
-  const binary = atob(base64 || "")
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i)
-  }
-  return new Blob([bytes], { type: mimeType })
-}
-
-function buildImageEditFormData(params: {
-  model: string
-  prompt: string
-  size: string
-  sourceImageValues: string[]
-}): FormData {
-  const { model, prompt, size, sourceImageValues } = params
-  const form = new FormData()
-  form.append("model", model)
-  form.append("prompt", prompt)
-  form.append("size", size)
-  form.append("n", "1")
-  form.append("response_format", "b64_json")
-
-  sourceImageValues.forEach((sourceImage, index) => {
-    const blob = dataUrlToBlob(sourceImage)
-    const ext = blob.type.includes("jpeg") ? "jpg" : blob.type.includes("webp") ? "webp" : "png"
-    form.append("image", blob, `reference-${index}.${ext}`)
-  })
-
-  return form
-}
-
 function buildImageGenerationPayload(params: {
   model: string
   prompt: string
   size: string
+  quality: "low" | "medium" | "high" | "auto"
   sourceImageValues: string[]
 }): Record<string, unknown> {
-  const { model, prompt, size, sourceImageValues } = params
+  const { model, prompt, size, quality, sourceImageValues } = params
   const payload: Record<string, unknown> = {
     model,
     prompt,
     n: 1,
     size,
+    quality,
     response_format: "b64_json",
   }
 
@@ -222,18 +213,73 @@ function buildEnhanceSystemPrompt(hasSourceImage: boolean): string {
   ].join(" ")
 }
 
+export async function GET(request: NextRequest) {
+  const jobId = request.nextUrl.searchParams.get("jobId")
+  if (!jobId) {
+    return NextResponse.json({ ok: false, error: "jobId is required" }, { status: 400 })
+  }
+  const job = getImageGenerationJob(jobId)
+  if (!job) {
+    return NextResponse.json({ ok: false, error: "Image generation job not found", jobId }, { status: 404 })
+  }
+  return NextResponse.json({ ok: true, job })
+}
+
 // ── Main handler ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
-  const config = getImageConfig()
+  let activeProviderId = getProvider().id
 
   try {
     const body = await request.json()
+    if (body?.async === true) {
+      const job = createImageGenerationJob({ requestId: body?.requestId })
+      void (async () => {
+        markImageGenerationJobRunning(job.id)
+        try {
+          const backgroundRequest = new NextRequest(request.url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...body, async: false }),
+          })
+          const response = await POST(backgroundRequest)
+          const payload = await response.json()
+          if (response.ok && payload?.ok) {
+            completeImageGenerationJob(job.id, payload)
+          } else {
+            failImageGenerationJob(job.id, payload)
+          }
+        } catch (error) {
+          failImageGenerationJob(job.id, {
+            message: error instanceof Error ? error.message : String(error),
+          })
+        }
+      })()
+      return NextResponse.json({
+        ok: true,
+        async: true,
+        jobId: job.id,
+        status: job.status,
+        requestId: body?.requestId,
+      }, { status: 202 })
+    }
+    const overrides: AiProviderOverrides | undefined =
+      body?._providerOverrides && typeof body._providerOverrides === "object"
+        ? body._providerOverrides as AiProviderOverrides
+        : undefined
+    const config = getImageConfigFromOverrides(overrides)
+    if (overrides?.providerId) {
+      activeProviderId = overrides.providerId
+    } else if (overrides?.baseUrl) {
+      activeProviderId = "custom"
+    }
     const {
       prompt,
       model = "gpt-image-2",
       size = "1024x1024",
       sourceImage,
+      retryAttempts,
       requestId,
+      fallbackModels,
     } = body
 
     if (!prompt || typeof prompt !== "string") {
@@ -252,6 +298,8 @@ export async function POST(request: NextRequest) {
 
     // ── Normalize request fields ───────────────────────────────────────────
     const normalizedSize = normalizeImageSize(size)
+    const generationMode = resolveImageGenerationMode(body?.mode || body?.generationMode)
+    const imageQuality = resolveImageQuality(generationMode, body?.quality)
     if (normalizedSize !== size) {
       devLog("[generate-image] normalized unsupported size:", size, "=>", normalizedSize)
     }
@@ -354,6 +402,7 @@ export async function POST(request: NextRequest) {
           model,
           prompt: finalPrompt,
           size: normalizedSize,
+          quality: imageQuality,
           sourceImageValues,
         })
 
@@ -361,6 +410,7 @@ export async function POST(request: NextRequest) {
     devLog("[generate-image] REFERENCE_IMAGE_FORMAT:", isImageToImage ? "multipart_form_image_file" : REFERENCE_IMAGE_FORMAT)
     devLog("[generate-image] upstream model:", model)
     devLog("[generate-image] upstream size:", normalizedSize)
+    devLog("[generate-image] upstream quality:", imageQuality)
     devLog("[generate-image] upstream prompt length:", finalPrompt.length)
     if (upstreamBody instanceof FormData) {
       devLog("[generate-image] upstream form-data image count:", sourceImageValues.length)
@@ -387,6 +437,7 @@ export async function POST(request: NextRequest) {
     let imageRes: Response | null = null
     let lastFailure: { status?: number; body?: string; error?: unknown } | null = null
     let attemptsUsed = 0
+    let completedModel = model
     const upstreamUrl = `${config.baseUrl}${endpoint}`
     const upstreamHeaders: Record<string, string> = upstreamBody instanceof FormData
       ? { Authorization: `Bearer ${config.apiKey}` }
@@ -396,10 +447,11 @@ export async function POST(request: NextRequest) {
         }
     const upstreamBodyPayload = upstreamBody instanceof FormData ? upstreamBody : JSON.stringify(upstreamBody)
 
-    for (let attempt = 1; attempt <= config.retryAttempts; attempt += 1) {
+    const effectiveRetryAttempts = resolveImageRetryAttempts(retryAttempts, config.retryAttempts)
+    for (let attempt = 1; attempt <= effectiveRetryAttempts; attempt += 1) {
       attemptsUsed = attempt
       try {
-        devLog("[generate-image]", requestId || "no-request-id", "upstream attempt", attempt, "/", config.retryAttempts)
+        devLog("[generate-image]", requestId || "no-request-id", "upstream attempt", attempt, "/", effectiveRetryAttempts)
         imageRes = await fetchWithTimeout(upstreamUrl, {
           method: "POST",
           headers: upstreamHeaders,
@@ -411,19 +463,53 @@ export async function POST(request: NextRequest) {
 
         const errorText = await imageRes.text()
         lastFailure = { status: imageRes.status, body: errorText }
-        if (!shouldRetryUpstreamStatus(imageRes.status) || attempt >= config.retryAttempts) {
+        if (!shouldRetryImageUpstreamStatus(imageRes.status) || attempt >= effectiveRetryAttempts) {
           imageRes = null
           break
         }
       } catch (error) {
         lastFailure = { error }
         console.warn("[generate-image]", requestId || "no-request-id", "upstream request failed on attempt", attempt, error)
-        if (attempt >= config.retryAttempts) break
+        if (attempt >= effectiveRetryAttempts) break
       }
 
       const delayMs = getRetryDelayMs(attempt)
-      devLog("[generate-image]", requestId || "no-request-id", "retrying upstream request:", attempt + 1, "/", config.retryAttempts, "after", delayMs, "ms")
+      devLog("[generate-image]", requestId || "no-request-id", "retrying upstream request:", attempt + 1, "/", effectiveRetryAttempts, "after", delayMs, "ms")
       await sleep(delayMs)
+    }
+
+    if (!imageRes?.ok && !isImageToImage && shouldFallbackImageModel(lastFailure?.status)) {
+      const modelFallbacks = resolveImageFallbackModels(model, fallbackModels || process.env.AI_IMAGE_FALLBACK_MODELS)
+      for (const fallbackModel of modelFallbacks) {
+        attemptsUsed += 1
+        const fallbackBody = buildImageGenerationPayload({
+          model: fallbackModel,
+          prompt: finalPrompt,
+          size: normalizedSize,
+          quality: imageQuality,
+          sourceImageValues,
+        })
+        try {
+          devLog("[generate-image]", requestId || "no-request-id", "fallback model attempt", fallbackModel)
+          const fallbackRes = await fetchWithTimeout(upstreamUrl, {
+            method: "POST",
+            headers: upstreamHeaders,
+            body: JSON.stringify(fallbackBody),
+          }, config.timeoutMs)
+          devLog("[generate-image]", requestId || "no-request-id", "fallback status", fallbackModel, fallbackRes.status)
+          if (fallbackRes.ok) {
+            imageRes = fallbackRes
+            completedModel = fallbackModel
+            lastFailure = null
+            break
+          }
+          const errorText = await fallbackRes.text()
+          lastFailure = { status: fallbackRes.status, body: errorText }
+          if (!shouldFallbackImageModel(fallbackRes.status)) break
+        } catch (error) {
+          lastFailure = { error }
+        }
+      }
     }
 
     if (!imageRes?.ok) {
@@ -490,7 +576,10 @@ export async function POST(request: NextRequest) {
           ok: true,
           imageUrl: url,
           prompt: finalPrompt,
-          model,
+          model: completedModel,
+          primaryModel: model,
+          generationMode,
+          quality: imageQuality,
           requestId,
           attempts: attemptsUsed,
           provider: capability.provider,
@@ -516,7 +605,10 @@ export async function POST(request: NextRequest) {
       ok: true,
       imageUrl: `data:image/png;base64,${b64Json}`,
       prompt: finalPrompt,
-      model,
+      model: completedModel,
+      primaryModel: model,
+      generationMode,
+      quality: imageQuality,
       requestId,
       attempts: attemptsUsed,
       provider: capability.provider,
@@ -525,10 +617,10 @@ export async function POST(request: NextRequest) {
       referenceFormat: isImageToImage ? "multipart_form_image_file" : REFERENCE_IMAGE_FORMAT,
     })
   } catch (error: any) {
-    const normalized = normalizeGenerationError({ error, provider: "copse" })
+    const normalized = normalizeGenerationError({ error, provider: activeProviderId })
     devDebug("[generate-image] unexpected error raw:", normalized.raw)
     return NextResponse.json(
-      { ok: false, error: normalized, attempts: 0, provider: "copse" },
+      { ok: false, error: normalized, attempts: 0, provider: activeProviderId },
       { status: normalized.status || 500 },
     )
   }

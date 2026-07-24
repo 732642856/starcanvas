@@ -12,6 +12,7 @@
 import { expect, test } from "@playwright/test"
 import { createTestProjectId } from "./utils/project"
 import { clearBrowserStorage } from "./utils/storage"
+import { gotoCanvas } from "./utils"
 
 test.setTimeout(180_000)
 
@@ -20,26 +21,35 @@ test.describe("Quick Add Node Search", () => {
     await clearBrowserStorage(page)
   })
 
-  // Helper: wait for React Flow to be fully ready (onInit called)
-  const waitForCanvasReady = async (page: any) => {
-    await expect(page.locator(".react-flow").first()).toBeVisible({ timeout: 90_000 })
-    // add extra wait for onInit to fire after clearBrowserStorage
-    await page.waitForTimeout(3_000);
+  const openQuickAddPanel = async (page: any) => {
+    await page.locator(".react-flow__pane").first().dispatchEvent("dblclick", {
+      bubbles: true,
+      cancelable: true,
+      detail: 2,
+      clientX: 300,
+      clientY: 200,
+      button: 0,
+    })
+  }
+
+  const clickCanvasPane = async (page: any) => {
+    await page.locator(".react-flow__pane").first().dispatchEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      detail: 1,
+      clientX: 300,
+      clientY: 200,
+      button: 0,
+    })
   }
 
   test("double-click on canvas opens search panel", async ({ page }) => {
     const projectId = createTestProjectId("quick-add-open")
 
-    await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 180_000,
-    })
-    await waitForCanvasReady(page)
+    await gotoCanvas(page, projectId)
 
     // Double-click on the canvas pane to trigger quick-add search
-    await page.locator(".react-flow__pane").dblclick({
-      position: { x: 300, y: 200 },
-    })
+    await openQuickAddPanel(page)
 
     // Panel should open
     await expect(page.getByTestId("quick-add-node-search")).toBeVisible({
@@ -53,16 +63,10 @@ test.describe("Quick Add Node Search", () => {
   test("search input filters node options", async ({ page }) => {
     const projectId = createTestProjectId("quick-add-filter")
 
-    await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 180_000,
-    })
-    await waitForCanvasReady(page)
+    await gotoCanvas(page, projectId)
 
     // Open the panel
-    await page.locator(".react-flow__pane").dblclick({
-      position: { x: 300, y: 200 },
-    })
+    await openQuickAddPanel(page)
     await expect(page.getByTestId("quick-add-node-search")).toBeVisible({
       timeout: 10_000,
     })
@@ -83,16 +87,10 @@ test.describe("Quick Add Node Search", () => {
   test("arrow keys navigate and enter selects to create node", async ({ page }) => {
     const projectId = createTestProjectId("quick-add-select")
 
-    await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 180_000,
-    })
-    await waitForCanvasReady(page)
+    await gotoCanvas(page, projectId)
 
     // Open the panel
-    await page.locator(".react-flow__pane").dblclick({
-      position: { x: 300, y: 200 },
-    })
+    await openQuickAddPanel(page)
     await expect(page.getByTestId("quick-add-node-search")).toBeVisible({
       timeout: 10_000,
     })
@@ -121,19 +119,13 @@ test.describe("Quick Add Node Search", () => {
   test("escape key closes the panel without creating a node", async ({ page }) => {
     const projectId = createTestProjectId("quick-add-escape")
 
-    await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 180_000,
-    })
-    await waitForCanvasReady(page)
+    await gotoCanvas(page, projectId)
 
     // Get initial node count
     const initialNodeCount = await page.locator(".react-flow__node").count()
 
     // Open the panel
-    await page.locator(".react-flow__pane").dblclick({
-      position: { x: 300, y: 200 },
-    })
+    await openQuickAddPanel(page)
     await expect(page.getByTestId("quick-add-node-search")).toBeVisible({
       timeout: 10_000,
     })
@@ -153,16 +145,10 @@ test.describe("Quick Add Node Search", () => {
   test("click outside closes the panel", async ({ page }) => {
     const projectId = createTestProjectId("quick-add-outside")
 
-    await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 180_000,
-    })
-    await waitForCanvasReady(page)
+    await gotoCanvas(page, projectId)
 
     // Open the panel
-    await page.locator(".react-flow__pane").dblclick({
-      position: { x: 300, y: 200 },
-    })
+    await openQuickAddPanel(page)
     await expect(page.getByTestId("quick-add-node-search")).toBeVisible({
       timeout: 10_000,
     })
@@ -181,16 +167,10 @@ test.describe("Quick Add Node Search", () => {
   test("single click on canvas does NOT open the panel", async ({ page }) => {
     const projectId = createTestProjectId("quick-add-single")
 
-    await page.goto(`/canvas?projectId=${encodeURIComponent(projectId)}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 180_000,
-    })
-    await waitForCanvasReady(page)
+    await gotoCanvas(page, projectId)
 
     // Single click on canvas pane
-    await page.locator(".react-flow__pane").click({
-      position: { x: 300, y: 200 },
-    })
+    await clickCanvasPane(page)
 
     // Panel should NOT open
     await expect(page.getByTestId("quick-add-node-search")).not.toBeVisible({

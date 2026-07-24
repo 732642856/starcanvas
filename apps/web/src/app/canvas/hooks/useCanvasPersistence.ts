@@ -6,18 +6,19 @@
 // ============================================================================
 "use client";
 
-import supermemory from "@/lib/memory/supermemory";
+import supermemory from "../../../lib/memory/supermemory.ts";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { Node, Edge, Viewport } from "@xyflow/react";
 import type { CanvasNodeData } from "../components/canvas/types";
 import {
   hydrateImageAsset,
   persistImageDataUrl,
-} from "@/lib/assets/localImageStore";
+} from "../../../lib/assets/localImageStore.ts";
+import { hydrateMediaAsset } from "../../../lib/assets/localMediaStore.ts";
 import {
   findRuntimeUrlLeaks,
   sanitizeNodesForPersistence,
-} from "@/lib/storage/sanitizePersistedCanvas";
+} from "../../../lib/storage/sanitizePersistedCanvas.ts";
 
 const DEFAULT_STORAGE_KEY = "startrails_canvas";
 
@@ -51,9 +52,24 @@ const EMPTY_CANVAS_SAVE_GRACE_MS = 1_500;
 // Migrate old base64 data URLs to IndexedDB.
 // ---------------------------------------------------------------------------
 
-async function hydrateImageNodes(
+export async function hydrateCanvasMediaNodes(
   nodes: Node<CanvasNodeData>[],
+  deps: {
+    hydrateImageAssetFn?: typeof hydrateImageAsset;
+    hydrateMediaAssetFn?: typeof hydrateMediaAsset;
+    persistImageDataUrlFn?: typeof persistImageDataUrl;
+  } = {},
 ): Promise<Node<CanvasNodeData>[]> {
+  const hydrateImageAssetForNode = deps.hydrateImageAssetFn ?? hydrateImageAsset;
+  const hydrateMediaAssetForNode = deps.hydrateMediaAssetFn ?? hydrateMediaAsset;
+  const persistImageDataUrlForNode = deps.persistImageDataUrlFn ?? persistImageDataUrl;
+  const videoNodeKinds = new Set([
+    "uploaded-video",
+    "video",
+    "video-generation",
+    "video-result",
+    "talking-photo",
+  ])
   const hydrated = await Promise.all(
     nodes.map(async (node) => {
       const data = node.data;
@@ -64,9 +80,102 @@ async function hydrateImageNodes(
       // Remove deprecated marker
       delete clean._imageStripped;
 
-      // --- Case 1: Modern IDB asset (has assetId + persistence = "indexeddb") ---
+      if (clean.focusEditMaskAssetId) {
+        const objectUrl = await hydrateImageAssetForNode(clean.focusEditMaskAssetId);
+        if (objectUrl) {
+          clean.focusEditMaskDataUrl = objectUrl;
+          delete clean.maskDataUrl;
+        } else {
+          delete clean.focusEditMaskDataUrl;
+          delete clean.maskDataUrl;
+        }
+      }
+
+      // --- Case 1a: Modern IDB video asset ---
+      if (
+        clean.assetId &&
+        clean.persistence === "indexeddb" &&
+        videoNodeKinds.has(clean.nodeKind || "")
+      ) {
+        const objectUrl = await hydrateMediaAssetForNode(clean.assetId);
+        if (objectUrl) {
+          clean.assetUrl = objectUrl;
+          clean.imageUrl = objectUrl;
+          clean.resultUrl = objectUrl;
+          clean.persistence = "indexeddb";
+          delete clean.loadError;
+        } else {
+          clean.assetUrl = undefined;
+          clean.imageUrl = undefined;
+          clean.resultUrl = undefined;
+          clean.persistence = "missing";
+          clean.loadError = "asset-not-found";
+        }
+        return { ...node, data: clean };
+      }
+
+      // --- Case 1a.2: Modern IDB audio asset ---
+      const audioAssetId =
+        typeof (clean as CanvasNodeData & { audioAssetId?: string }).audioAssetId === "string"
+          ? (clean as CanvasNodeData & { audioAssetId?: string }).audioAssetId
+          : typeof clean.shot?.voiceAudioAssetId === "string"
+            ? clean.shot.voiceAudioAssetId
+            : undefined;
+      const isAudioNode =
+        clean.nodeKind?.includes("audio") ||
+        clean.nodeKind?.includes("tts") ||
+        clean.nodeKind === "bgm" ||
+        Boolean(clean.shot?.voiceAudioAssetId);
+      if (isAudioNode && audioAssetId) {
+        const objectUrl = await hydrateMediaAssetForNode(audioAssetId);
+        if (objectUrl) {
+          (clean as CanvasNodeData & { audioUrl?: string; audioAssetId?: string }).audioUrl = objectUrl;
+          if (clean.shot?.voiceAudioAssetId === audioAssetId) {
+            clean.shot = { ...clean.shot, voiceAudioUrl: objectUrl };
+          }
+          delete clean.loadError;
+        } else {
+          (clean as CanvasNodeData & { audioUrl?: string }).audioUrl = undefined;
+          if (clean.shot?.voiceAudioAssetId === audioAssetId) {
+            clean.shot = { ...clean.shot, voiceAudioUrl: undefined };
+          }
+          clean.loadError = "asset-not-found";
+        }
+        return { ...node, data: clean };
+      }
+
+      if (Array.isArray(clean.shot?.characterIdentities) && clean.shot.characterIdentities.length > 0) {
+        const characterIdentities = await Promise.all(
+          clean.shot.characterIdentities.map(async (identity) => {
+            if (!identity) return identity;
+            const nextIdentity = { ...identity };
+            const viewFields = [
+              { urlKey: "frontViewUrl", assetKey: "frontViewAssetId" },
+              { urlKey: "sideViewUrl", assetKey: "sideViewAssetId" },
+              { urlKey: "backViewUrl", assetKey: "backViewAssetId" },
+            ] as const;
+
+            for (const field of viewFields) {
+              if (typeof nextIdentity[field.urlKey] === "string" && nextIdentity[field.urlKey]) {
+                continue;
+              }
+              const assetId = nextIdentity[field.assetKey];
+              if (typeof assetId !== "string" || !assetId) continue;
+              const objectUrl = await hydrateImageAssetForNode(assetId);
+              if (objectUrl) {
+                nextIdentity[field.urlKey] = objectUrl;
+              }
+            }
+
+            return nextIdentity;
+          }),
+        );
+        clean.shot = { ...clean.shot, characterIdentities };
+      }
+
+      // --- Case 1b: Modern IDB image asset (has assetId + persistence = "indexeddb") ---
       if (clean.assetId && clean.persistence === "indexeddb") {
-        const objectUrl = await hydrateImageAsset(clean.assetId);
+        const objectUrl = await hydrateImageAssetForNode(clean.assetId);
         if (objectUrl) {
           clean.imageUrl = objectUrl;
           clean.persistence = "indexeddb";
@@ -99,13 +208,14 @@ async function hydrateImageNodes(
         imageUrl.startsWith("data:image")
       ) {
         try {
-          const { assetId, objectUrl } = await persistImageDataUrl(imageUrl, {
+          const { assetId, objectUrl } = await persistImageDataUrlForNode(imageUrl, {
             fileName: clean.fileName,
             width: clean.imageWidth,
             height: clean.imageHeight,
           });
           clean.assetId = assetId;
           clean.imageUrl = objectUrl;
+          clean.generatedImageUrl = imageUrl;
           clean.persistence = "indexeddb";
           clean.source = clean.source ?? "upload";
           console.log(
@@ -319,7 +429,7 @@ export function useCanvasPersistence({
 
         // Hydrate image nodes from IndexedDB
         const hydratedNodes = recoverCanvasVisibilityAndLayout(
-          await hydrateImageNodes(migratedData.nodes),
+          await hydrateCanvasMediaNodes(migratedData.nodes),
         );
 
         if (cancelled) return;
@@ -384,7 +494,34 @@ export function useCanvasPersistence({
 
     debounceRef.current = setTimeout(async () => {
       try {
-        const sanitizedNodes = sanitizeNodesForPersistence(nodes);
+        const nodesWithPersistedMasks = await Promise.all(
+          nodes.map(async (node) => {
+            const data = node.data;
+            const maskDataUrl = data?.focusEditMaskDataUrl || data?.maskDataUrl;
+            if (
+              !data?.focusEditMaskAssetId &&
+              typeof maskDataUrl === "string" &&
+              maskDataUrl.startsWith("data:image")
+            ) {
+              const persisted = await persistImageDataUrl(maskDataUrl, {
+                fileName: "focus-edit-mask.png",
+              });
+              return {
+                ...node,
+                data: {
+                  ...data,
+                  focusEditMaskAssetId: persisted.assetId,
+                  focusEditMaskDataUrl: maskDataUrl,
+                },
+              };
+            }
+            return node;
+          }),
+        );
+        if (nodesWithPersistedMasks.some((node, index) => node !== nodes[index])) {
+          setNodes(nodesWithPersistedMasks);
+        }
+        const sanitizedNodes = sanitizeNodesForPersistence(nodesWithPersistedMasks);
 
         // Dev-only health check: warn if any runtime URL survived sanitization.
         if (process.env.NODE_ENV === "development") {
@@ -432,7 +569,7 @@ export function useCanvasPersistence({
         clearTimeout(debounceRef.current);
       }
     };
-  }, [nodes, edges, storageKey]);
+  }, [nodes, edges, currentViewport, storageKey]);
 
   // ==========================================================================
   // CLEAR persisted canvas

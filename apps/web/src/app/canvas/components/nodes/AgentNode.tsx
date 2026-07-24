@@ -288,6 +288,7 @@ const AgentNode = memo(function AgentNode({
       <div className="px-4 pb-3 flex gap-2">
         <button
           onClick={handleRun}
+          data-testid={`agent-node-run-${id}`}
           disabled={isRunning || !draftContent.trim()}
           className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-medium transition-all"
           style={{

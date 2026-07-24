@@ -31,6 +31,8 @@ export interface ExtractedVideoFrame {
   dataUrl: string
   width: number
   height: number
+  score?: number
+  strategy?: "uniform" | "scene-change"
 }
 
 export interface FrameExtractionOptions {
@@ -42,6 +44,10 @@ export interface FrameExtractionOptions {
   format?: "image/jpeg" | "image/png"
   /** JPEG quality 0–1 (default 0.85) */
   quality?: number
+  /** Sampling strategy. `scene-change` prefers shot-boundary-like changes. */
+  strategy?: "uniform" | "scene-change"
+  /** Pre-scan sample count for scene-change mode. */
+  sampleCount?: number
 }
 
 // ── Reverse Storyboard Shot ────────────────────────────

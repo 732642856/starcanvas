@@ -1,7 +1,15 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import type { ProductionRunQueue, ProductionRunQueueTask } from "@/lib/storyboard/productionRunQueue";
+import type {
+  ProductionRunQueue,
+  ProductionRunQueueTask,
+  ProductionRunQueueTaskStatus,
+} from "@/lib/storyboard/productionRunQueue";
+import {
+  buildInitialProductionRunExecState,
+  selectRunnableProductionRunTasks,
+} from "./productionRunExecutorState";
 
 // ============================================================================
 // TYPES
@@ -13,7 +21,7 @@ export type ProductionTaskExecutor = (
 ) => Promise<void>;
 
 export type TaskExecState = {
-  status: "queued" | "preparing" | "running" | "completed" | "failed";
+  status: ProductionRunQueueTaskStatus;
   error?: string;
 };
 
@@ -26,6 +34,8 @@ export type ProductionRunExecutorOptions = {
   onTaskCompleted?: (taskId: string) => void;
   /** 每个任务失败后的回调 */
   onTaskFailed?: (taskId: string, error: Error) => void;
+  /** 每个任务跳过后的回调 */
+  onTaskSkipped?: (taskId: string, reason?: string) => void;
   /** 全部完成后回调 */
   onAllCompleted?: () => void;
 };
@@ -33,8 +43,14 @@ export type ProductionRunExecutorOptions = {
 export type UseProductionRunExecutorReturn = {
   /** 是否正在执行 */
   isRunning: boolean;
+  /** 是否暂停中 */
+  isPaused: boolean;
   /** 开始执行队列 */
   start: () => void;
+  /** 暂停当前执行，保留进度 */
+  pause: () => void;
+  /** 从暂停点恢复执行 */
+  resume: () => void;
   /** 中止执行 */
   abort: () => void;
   /** 重试单个失败任务 */
@@ -70,32 +86,29 @@ export function useProductionRunExecutor({
   onExecuteTask,
   onTaskCompleted,
   onTaskFailed,
+  onTaskSkipped,
   onAllCompleted,
 }: ProductionRunExecutorOptions): UseProductionRunExecutorReturn {
   const [isRunning, setIsRunning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [execState, setExecState] = useState<Record<string, TaskExecState>>({});
   const abortRef = useRef<AbortController | null>(null);
+  const pauseRequestedRef = useRef(false);
+  const abortRequestedRef = useRef(false);
   const execStateRef = useRef(execState);
   execStateRef.current = execState;
-
-  // 重置 execState（开始执行时）
-  const resetExecState = useCallback((tasks: ProductionRunQueueTask[]) => {
-    const initial: Record<string, TaskExecState> = {};
-    for (const t of tasks) {
-      initial[t.id] = { status: t.status === "completed" ? "completed" : "queued" };
-    }
-    setExecState(initial);
-    execStateRef.current = initial;
-  }, []);
 
   // 更新单个任务状态
   const updateTaskState = useCallback(
     (taskId: string, patch: Partial<TaskExecState>) => {
-      setExecState((prev) => ({
+      const prev = execStateRef.current;
+      const next = {
         ...prev,
         [taskId]: { ...(prev[taskId] ?? { status: "queued" }), ...patch },
-      }));
+      };
+      execStateRef.current = next;
+      setExecState(next);
     },
     [],
   );
@@ -103,9 +116,8 @@ export function useProductionRunExecutor({
   const start = useCallback(async () => {
     if (!queue || !queue.tasks.length) return;
 
-    const runnableTasks = queue.tasks.filter(
-      (t) => t.status === "queued" || t.status === "preparing" || t.status === "failed",
-    );
+    const initialState = buildInitialProductionRunExecState(queue.tasks, execStateRef.current);
+    const runnableTasks = selectRunnableProductionRunTasks(queue.tasks, initialState);
 
     if (!runnableTasks.length) {
       setError("没有可执行的任务");
@@ -113,18 +125,27 @@ export function useProductionRunExecutor({
     }
 
     setIsRunning(true);
+    setIsPaused(false);
     setError(null);
-    resetExecState(queue.tasks);
+    pauseRequestedRef.current = false;
+    abortRequestedRef.current = false;
+    setExecState(initialState);
+    execStateRef.current = initialState;
     abortRef.current = new AbortController();
     const { signal } = abortRef.current;
 
-    for (let i = 0; i < runnableTasks.length; i++) {
+    while (!signal.aborted) {
+      const task = selectRunnableProductionRunTasks(queue.tasks, execStateRef.current)[0];
+      if (!task) break;
       if (signal.aborted) break;
 
-      const task = runnableTasks[i]!;
-
-      // 跳过已完成的任务
-      if (execStateRef.current[task.id]?.status === "completed") continue;
+      // 跳过已完成或已跳过的任务
+      if (
+        execStateRef.current[task.id]?.status === "completed" ||
+        execStateRef.current[task.id]?.status === "skipped"
+      ) {
+        continue;
+      }
 
       updateTaskState(task.id, { status: "running", error: undefined });
 
@@ -134,7 +155,9 @@ export function useProductionRunExecutor({
         onTaskCompleted?.(task.id);
       } catch (err: any) {
         if (err?.name === "AbortError") {
-          updateTaskState(task.id, { status: "queued" }); // 中止的任务回到 queued
+          updateTaskState(task.id, {
+            status: pauseRequestedRef.current ? "paused" : "queued",
+          });
           break;
         }
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -145,44 +168,88 @@ export function useProductionRunExecutor({
     }
 
     setIsRunning(false);
-    onAllCompleted?.();
-  }, [queue, onExecuteTask, onTaskCompleted, onTaskFailed, onAllCompleted, resetExecState, updateTaskState]);
+    abortRef.current = null;
+    if (!pauseRequestedRef.current && !abortRequestedRef.current) {
+      onAllCompleted?.();
+    }
+    abortRequestedRef.current = false;
+  }, [queue, onExecuteTask, onTaskCompleted, onTaskFailed, onAllCompleted, updateTaskState]);
 
-  const abort = useCallback(() => {
+  const pause = useCallback(() => {
+    if (!isRunning) return;
+    pauseRequestedRef.current = true;
+    setIsPaused(true);
+    const activeTaskId = Object.entries(execStateRef.current).find(([, state]) =>
+      state.status === "running" || state.status === "preparing"
+    )?.[0];
+    if (activeTaskId) {
+      updateTaskState(activeTaskId, { status: "paused" });
+    }
     abortRef.current?.abort();
     setIsRunning(false);
+  }, [isRunning, updateTaskState]);
+
+  const resume = useCallback(() => {
+    if (!queue) return;
+    pauseRequestedRef.current = false;
+    setIsPaused(false);
+    void start();
+  }, [queue, start]);
+
+  const abort = useCallback(() => {
+    pauseRequestedRef.current = false;
+    abortRequestedRef.current = true;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsRunning(false);
+    setIsPaused(false);
   }, []);
 
   const retryTask = useCallback(
     async (taskId: string) => {
-      if (!queue) return;
+      if (!queue || isRunning) return;
       const task = queue.tasks.find((t) => t.id === taskId);
       if (!task) return;
 
+      setIsRunning(true);
+      setIsPaused(false);
+      setError(null);
+      pauseRequestedRef.current = false;
+      abortRequestedRef.current = false;
+      const controller = new AbortController();
+      abortRef.current = controller;
       updateTaskState(taskId, { status: "running", error: undefined });
 
       try {
-        // 创建新的 abort controller（单次重试）
-        const controller = new AbortController();
         await onExecuteTask(task, controller.signal);
         updateTaskState(taskId, { status: "completed", error: undefined });
         onTaskCompleted?.(taskId);
       } catch (err: any) {
+        if (err?.name === "AbortError") {
+          updateTaskState(taskId, {
+            status: pauseRequestedRef.current ? "paused" : "queued",
+          });
+          return;
+        }
         const errMsg = err instanceof Error ? err.message : String(err);
         updateTaskState(taskId, { status: "failed", error: errMsg });
         onTaskFailed?.(taskId, err instanceof Error ? err : new Error(errMsg));
+      } finally {
+        setIsRunning(false);
+        abortRef.current = null;
+        abortRequestedRef.current = false;
       }
     },
-    [queue, onExecuteTask, onTaskCompleted, onTaskFailed, updateTaskState],
+    [queue, isRunning, onExecuteTask, onTaskCompleted, onTaskFailed, updateTaskState],
   );
 
   const skipTask = useCallback(
     (taskId: string) => {
-      updateTaskState(taskId, { status: "completed", error: undefined });
-      onTaskCompleted?.(taskId);
+      updateTaskState(taskId, { status: "skipped", error: "Skipped by user." });
+      onTaskSkipped?.(taskId, "Skipped by user.");
     },
-    [onTaskCompleted, updateTaskState],
+    [onTaskSkipped, updateTaskState],
   );
 
-  return { isRunning, start, abort, retryTask, skipTask, error, execState };
+  return { isRunning, isPaused, start, pause, resume, abort, retryTask, skipTask, error, execState };
 }

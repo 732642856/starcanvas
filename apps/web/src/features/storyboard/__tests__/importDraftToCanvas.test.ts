@@ -33,9 +33,9 @@ describe("importStoryboardDraftToCanvas", () => {
     assert.equal(nodes.length, 0)
   })
 
-  it("every node has type 'content' and nodeKind 'shot'", () => {
+  it("every node has type 'shot' and nodeKind 'shot'", () => {
     const nodes = importStoryboardDraftToCanvas([makeShot()])
-    assert.equal(nodes[0].type, "content")
+    assert.equal(nodes[0].type, "shot")
     assert.equal(nodes[0].data.nodeKind, "shot")
   })
 
@@ -52,12 +52,41 @@ describe("importStoryboardDraftToCanvas", () => {
     assert.equal(nodes[0].data.content, "A test shot")
     assert.equal(nodes[0].data.prompt, "close-up, dramatic")
     assert.equal(nodes[0].data.timelineDurationSeconds, 3.5)
+    assert.equal(nodes[0].data.shot?.title, "My Shot")
+    assert.equal(nodes[0].data.shot?.description, "A test shot")
+    assert.equal(nodes[0].data.shot?.visualPrompt, "close-up, dramatic")
+    assert.equal(nodes[0].data.shot?.duration, "3.5s")
+  })
+
+  it("preserves draft source metadata for traceability", () => {
+    const shot = makeShot({
+      id: "draft-shot-1",
+      sourceType: "reference-video",
+      sourceMeta: {
+        videoAnalysisNodeId: "analyze-1",
+        sourceVideoId: "video-1",
+        timestampMs: 1200,
+      },
+    })
+    const nodes = importStoryboardDraftToCanvas([shot])
+
+    assert.equal(nodes[0].data.sourceType, "reference-video")
+    assert.equal(nodes[0].data.sourceShotId, "draft-shot-1")
+    assert.equal(nodes[0].data.sourceMeta?.videoAnalysisNodeId, "analyze-1")
+    assert.equal(nodes[0].data.sourceMeta?.sourceVideoId, "video-1")
+    assert.equal(nodes[0].data.sourceMeta?.timestampMs, 1200)
   })
 
   it("includes imageUrl when thumbnail provided", () => {
     const shot = makeShot({ thumbnail: "data:image/png;base64,abc" })
     const nodes = importStoryboardDraftToCanvas([shot])
     assert.equal(nodes[0].data.imageUrl, "data:image/png;base64,abc")
+    assert.equal(nodes[0].data.thumbnailUrl, "data:image/png;base64,abc")
+    assert.equal(nodes[0].data.shot?.generatedImageUrl, undefined)
+    assert.equal(nodes[0].data.shot?.referenceImageUrl, "data:image/png;base64,abc")
+    assert.equal(nodes[0].data.shot?.generationStatus, "idle")
+    assert.equal(nodes[0].data.shot?.status, "ready")
+    assert.match(nodes[0].data.shot?.notes ?? "", /参考视频关键帧/)
   })
 
   it("imageUrl is undefined when no thumbnail", () => {
@@ -91,6 +120,21 @@ describe("importStoryboardDraftToCanvas", () => {
     assert.equal(nodes[4].position.y, 520)
   })
 
+  it("uses source time metadata for timeline start when available", () => {
+    const nodes = importStoryboardDraftToCanvas([
+      makeShot({
+        durationSec: 1.5,
+        sourceMeta: { timeSec: 12.5 },
+      }),
+      makeShot({ durationSec: 2 }),
+    ])
+
+    assert.equal(nodes[0].data.timelineStartTimeSeconds, 12.5)
+    assert.equal(nodes[0].data.timelineDurationSeconds, 1.5)
+    assert.equal(nodes[1].data.timelineStartTimeSeconds, 14)
+    assert.equal(nodes[1].data.timelineDurationSeconds, 2)
+  })
+
   it("stacks rows with existingNodeCount offset", () => {
     const nodes = importStoryboardDraftToCanvas([makeShot()], {
       existingNodeCount: 5,
@@ -105,5 +149,13 @@ describe("importStoryboardDraftToCanvas", () => {
   it("every node has createdAt timestamp", () => {
     const nodes = importStoryboardDraftToCanvas([makeShot()])
     assert.ok(nodes[0].data.createdAt! > 0)
+  })
+
+  it("uses shot node default dimensions", () => {
+    const nodes = importStoryboardDraftToCanvas([makeShot()])
+    assert.equal(nodes[0].width, 340)
+    assert.equal(nodes[0].height, 360)
+    assert.equal(nodes[0].data.displayWidth, 340)
+    assert.equal(nodes[0].data.displayHeight, 360)
   })
 })

@@ -26,6 +26,8 @@ import {
   Square,
   Globe,
   RefreshCw,
+  FilePlus2,
+  ListTodo,
 } from "lucide-react"
 import type { ContextMenuState, CanvasNodeKind } from "../canvas/types"
 import { DESIGN_TOKENS, ICON_CONFIG } from "../../styles/designSystem"
@@ -58,6 +60,9 @@ interface NodeContextMenuProps {
   onComposeSelectedShots?: () => void
   onOpenPanorama?: () => void
   onRegenerateShot?: () => void
+  onCreatePromptFromRemix?: () => void
+  onCreateStoryboardFromRemix?: () => void
+  onQueueProductionFromRemix?: () => void
   isWorkflowRunning?: boolean
   nodeKind?: CanvasNodeKind
   selectedShotCount?: number
@@ -71,6 +76,7 @@ interface MenuItemProps {
   disabled?: boolean
   danger?: boolean
   separator?: boolean
+  testId?: string
 }
 
 const MenuItem = memo(function MenuItem({
@@ -81,6 +87,7 @@ const MenuItem = memo(function MenuItem({
   disabled,
   danger,
   separator,
+  testId,
 }: MenuItemProps) {
   if (separator) {
     return (
@@ -95,6 +102,7 @@ const MenuItem = memo(function MenuItem({
     <button
       onClick={onClick}
       disabled={disabled}
+      data-testid={testId}
       className={`
         flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition-colors
         ${disabled ? "cursor-not-allowed opacity-40" : "hover:bg-white/10"}
@@ -141,6 +149,9 @@ export const NodeContextMenu = memo(function NodeContextMenu({
   onComposeSelectedShots,
   onOpenPanorama,
   onRegenerateShot,
+  onCreatePromptFromRemix,
+  onCreateStoryboardFromRemix,
+  onQueueProductionFromRemix,
   isWorkflowRunning,
   nodeKind,
   selectedShotCount = 1,
@@ -182,13 +193,14 @@ export const NodeContextMenu = memo(function NodeContextMenu({
   const isStoryboardSource = nodeKind === "storyboard" || nodeKind === "text" || nodeKind === "prompt"
   const isShotNode = nodeKind === "shot"
   const isStoryboardGridNode = nodeKind === "storyboard-grid"
+  const isRemixAnalysisNode = nodeKind === "remix-analysis"
   const position = { x: state.screenX, y: state.screenY }
 
   // Adjust position to prevent menu from going off-screen
   const adjustedPosition = { ...position }
   if (typeof window !== "undefined") {
     const menuWidth = 200
-    const menuHeight = isImageNode ? 480 : 420
+    const menuHeight = isImageNode ? 520 : isRemixAnalysisNode ? 620 : isStoryboardSource ? 700 : 420
     if (adjustedPosition.x + menuWidth > window.innerWidth) {
       adjustedPosition.x = window.innerWidth - menuWidth - 10
     }
@@ -200,7 +212,7 @@ export const NodeContextMenu = memo(function NodeContextMenu({
   const menuContent = (
     <div
       ref={menuRef}
-      className="fixed z-50 min-w-[200px] overflow-hidden rounded-xl border backdrop-blur-xl"
+      className="fixed z-50 min-w-[200px] max-h-[calc(100vh-20px)] overflow-y-auto rounded-xl border backdrop-blur-xl"
       style={{
         left: adjustedPosition.x,
         top: adjustedPosition.y,
@@ -295,7 +307,7 @@ export const NodeContextMenu = memo(function NodeContextMenu({
         )}
       </div>
 
-      {(isDocumentNode || isInspirationNode || isStoryboardSource || isShotNode || isStoryboardGridNode) && (
+      {(isDocumentNode || isInspirationNode || isStoryboardSource || isShotNode || isStoryboardGridNode || isRemixAnalysisNode) && (
         <>
           <div className="border-b px-3 py-2" style={{ borderColor: DESIGN_TOKENS.border }}>
             <p className="text-[10px] uppercase tracking-wider" style={{ color: DESIGN_TOKENS.textMuted }}>
@@ -379,6 +391,39 @@ export const NodeContextMenu = memo(function NodeContextMenu({
                 label="重绘本镜头"
                 onClick={() => {
                   onRegenerateShot()
+                  onClose()
+                }}
+              />
+            )}
+            {isRemixAnalysisNode && onCreatePromptFromRemix && (
+              <MenuItem
+                icon={<FileText size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />}
+                label="派生复刻提示词"
+                testId="node-context-remix-create-prompt"
+                onClick={() => {
+                  onCreatePromptFromRemix()
+                  onClose()
+                }}
+              />
+            )}
+            {isRemixAnalysisNode && onCreateStoryboardFromRemix && (
+              <MenuItem
+                icon={<FilePlus2 size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />}
+                label="拆成参考分镜"
+                testId="node-context-remix-create-storyboard"
+                onClick={() => {
+                  onCreateStoryboardFromRemix()
+                  onClose()
+                }}
+              />
+            )}
+            {isRemixAnalysisNode && onQueueProductionFromRemix && (
+              <MenuItem
+                icon={<ListTodo size={ICON_CONFIG.size} strokeWidth={ICON_CONFIG.strokeWidth} />}
+                label="生成生产队列"
+                testId="node-context-remix-queue-production"
+                onClick={() => {
+                  onQueueProductionFromRemix()
                   onClose()
                 }}
               />

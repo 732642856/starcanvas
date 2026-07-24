@@ -6,8 +6,7 @@
 // ============================================================================
 
 import { test, expect } from "@playwright/test"
-
-const BASE_URL = "http://localhost:3000"
+import { gotoCanvas, waitForCanvasReady } from "./utils"
 
 // ============================================================================
 // 辅助函数
@@ -15,9 +14,35 @@ const BASE_URL = "http://localhost:3000"
 
 /** 等待画布加载完成 */
 async function waitForCanvas(page: any) {
-  await page.goto(`${BASE_URL}/canvas`, { timeout: 120000 })
-  // 等待 Webpack 首屏编译完成（开发模式下首次约 30s）
-  await page.waitForTimeout(35000)
+  const projectId = `ux-simulation-${Date.now()}`
+  const storageKey = `startrails_canvas_p:${encodeURIComponent(projectId)}`
+  await page.addInitScript(({ storageKey }) => {
+    const now = new Date().toISOString()
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        version: 2,
+        savedAt: Date.now(),
+        nodes: [
+          {
+            id: "ux-seed-node",
+            type: "content",
+            position: { x: 180, y: 120 },
+            data: {
+              title: "UX 测试种子节点",
+              nodeKind: "script",
+              content: "用于进入非空画布工作态。",
+              createdAt: now,
+            },
+          },
+        ],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+    )
+  }, { storageKey })
+  await gotoCanvas(page, projectId)
+  await waitForCanvasReady(page)
 }
 
 /** 检查工具栏按钮存在 */
@@ -130,8 +155,8 @@ test.describe("小云雀2.0 短剧全流程", () => {
 
   test("参数面板设置（对标小云雀 '定调视觉参数'）", async ({ page }) => {
     await waitForCanvas(page)
-    // 验证 CinematicParamPanel 或 ParamControlPanel 存在
-    const paramPanel = page.locator('[data-testid="param-control-panel"]')
+    await page.getByTestId("toolbar-cinematic-params").click()
+    await expect(page.getByTestId("cinematic-param-panel")).toBeVisible()
   })
 
   test("合成导出（对标小云雀 '合成全集'）", async ({ page }) => {

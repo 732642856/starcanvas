@@ -27,19 +27,18 @@ import {
   FileArchive,
   Play,
   List,
+  Wand2,
 } from "lucide-react"
+import type { ProductionPreflightReport } from "@/lib/storyboard/productionPreflight"
 import { DESIGN_TOKENS } from "../../styles/designSystem"
+import {
+  normalizeExportPreflightType,
+  runExportPreflightCheck,
+  type ExportPreflightType,
+} from "./exportPreflightCheck"
+export type { ExportAssetCheck } from "./exportPreflightCheck"
 
 // ── 类型 ──────────────────────────────────────────────
-
-export interface ExportAssetCheck {
-  type: "video" | "audio" | "subtitle"
-  label: string
-  nodeId: string
-  title: string
-  hasContent: boolean
-  missingReason?: string
-}
 
 export interface ExportPreflightPanelProps {
   isOpen: boolean
@@ -48,6 +47,14 @@ export interface ExportPreflightPanelProps {
   nodes?: Array<{ id: string; type?: string; data?: Record<string, unknown> }>
   /** 从 TimelinePanel 提取的 clips 顺序 */
   timelineOrder?: string[]
+  /** 从具体导出入口传入的默认导出类型 */
+  initialExportType?: ExportPreflightType
+  /** 镜头投产预检报告，用于导出前提示生图/生视频风险 */
+  productionPreflight?: ProductionPreflightReport | null
+  /** 点击镜头预检项后定位到对应镜头 */
+  onResolveProductionIssue?: (shotId: string, action: string) => void
+  /** 为镜头预检项应用可编辑修复草案 */
+  onApplyProductionFix?: (shotId: string, action: string, source?: "production-queue" | "export-preflight") => void
   /** 实际的导出函数引用 */
   onPerformExport?: (type: "json" | "zip") => Promise<ExportResult>
 }
@@ -60,81 +67,6 @@ export interface ExportResult {
   files?: Array<{ path: string; size: number }>
 }
 
-// ── 预检逻辑 ──────────────────────────────────────────
-
-function runPreflightCheck(
-  nodes: Array<{ id: string; type?: string; data?: Record<string, unknown> }>,
-  timelineOrder?: string[],
-): ExportAssetCheck[] {
-  const checks: ExportAssetCheck[] = []
-  const processed = new Set<string>()
-
-  // 按 timeline 顺序优先
-  const orderedNodes = timelineOrder
-    ?.map((id) => nodes.find((n) => n.id === id))
-    .filter(Boolean) as typeof nodes | undefined
-
-  const scanNodes = (orderedNodes || nodes) as Array<{ id: string; type?: string; data?: Record<string, unknown> }>
-
-  for (const node of scanNodes) {
-    const data = node.data || {}
-    const nodeKind = (data.nodeKind as string) || node.type || ""
-
-    // 视频节点
-    if (
-      nodeKind.includes("video") &&
-      !processed.has(`video:${node.id}`)
-    ) {
-      processed.add(`video:${node.id}`)
-      const hasVideo = !!(data.resultUrl || data.assetUrl || data.imageUrl)
-      checks.push({
-        type: "video",
-        label: "视频",
-        nodeId: node.id,
-        title: (data.title as string) || node.id.slice(0, 8),
-        hasContent: hasVideo,
-        missingReason: hasVideo ? undefined : "视频文件缺失，请先生成视频",
-      })
-    }
-
-    // 音频 / TTS 节点
-    if (
-      (nodeKind.includes("audio") || nodeKind.includes("tts") || nodeKind === "bgm") &&
-      !processed.has(`audio:${node.id}`)
-    ) {
-      processed.add(`audio:${node.id}`)
-      const hasAudio = !!(data.resultUrl || data.assetUrl || data.audioUrl)
-      checks.push({
-        type: "audio",
-        label: nodeKind === "bgm" ? "背景音乐" : "配音",
-        nodeId: node.id,
-        title: (data.title as string) || node.id.slice(0, 8),
-        hasContent: hasAudio,
-        missingReason: hasAudio ? undefined : "音频文件缺失",
-      })
-    }
-
-    // 字幕节点
-    if (
-      (nodeKind.includes("subtitle") || data.srtContent) &&
-      !processed.has(`subtitle:${node.id}`)
-    ) {
-      processed.add(`subtitle:${node.id}`)
-      const hasSubtitle = !!(data.srtContent || data.content)
-      checks.push({
-        type: "subtitle",
-        label: "字幕",
-        nodeId: node.id,
-        title: (data.title as string) || node.id.slice(0, 8),
-        hasContent: hasSubtitle,
-        missingReason: hasSubtitle ? undefined : "字幕内容为空",
-      })
-    }
-  }
-
-  return checks
-}
-
 // ── 组件 ──────────────────────────────────────────────
 
 export function ExportPreflightPanel({
@@ -142,21 +74,33 @@ export function ExportPreflightPanel({
   onClose,
   nodes = [],
   timelineOrder,
+  initialExportType,
+  productionPreflight,
+  onResolveProductionIssue,
+  onApplyProductionFix,
   onPerformExport,
 }: ExportPreflightPanelProps) {
-  const [exportType, setExportType] = useState<"json" | "zip">("json")
+  const [exportType, setExportType] = useState<ExportPreflightType>(() =>
+    normalizeExportPreflightType(initialExportType),
+  )
   const [isExporting, setIsExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
   const [exportResult, setExportResult] = useState<ExportResult | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const checks = useCallback(() => runPreflightCheck(nodes, timelineOrder), [nodes, timelineOrder])
+  const checks = useCallback(() => runExportPreflightCheck(nodes, timelineOrder), [nodes, timelineOrder])
 
   const assetChecks = checks()
   const totalAssets = assetChecks.length
   const missingAssets = assetChecks.filter((c) => !c.hasContent).length
   const readyAssets = totalAssets - missingAssets
+  const preflightSummary = productionPreflight?.summary
+  const blockingShots = preflightSummary?.blockedShots ?? 0
+  const reviewShots = preflightSummary?.reviewShots ?? 0
+  const topPreflightIssues = productionPreflight?.shots
+    .filter((shot) => shot.status !== "ready")
+    .slice(0, 5) ?? []
 
   const handleExport = useCallback(async () => {
     if (!onPerformExport) return
@@ -264,6 +208,105 @@ export function ExportPreflightPanel({
             </div>
           </div>
 
+          {/* ── 投产预检 ── */}
+          {preflightSummary && (
+            <div
+              className="mb-4 rounded-xl border p-3"
+              style={{
+                borderColor:
+                  blockingShots > 0
+                    ? "rgba(239,68,68,0.28)"
+                    : reviewShots > 0
+                      ? "rgba(234,179,8,0.28)"
+                      : "rgba(34,197,94,0.24)",
+                backgroundColor:
+                  blockingShots > 0
+                    ? "rgba(239,68,68,0.06)"
+                    : reviewShots > 0
+                      ? "rgba(234,179,8,0.06)"
+                      : "rgba(34,197,94,0.05)",
+              }}
+              data-testid="export-production-preflight"
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {blockingShots > 0 ? (
+                    <AlertCircle size={14} style={{ color: "#ef4444" }} />
+                  ) : reviewShots > 0 ? (
+                    <AlertTriangle size={14} style={{ color: "#facc15" }} />
+                  ) : (
+                    <CheckCircle2 size={14} style={{ color: "#22c55e" }} />
+                  )}
+                  <span className="text-xs font-medium" style={{ color: DESIGN_TOKENS.textSecondary }}>
+                    投产预检
+                  </span>
+                </div>
+                <span className="text-[11px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                  {preflightSummary.averageScore}/100
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
+                <span className="rounded-lg py-1.5" style={{ backgroundColor: "rgba(34,197,94,0.10)", color: "#22c55e" }}>
+                  {preflightSummary.readyShots} 就绪
+                </span>
+                <span className="rounded-lg py-1.5" style={{ backgroundColor: "rgba(234,179,8,0.10)", color: "#facc15" }}>
+                  {preflightSummary.reviewShots} 复核
+                </span>
+                <span className="rounded-lg py-1.5" style={{ backgroundColor: "rgba(239,68,68,0.10)", color: "#ef4444" }}>
+                  {preflightSummary.blockedShots} 阻塞
+                </span>
+              </div>
+              {topPreflightIssues.length > 0 && (
+                <div className="mt-2 space-y-1.5">
+                  {topPreflightIssues.map((shot) => {
+                    const primaryAction = shot.requiredActions[0] ?? "review-shot";
+                    return (
+                    <div
+                      key={shot.shotId}
+                      data-testid="export-production-preflight-issue"
+                      className="w-full rounded-lg px-2 py-1.5 text-left transition hover:bg-white/10"
+                      style={{
+                        backgroundColor: "rgba(255,255,255,0.04)",
+                      }}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onResolveProductionIssue?.(shot.shotId, primaryAction)}
+                          className="min-w-0 flex-1 truncate text-left text-[11px] transition hover:text-white"
+                          style={{
+                            color: DESIGN_TOKENS.text,
+                            cursor: onResolveProductionIssue ? "pointer" : "default",
+                          }}
+                        >
+                          #{shot.order} {shot.title || "未命名镜头"}
+                        </button>
+                        <span style={{ color: shot.status === "blocked" ? "#ef4444" : "#facc15" }} className="text-[10px]">
+                          {shot.status === "blocked" ? "阻塞" : "需复核"}
+                        </span>
+                        {onApplyProductionFix && (
+                          <button
+                            type="button"
+                            data-testid="export-production-preflight-apply-fix"
+                            onClick={() => onApplyProductionFix(shot.shotId, primaryAction, "export-preflight")}
+                            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] transition hover:bg-white/10"
+                            style={{ color: "#93c5fd" }}
+                          >
+                            <Wand2 size={10} strokeWidth={1.8} />
+                            草案
+                          </button>
+                        )}
+                      </div>
+                      <div className="mt-0.5 truncate text-[10px]" style={{ color: DESIGN_TOKENS.textMuted }}>
+                        {shot.issues[0]?.message ?? "需要补齐投产信息"}
+                      </div>
+                    </div>
+                  )})}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ── 素材清单 ── */}
           <div className="mb-4">
             <div className="mb-2 flex items-center gap-2">
@@ -278,10 +321,14 @@ export function ExportPreflightPanel({
                   key={`${check.type}:${check.nodeId}`}
                   className="flex items-center gap-3 rounded-lg border px-3 py-2"
                   style={{
-                    borderColor: check.hasContent
+                    borderColor: check.warningReason
+                      ? "rgba(250,204,21,0.28)"
+                      : check.hasContent
                       ? "rgba(34,197,94,0.2)"
                       : "rgba(239,68,68,0.2)",
-                    backgroundColor: check.hasContent
+                    backgroundColor: check.warningReason
+                      ? "rgba(250,204,21,0.06)"
+                      : check.hasContent
                       ? "rgba(34,197,94,0.05)"
                       : "rgba(239,68,68,0.05)",
                   }}
@@ -297,7 +344,12 @@ export function ExportPreflightPanel({
                       {check.label}
                     </span>
                   </div>
-                  {check.hasContent ? (
+                  {check.hasContent && check.warningReason ? (
+                    <span className="text-[10px] flex items-center gap-1" style={{ color: "#facc15", flexShrink: 0 }}>
+                      <AlertTriangle size={12} />
+                      注意
+                    </span>
+                  ) : check.hasContent ? (
                     <CheckCircle2 size={14} style={{ color: "#22c55e", flexShrink: 0 }} />
                   ) : (
                     <span className="text-[10px] flex items-center gap-1" style={{ color: "#ef4444", flexShrink: 0 }}>
@@ -305,12 +357,12 @@ export function ExportPreflightPanel({
                       缺失
                     </span>
                   )}
-                  {check.missingReason && (
+                  {(check.missingReason || check.warningReason) && (
                     <span
                       className="text-[10px] hidden group-hover:block"
                       style={{ color: DESIGN_TOKENS.textMuted }}
                     >
-                      {check.missingReason}
+                      {check.missingReason || check.warningReason}
                     </span>
                   )}
                 </div>
@@ -464,13 +516,17 @@ export function ExportPreflightPanel({
                 <Play size={14} />
                 {missingAssets > 0
                   ? `仍导出 (${missingAssets} 个素材缺失)`
+                  : blockingShots > 0
+                    ? `仍导出 (${blockingShots} 个镜头阻塞)`
                   : `导出 ${exportType === "json" ? "JSON 草稿" : "ZIP 兼容包"}`}
               </>
             )}
           </button>
-          {missingAssets > 0 && (
+          {(missingAssets > 0 || blockingShots > 0) && (
             <p className="mt-1.5 text-[10px] text-center" style={{ color: DESIGN_TOKENS.textMuted }}>
-              {missingAssets} 个素材缺失，导出结果可能不完整
+              {missingAssets > 0
+                ? `${missingAssets} 个素材缺失，导出结果可能不完整`
+                : `${blockingShots} 个镜头未通过投产预检，后续生成前需要修复`}
             </p>
           )}
         </div>

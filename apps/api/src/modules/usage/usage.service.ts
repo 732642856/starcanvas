@@ -25,14 +25,17 @@ export class UsageService {
       },
     })
 
-    return records.reduce(
+    return records.reduce<{
+      period: string
+      inputTokens: number
+      outputTokens: number
+    }>(
       (summary, record) => {
         summary.inputTokens += record.inputTokens
         summary.outputTokens += record.outputTokens
         return summary
       },
       {
-        organizationId: organization.id,
         period: "current_month",
         inputTokens: 0,
         outputTokens: 0,

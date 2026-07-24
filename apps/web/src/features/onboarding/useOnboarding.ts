@@ -9,7 +9,6 @@
 import { useCallback, useEffect, useState } from "react"
 import {
   loadOnboardingState,
-  saveOnboardingState,
   dismissOnboarding,
   completeStep as persistCompleteStep,
   resetOnboarding,
@@ -20,12 +19,10 @@ export function useOnboarding() {
   const [state, setState] = useState<OnboardingState>(() => loadOnboardingState())
   const [showPanel, setShowPanel] = useState(false)
 
-  // Auto-show on first visit (not dismissed and not all complete)
+  // Keep the checklist closed by default and surface it from the empty-state CTA
+  // so the first screen stays focused on one primary task.
   useEffect(() => {
-    const allDone = Object.values(state.steps).every(Boolean)
-    if (!state.dismissed && !allDone) {
-      setShowPanel(true)
-    }
+    setShowPanel(false)
   }, [state.dismissed, state.steps])
 
   const dismiss = useCallback(() => {

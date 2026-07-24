@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { mergeProviderConfig } from "@/lib/ai/provider-config"
 import { normalizeUpstreamError, normalizeClientError } from "@/lib/ai/errors"
+import { fetchWithTimeout } from "@/lib/ai/server-fetch"
 
 // ── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -261,11 +262,9 @@ const PRESET_TEMPLATES: Record<string, RemixTemplate> = {
 
 async function generateWithLLM(videoDescription: string): Promise<RemixAnalysisResult> {
   const config = mergeProviderConfig()
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), config.timeoutMs)
 
   try {
-    const upstream = await fetch(`${config.baseUrl}/chat/completions`, {
+    const upstream = await fetchWithTimeout(`${config.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
@@ -326,10 +325,7 @@ async function generateWithLLM(videoDescription: string): Promise<RemixAnalysisR
         temperature: 0.7,
         response_format: { type: "json_object" },
       }),
-      signal: controller.signal,
-    })
-
-    clearTimeout(timer)
+    }, config.timeoutMs)
 
     if (!upstream.ok) {
       const text = await upstream.text()
@@ -350,7 +346,6 @@ async function generateWithLLM(videoDescription: string): Promise<RemixAnalysisR
       ...parsed,
     }
   } catch (error) {
-    clearTimeout(timer)
     throw error
   }
 }

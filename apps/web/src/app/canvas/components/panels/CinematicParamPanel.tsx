@@ -232,9 +232,15 @@ function CinematicParamPanelInner({
   if (!isOpen) return null
 
   return createPortal(
-    <div className="fixed top-16 right-4 z-[90] flex flex-col gap-3">
+    <div
+      className="fixed top-16 right-4 z-[90] flex flex-col gap-3"
+      data-testid="cinematic-param-panel"
+    >
       {/* 自带的 leva 面板 */}
-      <div className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden min-w-[280px]">
+      <div
+        className="bg-[var(--color-bg-panel)] backdrop-blur-xl rounded-xl border border-[var(--color-border)] shadow-2xl overflow-hidden min-w-[280px]"
+        data-testid="cinematic-param-panel-shell"
+      >
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text)]">
             <Camera size={16} />

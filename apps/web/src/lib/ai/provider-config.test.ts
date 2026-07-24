@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   getAiProviderConfigSafe,
+  getProvider,
   mergeProviderConfig,
   resetProviderRegistry,
 } from "./provider-config.ts"
@@ -162,5 +163,20 @@ test("getAiProviderConfigSafe: does not expose raw API key", () => {
     assert.strictEqual(safeConfig.hasApiKey, true)
     assert.strictEqual(Object.hasOwn(safeConfig, "apiKey"), false)
     assert.equal(serialized.includes("sk-env-secret"), false)
+  })
+})
+
+test("provider registry: DashScope built-in video config matches Vidu route models", () => {
+  withAiEnv({
+    DASHSCOPE_API_KEY: "sk-dashscope-secret",
+  }, () => {
+    const provider = getProvider("dashscope")
+
+    assert.ok(provider)
+    assert.strictEqual(provider.videoModel, "viduq3-turbo")
+    assert.equal(provider.videoModels.has("viduq3-turbo"), true)
+    assert.equal(provider.videoModels.has("viduq3-pro"), true)
+    assert.equal(provider.videoModels.has("vidu2.0"), true)
+    assert.equal(provider.videoModels.has("cogvideox-v1"), false)
   })
 })

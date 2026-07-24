@@ -33,6 +33,7 @@ const eventLabels: Record<WorkspaceHistoryEventType, string> = {
   "storyboard-generated": "文字分镜",
   "shots-split": "拆分 Shot",
   "image-generated": "图片生成",
+  "video-workflow-created": "视频链路",
   "snapshot-created": "保存快照",
   "snapshot-restored": "恢复快照",
 };
@@ -40,6 +41,7 @@ const eventLabels: Record<WorkspaceHistoryEventType, string> = {
 function getEventIcon(type: WorkspaceHistoryEventType) {
   if (type === "document-uploaded") return FileText;
   if (type === "image-generated") return Image;
+  if (type === "video-workflow-created") return Layers;
   if (type === "shots-split") return Layers;
   if (type === "story-generated" || type === "storyboard-generated") return Sparkles;
   if (type === "snapshot-created") return Save;

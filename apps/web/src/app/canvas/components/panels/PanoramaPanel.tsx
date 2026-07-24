@@ -1,9 +1,9 @@
 /**
- * PanoramaPanel — 720/360 全景场景预𪾢面板
+ * PanoramaPanel — 720/360 全景场景预览面板
  *
- * 基于 react-pannellum (MIT) 实现 equirectangular 全景图交互式预𪾢。
+ * 基于 react-pannellum (MIT) 实现 equirectangular 全景图交互式预览。
  * 支持：
- *   - 从图片节点 / 场景节点打开全景预𪾢
+ *   - 从图片节点 / 场景节点打开全景预览
  *   - 自动旋转 / 手动拖拽 / 缩放
  *   - 全景提示词生成并写回节点
  *   - 示例全景图快速测试
@@ -371,7 +371,7 @@ export function PanoramaPanel({
 
         {/* ── 主体内容 ── */}
         <div className="flex flex-1 overflow-hidden">
-          {/* 左侧：全景预𪾢器 */}
+          {/* 左侧：全景预览器 */}
           <div className="relative flex flex-1 flex-col">
             {/* 标签栏 */}
             <div
@@ -379,7 +379,7 @@ export function PanoramaPanel({
               style={{ borderColor: DESIGN_TOKENS.border }}
             >
               {([
-                { key: "viewer", label: "预𪾢" },
+                { key: "viewer", label: "预览" },
                 { key: "prompt", label: "提示词" },
                 { key: "presets", label: "预设" },
               ] as const).map((tab) => (
@@ -403,7 +403,7 @@ export function PanoramaPanel({
               ))}
             </div>
 
-            {/* 预𪾢模式 */}
+            {/* 预览模式 */}
             {activeTab === "viewer" && (
               <div className="relative flex-1">
                 {imageUrl ? (

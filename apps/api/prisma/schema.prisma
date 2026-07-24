@@ -47,31 +47,57 @@ enum GenerationStatus {
   CANCELED
 }
 
+enum AssetKind {
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  UNKNOWN
+}
+
+enum ProductionRunStatus {
+  QUEUED
+  SUBMITTING
+  POLLING
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum ProductionTaskStatus {
+  QUEUED
+  SUBMITTING
+  POLLING
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
 model User {
-  id             String                   @id @default(cuid())
-  email          String                   @unique
+  id             String               @id @default(cuid())
+  email          String               @unique
   name           String?
   passwordHash   String?
   avatarUrl      String?
   memberships    OrganizationMember[]
-  projects       Project[]                @relation("ProjectOwner")
+  projects       Project[]            @relation("ProjectOwner")
   providerKeys   ProviderCredential[]
   generationJobs GenerationJob[]
   usageRecords   UsageRecord[]
-  createdAt      DateTime                 @default(now())
-  updatedAt      DateTime                 @updatedAt
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
 }
 
 model Organization {
-  id                  String                   @id @default(cuid())
+  id                  String               @id @default(cuid())
   name                String
-  slug                String                   @unique
+  slug                String               @unique
   members             OrganizationMember[]
   projects            Project[]
   providerCredentials ProviderCredential[]
   usageRecords        UsageRecord[]
-  createdAt           DateTime                 @default(now())
-  updatedAt           DateTime                 @updatedAt
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
 }
 
 model OrganizationMember {
@@ -88,18 +114,20 @@ model OrganizationMember {
 }
 
 model Project {
-  id             String          @id @default(cuid())
+  id             String           @id @default(cuid())
   organizationId String
   ownerId        String
   name           String
   description    String?
-  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  owner          User            @relation("ProjectOwner", fields: [ownerId], references: [id])
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner          User             @relation("ProjectOwner", fields: [ownerId], references: [id])
   canvases       CanvasDocument[]
+  assets         Asset[]
+  productionRuns ProductionRun[]
   generationJobs GenerationJob[]
   usageRecords   UsageRecord[]
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
   @@index([organizationId])
   @@index([ownerId])
@@ -134,12 +162,12 @@ model CanvasVersion {
   canvas    CanvasDocument @relation(fields: [canvasId], references: [id], onDelete: Cascade)
   createdAt DateTime       @default(now())
 
-  @@index([canvasId, createdAt])
   @@unique([canvasId, version])
+  @@index([canvasId, createdAt])
 }
 
 model ProviderCredential {
-  id             String        @id @default(cuid())
+  id             String          @id @default(cuid())
   organizationId String?
   userId         String?
   type           ProviderType
@@ -147,12 +175,12 @@ model ProviderCredential {
   baseUrl        String?
   encryptedKey   String
   defaultModel   String?
-  isEnabled      Boolean       @default(true)
-  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user           User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isEnabled      Boolean         @default(true)
+  organization   Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
   generationJobs GenerationJob[]
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 
   @@index([organizationId])
   @@index([userId])
@@ -160,24 +188,25 @@ model ProviderCredential {
 
 model GenerationJob {
   id                   String              @id @default(cuid())
-  organizationId        String
-  projectId             String?
-  userId                String
-  providerCredentialId  String?
-  providerType          ProviderType
-  model                 String
-  status                GenerationStatus   @default(PENDING)
-  input                 Json
-  output                Json?
-  errorMessage          String?
-  inputTokens           Int?
-  outputTokens          Int?
-  project               Project?           @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  user                  User               @relation(fields: [userId], references: [id])
-  providerCredential    ProviderCredential? @relation(fields: [providerCredentialId], references: [id], onDelete: SetNull)
-  usageRecords          UsageRecord[]
-  createdAt             DateTime           @default(now())
-  updatedAt             DateTime           @updatedAt
+  organizationId       String
+  projectId            String?
+  userId               String
+  providerCredentialId String?
+  providerType         ProviderType
+  model                String
+  status               GenerationStatus    @default(PENDING)
+  input                Json
+  output               Json?
+  errorMessage         String?
+  inputTokens          Int?
+  outputTokens         Int?
+  project              Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  user                 User                @relation(fields: [userId], references: [id])
+  providerCredential   ProviderCredential? @relation(fields: [providerCredentialId], references: [id], onDelete: SetNull)
+  usageRecords         UsageRecord[]
+  productionAttempts   ProductionAttempt[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
 
   @@index([organizationId])
   @@index([projectId])
@@ -186,21 +215,90 @@ model GenerationJob {
 }
 
 model UsageRecord {
-  id              String        @id @default(cuid())
+  id              String         @id @default(cuid())
   organizationId  String
   projectId       String?
   userId          String
   generationJobId String?
   providerType    ProviderType
   model           String
-  inputTokens     Int           @default(0)
-  outputTokens    Int           @default(0)
-  organization    Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  project         Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  user            User          @relation(fields: [userId], references: [id])
+  inputTokens     Int            @default(0)
+  outputTokens    Int            @default(0)
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project         Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  user            User           @relation(fields: [userId], references: [id])
   generationJob   GenerationJob? @relation(fields: [generationJobId], references: [id], onDelete: SetNull)
-  createdAt       DateTime      @default(now())
+  createdAt       DateTime       @default(now())
 
   @@index([organizationId, createdAt])
   @@index([userId, createdAt])
+}
+
+model Asset {
+  id             String              @id @default(cuid())
+  projectId      String?
+  kind           AssetKind
+  originalName   String
+  fileName       String
+  mimeType       String
+  size           Int
+  storagePath    String
+  url            String
+  project        Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  outputAttempts ProductionAttempt[] @relation("ProductionOutputAsset")
+  sourceAttempts ProductionAttempt[] @relation("ProductionSourceAsset")
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([projectId, createdAt])
+}
+
+model ProductionRun {
+  id        String              @id @default(cuid())
+  projectId String
+  shotId    String
+  status    ProductionRunStatus @default(QUEUED)
+  project   Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks     ProductionTask[]
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+
+  @@index([projectId, shotId, createdAt])
+}
+
+model ProductionTask {
+  id        String               @id @default(cuid())
+  runId     String
+  action    String
+  status    ProductionTaskStatus @default(QUEUED)
+  input     Json
+  run       ProductionRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  attempts  ProductionAttempt[]
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@index([runId, status])
+}
+
+model ProductionAttempt {
+  id              String               @id @default(cuid())
+  taskId          String
+  generationJobId String?
+  providerJobId   String?
+  idempotencyKey  String               @unique
+  status          ProductionTaskStatus @default(QUEUED)
+  request         Json
+  providerResult  Json?
+  errorMessage    String?
+  sourceAssetId   String
+  outputAssetId   String?
+  task            ProductionTask       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  generationJob   GenerationJob?       @relation(fields: [generationJobId], references: [id], onDelete: SetNull)
+  sourceAsset     Asset                @relation("ProductionSourceAsset", fields: [sourceAssetId], references: [id])
+  outputAsset     Asset?               @relation("ProductionOutputAsset", fields: [outputAssetId], references: [id])
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  @@index([providerJobId])
+  @@index([taskId, createdAt])
 }

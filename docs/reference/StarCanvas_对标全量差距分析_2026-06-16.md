@@ -24,7 +24,7 @@
 
 ### 1.2 节点类型清单
 ```
-AgentNode, AngleControlPanel, AudioWaveform, BatchProgressBar,
+AgentNode, AudioWaveform, BatchProgressBar,
 BgmPanel, CinemaLabPanel, ContentNode, ContinuityReportNode,
 ImageNode, NodeRunStatusIndicator, PoseEditor, ShotNode,
 SketchNode, StoryboardGridNode, TransitionPicker, VideoNode,
@@ -55,7 +55,8 @@ VoicePanel, WorkflowNode
 - ChainGeneratePanel
 
 **资产:**
-- AssetLibraryPanel, CharacterAssetLibraryPanel
+- AssetLibraryPanel, ProjectBiblePanel（角色资产主入口）
+- CharacterAssetLibraryPanel（历史并行 UI，当前不在运行时主路径）
 - BackgroundRemoverPanel, PoseReferenceEditor
 - DraggableAngleControl
 
@@ -157,8 +158,8 @@ styles/              — styleLibrary
 |------|----------------|----------------|------|
 | **100+ 影视级画风** | 真人/韩漫/3D 等 100+ 风格 + 自定义 | ✅ StyleLibraryPanel (30+ 风格 / 7 分类) | **需扩充至 100+** |
 | **720° 全景** | 单角度场景图→完整 720° 全景，自由截取角度 | ✅ PanoramaPanel (react-pannellum, 812 行) | 已完成 ✓ |
-| **角色三视图锁定** | 角色形象设计→锁定参照→分镜引用 | ✅ CharacterViewModal + CharacterViewPanel | 已完成 ✓ |
-| **参数化面板** | 独立光影/镜头/画风参数面板 | ✅ ParamControlPanel + CinematicParamPanel | 已完成 ✓ |
+| **角色三视图锁定** | 角色形象设计→锁定参照→分镜引用 | ✅ CharacterViewModal（运行时） + CharacterViewPreviewCard（只读预览卡） | 已完成 ✓ |
+| **参数化面板** | 独立光影/镜头/画风参数面板 | ✅ CinematicParamPanel（运行时主入口） | 已完成 ✓ |
 | **@ 资产调用** | 分镜中 @ 引用角色/场景资产 | ✅ AssetPreviewPopover + ChatPanel mention | 已完成 ✓ |
 | **剪映打通** | 直接导出剪映草稿 | ✅ jianyingDraftExport | 已完成 ✓ |
 | **资产创作画布** | 节点式资产编辑：人物妆造/场景布光/镜头调度 | ⚠️ 有画布但非专门的资产设计工作流 | **P1 差距** |

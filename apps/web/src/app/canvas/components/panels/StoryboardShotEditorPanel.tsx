@@ -42,6 +42,15 @@ function angleToLabel(label: string): string {
   return ANGLE_LABELS[label] || label
 }
 
+function dispatchCanvasNotice(title: string, description: string, kind: "info" | "warning" | "error" = "error") {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(
+    new CustomEvent("starcanvas:notice", {
+      detail: { kind, title, description },
+    }),
+  )
+}
+
 // === Props ===
 interface StoryboardShotEditorPanelProps {
   isOpen: boolean
@@ -164,7 +173,7 @@ export function StoryboardShotEditorPanel({
       // 同时写回 shot 对象，方便保存
       updateShot(shotIndex, "generatedImageUrl", imageUrl)
     } catch (err: any) {
-      alert(`生图失败: ${err.message}`)
+      dispatchCanvasNotice("镜头生图失败", err?.message || "请稍后重试。")
     } finally {
       setGeneratingShotIndex(null)
     }
@@ -199,7 +208,7 @@ export function StoryboardShotEditorPanel({
       setIdeogramImages((prev) => ({ ...prev, [shotIndex]: imageUrl }))
       updateShot(shotIndex, "generatedImageUrl", imageUrl)
     } catch (err: any) {
-      alert(`Ideogram 生图失败: ${err.message}`)
+      dispatchCanvasNotice("Ideogram 生图失败", err?.message || "请稍后重试。")
     } finally {
       setGeneratingIdeogramIndex(null)
     }

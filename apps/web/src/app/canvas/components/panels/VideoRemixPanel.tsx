@@ -242,6 +242,7 @@ export function VideoRemixPanel({ isOpen, onClose, onImportRemix }: VideoRemixPa
       />
 
       <section
+        data-testid="video-remix-panel"
         className="relative z-10 flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border shadow-2xl"
         style={{
           backgroundColor: DESIGN_TOKENS.panelSolid,
@@ -274,6 +275,7 @@ export function VideoRemixPanel({ isOpen, onClose, onImportRemix }: VideoRemixPa
             type="button"
             className="rounded-xl p-2 transition hover:bg-white/10"
             onClick={handleClose}
+            aria-label="关闭"
             title="关闭"
           >
             <X size={16} strokeWidth={1.7} style={{ color: DESIGN_TOKENS.textMuted }} />

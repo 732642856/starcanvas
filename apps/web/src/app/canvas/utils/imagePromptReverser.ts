@@ -5,26 +5,7 @@
 "use client";
 
 import { callAiChat } from "@/lib/ai/client";
-import { getLocalImageAsset } from "@/lib/assets/localImageStore";
-import { toDataUrl } from "./toDataUrl";
-
-/** 将 Blob 转为 base64 data URL */
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error("Failed to read blob as base64"));
-    reader.readAsDataURL(blob);
-  });
-}
-
-/** 从远程 URL 获取图片并转为 base64 data URL */
-async function fetchImageAsBase64(url: string): Promise<string> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
-  const blob = await res.blob();
-  return blobToBase64(blob);
-}
+import { assetUrlToDataUrl } from "./providerMediaDataUrl.ts";
 
 /**
  * 将图片转换为适合 AI vision 的 base64 data URL。
@@ -36,17 +17,7 @@ export async function imageUrlToBase64(
   imageUrl: string,
   assetId?: string,
 ): Promise<string> {
-  // 如果已有 data URL，直接返回
-  if (imageUrl.startsWith("data:")) return imageUrl;
-
-  // 有 assetId 时从 IndexedDB 读取原始 blob
-  if (assetId) {
-    const asset = await getLocalImageAsset(assetId);
-    if (asset?.blob) return blobToBase64(asset.blob);
-  }
-
-  // 否则通过 toDataUrl 获取（支持 blob / http / data）
-  return toDataUrl(imageUrl);
+  return assetUrlToDataUrl(imageUrl, { assetId, mediaKind: "image" });
 }
 
 /** 系统级反推 prompt，告诉 AI 如何分析图片 */
