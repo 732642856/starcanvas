@@ -193,6 +193,7 @@ export type ProductionRunQueuePanelProps = {
   onRetryTask?: (taskId: string) => void;
   /** 跳过失败任务（Step 4 新增） */
   onSkipTask?: (taskId: string) => void;
+  rightOffset?: number;
 };
 
 export function ProductionRunQueuePanel({
@@ -209,6 +210,7 @@ export function ProductionRunQueuePanel({
   execState,
   onRetryTask,
   onSkipTask,
+  rightOffset = 20,
 }: ProductionRunQueuePanelProps) {
   const displayQueue = projectProductionRunQueueRuntimeState(queue, execState);
   const [providerHealthSummary, setProviderHealthSummary] = useState<ProviderHealthSummary | null>(null);
@@ -336,8 +338,9 @@ export function ProductionRunQueuePanel({
     return (
       <div
         data-testid="production-run-queue-panel"
-        className="fixed right-6 top-20 z-50 w-80 rounded-3xl border p-6 shadow-2xl backdrop-blur-xl"
+        className="fixed bottom-5 z-50 w-[360px] rounded-3xl border p-5 shadow-2xl backdrop-blur-xl"
         style={{
+          right: rightOffset,
           backgroundColor: PANEL.bg,
           borderColor: PANEL.border,
           boxShadow: PANEL.shadow,
@@ -379,8 +382,9 @@ export function ProductionRunQueuePanel({
   return (
     <div
       data-testid="production-run-queue-panel"
-      className="fixed right-6 top-20 z-50 flex max-h-[calc(100vh-6rem)] w-80 flex-col overflow-hidden rounded-3xl border p-6 shadow-2xl backdrop-blur-xl"
+      className="fixed bottom-5 z-50 flex max-h-[42vh] w-[360px] flex-col overflow-hidden rounded-3xl border p-5 shadow-2xl backdrop-blur-xl"
       style={{
+        right: rightOffset,
         backgroundColor: PANEL.bg,
         borderColor: PANEL.border,
         boxShadow: PANEL.shadow,

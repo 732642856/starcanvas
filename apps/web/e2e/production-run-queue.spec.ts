@@ -807,4 +807,80 @@ test.describe("生产运行队列面板", () => {
     await expect(page.getByTestId("production-preflight-summary")).toContainText("0 阻塞")
     await expect(page.locator(".react-flow__node").filter({ hasText: "cinematic lighting" })).toBeVisible({ timeout: 5_000 })
   })
+
+  test("刷新后恢复已有 production run 并写回完成视频资产", async ({ page }) => {
+    let getRunCalls = 0
+    let createRunCalls = 0
+    await page.route("**/api/v1/production-runs", async (route) => {
+      createRunCalls += 1
+      await route.fulfill({ status: 500, body: "unexpected create" })
+    })
+    await page.route("**/api/v1/production-runs/run-1", async (route) => {
+      getRunCalls += 1
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: getRunCalls === 1
+            ? { id: "run-1", status: "POLLING" }
+            : {
+                id: "run-1",
+                status: "COMPLETED",
+                outputAsset: { id: "asset-video-1", url: "https://api.example/assets/video.mp4" },
+              },
+        }),
+      })
+    })
+    await page.route("**/api/v1/production-runs/run-1/poll", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: { id: "run-1", status: "POLLING" } }),
+      })
+    })
+    const storedCanvas = createStoredCanvas(1)
+    storedCanvas.nodes = storedCanvas.nodes.map((node) =>
+      node.id === "e2e-pq-shot-1"
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              productionRunId: "run-1",
+              generationStatus: "generating",
+            },
+          }
+        : node,
+    )
+    await page.addInitScript((canvas) => {
+      window.localStorage.clear()
+      window.sessionStorage.clear()
+      window.localStorage.setItem("startrails_canvas", JSON.stringify(canvas))
+      window.localStorage.setItem("startrails_use_mock", "false")
+    }, storedCanvas)
+    await page.goto("/canvas")
+    await page.waitForFunction(
+      () => Boolean((window as Window & { __starcanvasE2E?: unknown }).__starcanvasE2E),
+      undefined,
+      { timeout: 90_000 },
+    )
+    await expect.poll(() => getRunCalls, { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
+    await page.reload({ waitUntil: "domcontentloaded" })
+    await page.waitForFunction(
+      () => Boolean((window as Window & { __starcanvasE2E?: unknown }).__starcanvasE2E),
+      undefined,
+      { timeout: 90_000 },
+    )
+    await expect.poll(async () => {
+      return page.evaluate(() => {
+        const e2e = (window as Window & { __starcanvasE2E?: StarCanvasE2EBridge }).__starcanvasE2E
+        return e2e?.getNodeData("e2e-pq-shot-1")
+      })
+    }, { timeout: 15_000 }).toMatchObject({
+      productionRunId: "run-1",
+      videoAssetId: "asset-video-1",
+      videoUrl: "https://api.example/assets/video.mp4",
+      generationStatus: "succeeded",
+    })
+    expect(createRunCalls).toBe(0)
+  })
 })

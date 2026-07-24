@@ -14,6 +14,7 @@ interface PropertyPanelProps {
   node: Node<CanvasNodeData> | null;
   onClose: () => void;
   onUpdateData: (nodeId: string, patch: Partial<CanvasNodeData>) => void;
+  rightOffset?: number;
 }
 
 /** 节点类型 → 中文标签 */
@@ -29,7 +30,7 @@ const TYPE_LABELS: Record<string, string> = {
 /** 模型选项列表（缓存） */
 const MODEL_OPTIONS = getModelOptions();
 
-export default function PropertyPanel({ node, onClose, onUpdateData }: PropertyPanelProps) {
+export default function PropertyPanel({ node, onClose, onUpdateData, rightOffset = 20 }: PropertyPanelProps) {
   const [editContent, setEditContent] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
   const [editTitle, setEditTitle] = useState("");
@@ -64,9 +65,10 @@ export default function PropertyPanel({ node, onClose, onUpdateData }: PropertyP
 
   return (
     <div
-      className="absolute right-4 top-20 z-30 w-72 rounded-xl border shadow-xl
+      className="fixed top-[5.25rem] z-40 w-[360px] rounded-2xl border shadow-2xl
                  backdrop-blur-xl transition-all duration-300"
       style={{
+        right: rightOffset,
         backgroundColor: "rgba(18, 18, 24, 0.92)",
         borderColor: "rgba(168, 85, 247, 0.25)",
       }}

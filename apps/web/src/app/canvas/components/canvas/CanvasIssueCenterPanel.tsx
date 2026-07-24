@@ -10,6 +10,7 @@ type CanvasIssueCenterPanelProps = {
   issues: CanvasIssue[]
   onClose: () => void
   onResolveIssue: (issue: CanvasIssue) => void
+  rightOffset?: number
 }
 
 const ISSUE_STYLE = {
@@ -23,13 +24,14 @@ export function CanvasIssueCenterPanel({
   issues,
   onClose,
   onResolveIssue,
+  rightOffset = 20,
 }: CanvasIssueCenterPanelProps) {
   if (!isOpen) return null
 
   return (
     <aside
-      className="fixed right-5 top-5 z-[70] flex max-h-[calc(100vh-2.5rem)] w-[390px] flex-col overflow-hidden rounded-lg border shadow-2xl"
-      style={{ backgroundColor: "rgba(15, 15, 20, 0.96)", borderColor: DESIGN_TOKENS.border }}
+      className="fixed top-[5.25rem] z-[70] flex max-h-[calc(100vh-7rem)] w-[390px] flex-col overflow-hidden rounded-2xl border shadow-2xl"
+      style={{ right: rightOffset, backgroundColor: "rgba(15, 15, 20, 0.96)", borderColor: DESIGN_TOKENS.border }}
       data-testid="canvas-issue-center"
     >
       <header className="flex items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: DESIGN_TOKENS.border }}>

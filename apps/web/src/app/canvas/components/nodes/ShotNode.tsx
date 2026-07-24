@@ -59,6 +59,21 @@ export const ShotNode = memo(function ShotNode({ id, data, selected, width, heig
     () => summarizeCharacterIdentities(shot?.characterIdentities),
     [shot?.characterIdentities],
   )
+  const pipelineCharacterBindings = useMemo(() => {
+    const bindings = shot?.sourceMeta?.characterBindings
+    if (!Array.isArray(bindings)) return []
+    return bindings
+      .map((binding: any) => ({
+        id: String(binding.characterId || binding.name || "").trim(),
+        name: String(binding.name || binding.characterId || "").trim(),
+        viewSetId: String(binding.viewSetId || "").trim(),
+        referenceCount: Array.isArray(binding.referenceAssetIds) ? binding.referenceAssetIds.length : 0,
+        faceLock: Boolean(binding.faceLock),
+        costumeLock: Boolean(binding.costumeLock),
+      }))
+      .filter((binding) => binding.id || binding.name)
+      .slice(0, 4)
+  }, [shot?.sourceMeta])
   const hiddenCharacterCount = Math.max((shot?.characterIdentities?.length ?? 0) - characterSummaries.length, 0)
   const slashCommands = useMemo(
     () => getSlashCommandsForTarget("shot", slashQuery?.query ?? ""),
@@ -436,6 +451,34 @@ export const ShotNode = memo(function ShotNode({ id, data, selected, width, heig
           ) : (
             <section className="rounded-xl border px-3 py-2 text-[11px] leading-5" style={{ borderColor: DESIGN_TOKENS.border, color: DESIGN_TOKENS.textMuted, backgroundColor: "rgba(255,255,255,0.02)" }}>
               生图 Prompt 默认使用上方镜头文本。选中节点后可展开编辑。
+            </section>
+          )}
+
+          {pipelineCharacterBindings.length > 0 && (
+            <section className="space-y-2 rounded-xl border p-2" style={{ borderColor: "rgba(168, 85, 247, 0.24)", backgroundColor: "rgba(88, 28, 135, 0.10)" }}>
+              <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-white/45">
+                <span>角色锁定</span>
+                <span>{pipelineCharacterBindings.length} 个绑定</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {pipelineCharacterBindings.map((binding) => (
+                  <span
+                    key={binding.id || binding.name}
+                    className="rounded-full border px-2 py-1 text-[10px]"
+                    style={{ borderColor: "rgba(168,85,247,0.28)", color: "#ddd6fe", backgroundColor: "rgba(168,85,247,0.10)" }}
+                    title={[
+                      binding.viewSetId ? `三视图：${binding.viewSetId}` : "",
+                      binding.referenceCount ? `参考资产：${binding.referenceCount}` : "",
+                      binding.faceLock ? "脸部锁定" : "",
+                      binding.costumeLock ? "服装锁定" : "",
+                    ].filter(Boolean).join(" · ")}
+                  >
+                    {binding.name}
+                    {binding.viewSetId ? " · 三视图" : ""}
+                    {binding.faceLock || binding.costumeLock ? " · 锁定" : ""}
+                  </span>
+                ))}
+              </div>
             </section>
           )}
 

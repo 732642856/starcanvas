@@ -430,6 +430,7 @@ export type CanvasNodeData = {
 
   // ---- 旧：兼容字段，禁止新写入 ----
   status?: WorkflowNodeStatus
+  generationStatus?: "idle" | "queued" | "generating" | "retrying" | "succeeded" | "failed"
   errorMessage?: string
   pendingExecution?: boolean  // AI suggested run_node, waiting for user confirmation
 
@@ -549,6 +550,8 @@ export type CanvasNodeData = {
   videoHeight?: number
   videoFps?: number
   videoFrameCount?: number
+  productionRunId?: string
+  videoAssetId?: string
   thumbnailUrl?: string
 
   // --- Image asset persistence (IndexedDB / remote) ---

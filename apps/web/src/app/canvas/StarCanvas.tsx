@@ -91,6 +91,7 @@ import type {
   BatchGenerationJob,
   BatchGenerationJobStatus,
   BatchGenerationShotStatus,
+  CharacterBibleData,
 } from "./components/canvas/types";
 
 // ============================================================================
@@ -112,6 +113,7 @@ import { CanvasIssueCenterPanel } from "./components/canvas/CanvasIssueCenterPan
 import { ShotPlanningPanel } from "@/features/production/ShotPlanningPanel";
 import { useShotPlanningRunQueueStore } from "@/features/production/useShotPlanningRunQueueStore";
 import { useProductionRunExecutor } from "./hooks/useProductionRunExecutor";
+import { createVideoProductionRun, getProductionRun, waitForCompletedProductionRun, type ProductionRunDto } from "@/lib/production-runs/client";
 import { StoryboardBatchProgressOverlay } from "./components/canvas/StoryboardBatchProgressOverlay";
 import { CanvasContextMenu } from "./components/menus/CanvasContextMenu";
 import PropertyPanel from "./components/panels/PropertyPanel";
@@ -293,6 +295,8 @@ import { createImageGenerationSnapshot } from "@/lib/ai/createGenerationSnapshot
 import { getDefaultImageModel } from "@/lib/ai/client";
 import { createShotImageNode } from "@/lib/storyboard/createShotImageNode";
 import { createShotImageArtifacts } from "@/lib/storyboard/createShotImageArtifacts";
+import { createScriptPipelineCanvasNodes } from "@/lib/storyboard/scriptPipelineCanvas";
+import { createScriptPipelineCharacters } from "@/lib/storyboard/scriptPipelineCharacters";
 import {
   STORYBOARD_SHOT_LAYOUT,
   createNormalizedShotTitle,
@@ -856,6 +860,7 @@ function StarCanvasInner({
     showPromptPreview,
     promptPreviewNodeId,
     closePromptPreview,
+    bibleCharacters,
   } = useCanvasStore();
 
   const syncImageNodeToAssetLibrary = useCallback(
@@ -927,6 +932,92 @@ function StarCanvasInner({
     },
     [setEdges],
   );
+  const resumedProductionRunIdsRef = useRef<Set<string>>(new Set());
+  const applyCompletedProductionRunToShot = useCallback(
+    (shotNodeId: string, run: ProductionRunDto) => {
+      const outputAsset = run.outputAsset;
+      if (!outputAsset?.id || !outputAsset.url) return;
+      applyNodeUpdates((nds) =>
+        nds.map((node) =>
+          node.id === shotNodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  productionRunId: run.id,
+                  videoAssetId: outputAsset.id,
+                  videoUrl: outputAsset.url,
+                  generationStatus: "succeeded" as const,
+                  errorMessage: undefined,
+                },
+              }
+            : node,
+        ),
+      );
+    },
+    [applyNodeUpdates],
+  );
+  useEffect(() => {
+    const activeShots = nodesRef.current.filter((node) => {
+      const status = node.data.generationStatus ?? node.data.shot?.generationStatus;
+      return node.type === "shot" && node.data.productionRunId && status !== "succeeded" && status !== "failed";
+    });
+    if (!activeShots.length) return;
+    let cancelled = false;
+    for (const shotNode of activeShots) {
+      const runId = shotNode.data.productionRunId;
+      if (!runId || resumedProductionRunIdsRef.current.has(runId)) continue;
+      resumedProductionRunIdsRef.current.add(runId);
+      void (async () => {
+        try {
+          const current = await getProductionRun(runId);
+          if (cancelled) return;
+          if (current.status === "COMPLETED") {
+            applyCompletedProductionRunToShot(shotNode.id, current);
+            return;
+          }
+          if (current.status === "FAILED" || current.status === "CANCELED") {
+            applyNodeUpdates((nds) =>
+              nds.map((node) =>
+                node.id === shotNode.id
+                  ? {
+                      ...node,
+                      data: {
+                        ...node.data,
+                        generationStatus: "failed" as const,
+                        errorMessage: `Production run ended with status ${current.status}`,
+                      },
+                    }
+                  : node,
+              ),
+            );
+            return;
+          }
+          const completed = await waitForCompletedProductionRun(runId);
+          if (!cancelled) applyCompletedProductionRunToShot(shotNode.id, completed);
+        } catch (error) {
+          if (cancelled) return;
+          applyNodeUpdates((nds) =>
+            nds.map((node) =>
+              node.id === shotNode.id
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      generationStatus: "failed" as const,
+                      errorMessage: error instanceof Error ? error.message : String(error),
+                    },
+                  }
+                : node,
+            ),
+          );
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [nodes.length, applyCompletedProductionRunToShot, applyNodeUpdates]);
 
   useEffect(() => {
     return () => {
@@ -958,6 +1049,7 @@ function StarCanvasInner({
         getEdges: () => Edge[];
         getNodeData: (nodeId: string) => CanvasNodeData | undefined;
         getNodes: () => Node<CanvasNodeData>[];
+        setBibleCharactersForTest: (characters: CharacterBibleData[]) => void;
       };
     };
 
@@ -967,6 +1059,9 @@ function StarCanvasInner({
       getNodeData: (nodeId: string) =>
         nodesRef.current.find((node) => node.id === nodeId)?.data,
       getNodes: () => nodesRef.current,
+      setBibleCharactersForTest: (characters: CharacterBibleData[]) => {
+        useCanvasStore.setState({ bibleCharacters: characters });
+      },
     };
     e2eWindow.__starcanvasE2E = bridge;
 
@@ -1844,17 +1939,61 @@ function StarCanvasInner({
             );
 
             try {
-              const result = await generateVideoFromImage(
-                buildVideoGenerationInput({
-                  imageUrl,
-                  requestId: `production-queue-video-${task.id}`,
-                  referenceImageUrls: characterReferences.urls,
-                  motionPrompt,
-                  durationSeconds,
-                  backend,
-                  useMock: useMockVideo,
-                }),
-              );
+              let productionRunId: string | undefined;
+              let durableVideoAssetId: string | undefined;
+              const productionSourceAssetId =
+                shotNode.data.shot?.generatedImageAssetId ||
+                shotNode.data.assetId ||
+                shotNode.data.sourceImageAssetId;
+              const result =
+                !useMockVideo && projectId && productionSourceAssetId
+                  ? await (async () => {
+                      const run = await createVideoProductionRun({
+                        projectId,
+                        shotId: shotNode.id,
+                        sourceAssetId: productionSourceAssetId,
+                        prompt: motionPrompt,
+                        durationSeconds,
+                        referenceAssetIds: characterReferences.urls,
+                        idempotencyKey: `production-queue-video-${task.id}`,
+                      });
+                      productionRunId = run.id;
+                      applyNodeUpdates((nds) =>
+                        nds.map((n) =>
+                          n.id === shotNode.id
+                            ? {
+                                ...n,
+                                data: {
+                                  ...n.data,
+                                  productionRunId: run.id,
+                                  generationStatus: "generating" as const,
+                                },
+                              }
+                            : n,
+                        ),
+                      );
+                      const completed = await waitForCompletedProductionRun(run.id);
+                      durableVideoAssetId = completed.outputAsset?.id;
+                      return {
+                        videoUrl: completed.outputAsset?.url || "",
+                        durationSeconds,
+                        backend: "vidu" as const,
+                        assetId: completed.outputAsset?.id,
+                        persistence: "remote" as const,
+                        metadata: { modelVersion: "production-run", taskId: run.id },
+                      };
+                    })()
+                  : await generateVideoFromImage(
+                      buildVideoGenerationInput({
+                        imageUrl,
+                        requestId: `production-queue-video-${task.id}`,
+                        referenceImageUrls: characterReferences.urls,
+                        motionPrompt,
+                        durationSeconds,
+                        backend,
+                        useMock: useMockVideo,
+                      }),
+                    );
               const nodePatch = videoResultToNodeData(result);
               const videoNodeId = generateId();
               const nodeWidth =
@@ -1870,6 +2009,8 @@ function StarCanvasInner({
                           ...n.data,
                           generationStatus: "succeeded" as const,
                           videoUrl: result.videoUrl,
+                          productionRunId,
+                          videoAssetId: durableVideoAssetId,
                           errorMessage: undefined,
                         },
                         }
@@ -5586,6 +5727,78 @@ function StarCanvasInner({
     [nodes, selectedNodeId],
   );
 
+  const handleRunScriptPipeline = useCallback(async () => {
+    const isScriptSourceNode = (node: Node<CanvasNodeData>) =>
+      ["text", "content", "storyboard", "prompt"].includes(String(node.type)) ||
+      ["text", "storyboard", "prompt"].includes(String(node.data?.nodeKind));
+    const sourceNode =
+      selectedNode && isScriptSourceNode(selectedNode)
+        ? selectedNode
+        : nodesRef.current.find(isScriptSourceNode);
+
+    const script = String(sourceNode?.data?.content || sourceNode?.data?.prompt || sourceNode?.data?.title || "").trim();
+    if (!sourceNode || !script) {
+      showCanvasNotice("warning", "需要剧本节点", "请先选中或创建一个包含剧本正文的文本/故事板节点。");
+      return;
+    }
+
+    const pipelineCharacters = createScriptPipelineCharacters(bibleCharacters);
+    showCanvasNotice(
+      "info",
+      "正在生成分镜流水线",
+      pipelineCharacters.length
+        ? `已带入 ${pipelineCharacters.length} 个角色设定/三视图资产。`
+        : "剧本会拆成镜头、角色绑定、9宫格 prompt 和视频 prompt。",
+    );
+    try {
+      const response = await fetch("/api/ai/script-pipeline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectTitle: sourceNode.data.title || "星轨画布项目",
+          script,
+          targetShotCount: 9,
+          characters: pipelineCharacters,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.pipeline) {
+        throw new Error(data?.error?.message || "分镜流水线生成失败");
+      }
+
+      const generated = createScriptPipelineCanvasNodes({
+        pipeline: data.pipeline,
+        sourceNode,
+      });
+      const pipelineNodePrefix = `${sourceNode.id}-pipeline-`;
+      const nextNodes = [
+        ...nodesRef.current.filter((node) => !node.id.startsWith(pipelineNodePrefix)),
+        ...generated.shotNodes,
+        generated.gridNode,
+      ];
+      const nextNodeIds = new Set(nextNodes.map((node) => node.id));
+      const nextEdges = [
+        ...edgesRef.current.filter((edge) => nextNodeIds.has(edge.source) && nextNodeIds.has(edge.target) && !edge.id.includes(`-${sourceNode.id}-pipeline-`)),
+        ...generated.edges,
+      ];
+      nodesRef.current = nextNodes;
+      edgesRef.current = nextEdges;
+      setNodes(nextNodes);
+      setEdges(nextEdges);
+      setSelectedNodeId(generated.gridNode.id);
+      setTimeout(() => {
+        reactFlowInstance?.fitView({
+          nodes: [generated.gridNode, ...generated.shotNodes].map((node) => ({ id: node.id })),
+          padding: 0.18,
+          duration: 650,
+        });
+      }, 80);
+      showCanvasNotice("success", "分镜流水线已生成", `已创建 ${generated.shotNodes.length} 个镜头和 1 个连续9宫格节点。`);
+    } catch (error) {
+      showCanvasNotice("error", "分镜流水线失败", error instanceof Error ? error.message : "未知错误");
+    }
+  }, [bibleCharacters, reactFlowInstance, selectedNode, setEdges, setNodes, setSelectedNodeId, showCanvasNotice]);
+
   const getCanvasFocusScreenPoint = useCallback(() => {
     const availableWidth =
       window.innerWidth -
@@ -8848,6 +9061,7 @@ function StarCanvasInner({
   // RENDER
   // ========================================================================
   const isBlankCanvas = nodes.length === 0;
+  const rightDockOffset = chatOpen ? CHAT_PANEL_WIDTH + 20 : 20;
 
   return (
     <>
@@ -8855,6 +9069,7 @@ function StarCanvasInner({
       <StoryboardBatchProgressOverlay
         job={storyboardBatchJob}
         onDismiss={handleDismissStoryboardBatchJob}
+        rightOffset={rightDockOffset}
       />
       <SelectionToolbar
         selectedCount={selectionCount}
@@ -8903,6 +9118,7 @@ function StarCanvasInner({
         node={showPropertyPanel ? selectedNode : null}
         onClose={() => setShowPropertyPanel(false)}
         onUpdateData={handlePropertyUpdate}
+        rightOffset={rightDockOffset}
       />
       {selectedNode?.type === "shot" && selectedNode?.data?.shot && (
         <ShotParameterPanel
@@ -8940,6 +9156,21 @@ function StarCanvasInner({
             </div>
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={handleRunScriptPipeline}
+          className="flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-medium backdrop-blur-xl transition hover:bg-white/10"
+          style={{
+            borderColor: "rgba(168, 85, 247, 0.42)",
+            backgroundColor: "rgba(76, 29, 149, 0.36)",
+            color: DESIGN_TOKENS.text,
+          }}
+          title="选中剧本/文本节点，一键生成文字分镜、镜头、9宫格和视频提示词"
+        >
+          <Clapperboard size={14} strokeWidth={1.7} />
+          <span>生成分镜流水线</span>
+        </button>
 
         {isBlankCanvas ? (
           <>
@@ -10749,6 +10980,7 @@ function StarCanvasInner({
           isOpen={showIssueCenter}
           issues={canvasIssues}
           onClose={() => setShowIssueCenter(false)}
+          rightOffset={rightDockOffset}
           onResolveIssue={(issue) => {
             setShowIssueCenter(false);
             handleResolveProductionIssue(issue.shotId, issue.action);
@@ -10779,6 +11011,7 @@ function StarCanvasInner({
         createPortal(
           <ProductionRunQueuePanel
             queue={activeProductionQueue}
+            rightOffset={rightDockOffset}
             onClose={() => {
               setShowProductionQueue(false);
               if (planningRunQueue) {
