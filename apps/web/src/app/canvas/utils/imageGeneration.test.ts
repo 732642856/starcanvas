@@ -193,6 +193,53 @@ describe("generateImageFromPrompt", () => {
     globalThis.fetch = originalFetch
   })
 
+  it("polls an async image generation job and returns the completed image", async () => {
+    const requestedUrls: string[] = []
+    let requestBody: Record<string, unknown> | null = null
+    globalThis.fetch = async (url, opts) => {
+      requestedUrls.push(String(url))
+      if (String(url).includes("/api/ai/config")) {
+        return new Response(JSON.stringify({
+          type: "openai-compatible",
+          baseUrl: "https://relay.example/v1",
+          defaultModel: "gpt-5.5",
+          defaultImageModel: "gpt-image-2",
+          timeoutMs: 120_000,
+          hasApiKey: true,
+        }), { status: 200 })
+      }
+      if (String(url).includes("/api/ai/generate-image?jobId=job-1")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          job: {
+            id: "job-1",
+            status: "completed",
+            result: {
+              imageUrl: "blob:async-result",
+              prompt: "test",
+              model: "gpt-image-1-mini",
+            },
+          },
+        }), { status: 200 })
+      }
+      requestBody = JSON.parse((opts?.body as string) ?? "{}")
+      return new Response(JSON.stringify({
+        ok: true,
+        async: true,
+        jobId: "job-1",
+        status: "queued",
+      }), { status: 202 })
+    }
+
+    const result = await generateImageFromPrompt({ prompt: "async shot", requestId: "req-async" })
+
+    assert.equal(result.imageUrl, "blob:async-result")
+    assert.equal(requestBody?.async, true)
+    assert.equal(requestBody?.mode, "draft")
+    assert.ok(requestedUrls.some((url) => url.includes("/api/ai/generate-image?jobId=job-1")))
+    globalThis.fetch = originalFetch
+  })
+
   it("passes multiple source images for reference-image generation", async () => {
     let requestBody: Record<string, unknown> | null = null
     globalThis.fetch = async (_url, opts) => {

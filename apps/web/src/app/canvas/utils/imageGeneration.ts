@@ -154,6 +154,23 @@ async function readJsonSafely(res: Response): Promise<any> {
   }
 }
 
+async function pollImageGenerationJob(jobId: string, signal: AbortSignal): Promise<any> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < IMAGE_GENERATION_CLIENT_TIMEOUT_MS) {
+    const res = await fetch(`/api/ai/generate-image?jobId=${encodeURIComponent(jobId)}`, { signal })
+    const payload = await readJsonSafely(res)
+    if (!res.ok) throw normalizeApiError(payload, res.status)
+    const job = payload?.job
+    if (job?.status === "completed") return job.result
+    if (job?.status === "failed") {
+      const errorPayload = job.error || payload
+      throw normalizeApiError(errorPayload, 502)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000))
+  }
+  throw createTimeoutError()
+}
+
 function normalizeApiError(payload: any, status: number): ImageGenerationError {
   const error = payload?.error as string | ApiErrorPayload | undefined
   if (typeof error === "string") {
@@ -328,6 +345,8 @@ export async function generateImageFromPrompt(input: {
         model: requestedModel,
         size: resolveImageGenerationSize(input.size, input.aspectRatio),
         requestId: input.requestId,
+        async: true,
+        mode: "draft",
         ...(runtimeProvider.overrides ? { _providerOverrides: runtimeProvider.overrides } : {}),
         ...(input.sourceImage ? { sourceImage: input.sourceImage } : {}),
       }),
@@ -346,7 +365,10 @@ export async function generateImageFromPrompt(input: {
     clearTimeout(timeout)
   }
 
-  const payload = await readJsonSafely(res)
+  let payload = await readJsonSafely(res)
+  if (res.status === 202 && payload?.jobId) {
+    payload = await pollImageGenerationJob(payload.jobId, controller.signal)
+  }
   if (!res.ok) {
     throw normalizeApiError(payload, res.status)
   }
