@@ -503,7 +503,7 @@ export class GenerationService {
     const { user, organization } = await this.projectsService.ensureDevContext()
     const messages = this.sanitizeChatMessages(input.messages)
 
-    if (!messages.length || !messages.some((message) => message.role === "user" && message.content.trim())) {
+    if (!messages.length || !messages.some((message) => message.role === "user" && this.chatMessageContentText(message.content).trim())) {
       throw new BadRequestException("messages with at least one user message are required")
     }
 
@@ -1071,6 +1071,12 @@ export class GenerationService {
         role: message.role,
         content: typeof message.content === "string" ? message.content.trim().slice(0, 8000) : message.content,
       }))
+  }
+
+  private chatMessageContentText(content: ChatCompletionMessage["content"]) {
+    if (typeof content === "string") return content
+    if (Array.isArray(content)) return content.map((part) => String(part.text ?? "")).join(" ")
+    return ""
   }
 
   private buildDirectorChatSystemPrompt(canvas: Record<string, unknown>, options?: { includeCanvasContext?: boolean }): ChatCompletionMessage {

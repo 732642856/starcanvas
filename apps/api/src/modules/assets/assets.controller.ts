@@ -1,4 +1,4 @@
-import { Controller, Post, UploadedFile, UseInterceptors } from "@nestjs/common"
+import { Body, Controller, Post, UploadedFile, UseInterceptors } from "@nestjs/common"
 import { FileInterceptor } from "@nestjs/platform-express"
 import { memoryStorage } from "multer"
 import { AssetsService } from "./assets.service"
@@ -14,9 +14,9 @@ export class AssetsController {
       limits: { fileSize: 100 * 1024 * 1024 },
     }),
   )
-  async uploadAsset(@UploadedFile() file: Express.Multer.File) {
+  async uploadAsset(@UploadedFile() file: Express.Multer.File, @Body("projectId") projectId?: string) {
     return {
-      data: await this.assetsService.saveUpload(file),
+      data: await this.assetsService.saveUpload(file, { projectId }),
     }
   }
 }

@@ -1,18 +1,22 @@
-import { BadRequestException, Injectable } from "@nestjs/common"
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
+import { AssetKind } from "@prisma/client"
 import { randomUUID } from "crypto"
 import { mkdir, writeFile } from "fs/promises"
 import { extname, join } from "path"
+import { PrismaService } from "../../prisma/prisma.service"
 
 export type UploadedAssetKind = "image" | "video" | "audio" | "document" | "unknown"
 
 export type UploadedAssetPayload = {
   id: string
+  projectId?: string
   kind: UploadedAssetKind
   originalName: string
   fileName: string
   mimeType: string
   size: number
+  storagePath: string
   url: string
   uploadedAt: string
 }
@@ -32,9 +36,12 @@ const maxUploadSize = 100 * 1024 * 1024
 export class AssetsService {
   private readonly uploadRoot = join(process.cwd(), "uploads")
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {}
 
-  async saveUpload(file: Express.Multer.File): Promise<UploadedAssetPayload> {
+  async saveUpload(file: Express.Multer.File, input: { projectId?: string } = {}): Promise<UploadedAssetPayload> {
     if (!file) {
       throw new BadRequestException("Missing uploaded file")
     }
@@ -48,6 +55,15 @@ export class AssetsService {
     if (kind === "unknown") {
       throw new BadRequestException("Unsupported file type")
     }
+    if (input.projectId) {
+      const project = await this.prisma.project.findUnique({
+        where: { id: input.projectId },
+        select: { id: true },
+      })
+      if (!project) {
+        throw new NotFoundException("Project not found")
+      }
+    }
 
     const id = randomUUID()
     const extension = this.getSafeExtension(originalName, file.mimetype)
@@ -57,16 +73,32 @@ export class AssetsService {
 
     await mkdir(targetDir, { recursive: true })
     await writeFile(targetPath, file.buffer)
+    const url = this.buildPublicUrl(kind, fileName)
+    const asset = await this.prisma.asset.create({
+      data: {
+        id,
+        projectId: input.projectId,
+        kind: this.toAssetKind(kind),
+        originalName,
+        fileName,
+        mimeType: file.mimetype,
+        size: file.size,
+        storagePath: targetPath,
+        url,
+      },
+    })
 
     return {
-      id,
+      id: asset.id,
+      projectId: asset.projectId ?? undefined,
       kind,
       originalName,
       fileName,
       mimeType: file.mimetype,
       size: file.size,
-      url: this.buildPublicUrl(kind, fileName),
-      uploadedAt: new Date().toISOString(),
+      storagePath: targetPath,
+      url,
+      uploadedAt: asset.createdAt.toISOString(),
     }
   }
 
@@ -111,5 +143,13 @@ export class AssetsService {
     const apiPort = this.config.get<string>("API_PORT") ?? "4000"
     const baseUrl = configuredPublicUrl ?? `http://localhost:${apiPort}`
     return `${baseUrl}/uploads/${kind}/${fileName}`
+  }
+
+  private toAssetKind(kind: UploadedAssetKind): AssetKind {
+    if (kind === "image") return AssetKind.IMAGE
+    if (kind === "video") return AssetKind.VIDEO
+    if (kind === "audio") return AssetKind.AUDIO
+    if (kind === "document") return AssetKind.DOCUMENT
+    return AssetKind.UNKNOWN
   }
 }
