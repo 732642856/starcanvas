@@ -189,6 +189,8 @@ export interface JianyingVideoNodeInput {
   title: string;
   /** 视频 URL */
   videoUrl: string;
+  /** Completed durable server asset ID required for production export */
+  videoAssetId?: string;
   /** 视频时长（秒） */
   durationSeconds: number;
   /** 视频宽度 */
@@ -211,6 +213,16 @@ export interface JianyingVideoNodeInput {
   rotation?: number;
   /** 文件名（用于导出） */
   fileName?: string;
+}
+
+export class JianyingExportPreflightError extends Error {
+  readonly issues: string[];
+
+  constructor(issues: string[]) {
+    super(`Jianying export requires a completed durable video asset:\n${issues.join("\n")}`);
+    this.name = "JianyingExportPreflightError";
+    this.issues = issues;
+  }
 }
 
 /** 音频节点输入 */
@@ -892,6 +904,12 @@ export async function buildJianyingCompatiblePackage(
   audioNodes: JianyingAudioNodeInput[],
   subtitleNodes: JianyingSubtitleNodeInput[],
 ): Promise<JianyingCompatiblePackage> {
+  const preflightIssues = videoNodes
+    .filter((node) => node.videoUrl && !node.videoAssetId)
+    .map((node) => `视频「${node.title || node.id}」缺少 completed durable video asset id`);
+  if (preflightIssues.length > 0) {
+    throw new JianyingExportPreflightError(preflightIssues);
+  }
   const usedVideoFileNames = new Set<string>();
   const usedAudioFileNames = new Set<string>();
   const packageVideoNodes = videoNodes.map((node, index) => ({
@@ -1128,6 +1146,8 @@ export function extractVideoNodesFromCanvas(
       videoWidth?: number;
       videoHeight?: number;
       videoFps?: number;
+      videoAssetId?: string;
+      assetId?: string;
       fileName?: string;
       shot?: { id?: string };
     };
@@ -1150,10 +1170,11 @@ export function extractVideoNodesFromCanvas(
       }
     }
 
-    result.push({
+      result.push({
       id: node.id,
       title: node.data.title ?? "视频节点",
       videoUrl,
+      videoAssetId: node.data.videoAssetId ?? node.data.assetId,
       durationSeconds,
       width: node.data.videoWidth ?? DEFAULT_CANVAS_WIDTH,
       height: node.data.videoHeight ?? DEFAULT_CANVAS_HEIGHT,

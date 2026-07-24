@@ -4,6 +4,42 @@ import JSZip from "jszip";
 import { buildJianyingCompatiblePackage } from "./jianyingDraftExport.ts";
 
 describe("buildJianyingCompatiblePackage", () => {
+  it("rejects a shot whose video URL has no completed durable asset id", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      blob: async () => new Blob([new Uint8Array([0, 1, 2, 3])], { type: "video/mp4" }),
+    })) as typeof fetch;
+    try {
+      await assert.rejects(
+        () =>
+          buildJianyingCompatiblePackage(
+            [
+              {
+                id: "shot-1",
+                title: "Shot 1",
+                videoUrl: "https://temporary/video.mp4",
+                durationSeconds: 3,
+                width: 1280,
+                height: 720,
+                startOffsetSeconds: 0,
+                volume: 1,
+                scale: 1,
+                transformX: 0,
+                transformY: 0,
+                rotation: 0,
+              },
+            ],
+            [],
+            [],
+          ),
+        /completed durable video asset/,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("fails clearly when requested media files cannot be fetched", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => ({
@@ -21,6 +57,7 @@ describe("buildJianyingCompatiblePackage", () => {
                 id: "video-1",
                 title: "丢失视频",
                 videoUrl: "https://cdn.example.com/missing-video.mp4",
+                videoAssetId: "asset-missing-video",
                 durationSeconds: 3,
                 width: 1280,
                 height: 720,
@@ -80,6 +117,7 @@ describe("buildJianyingCompatiblePackage", () => {
             id: "video-1",
             title: "测试视频",
             videoUrl: "https://cdn.example.com/video.mp4",
+            videoAssetId: "asset-video",
             durationSeconds: 3,
             width: 1280,
             height: 720,
@@ -178,6 +216,7 @@ describe("buildJianyingCompatiblePackage", () => {
             id: "video-1",
             title: "视频 1",
             videoUrl: "https://cdn.example.com/video-a.mp4",
+            videoAssetId: "asset-video-a",
             durationSeconds: 3,
             width: 1280,
             height: 720,
@@ -187,6 +226,7 @@ describe("buildJianyingCompatiblePackage", () => {
             id: "video-2",
             title: "视频 2",
             videoUrl: "https://cdn.example.com/video-b.mp4",
+            videoAssetId: "asset-video-b",
             durationSeconds: 3,
             width: 1280,
             height: 720,
@@ -260,6 +300,7 @@ describe("buildJianyingCompatiblePackage", () => {
             id: "video-1",
             title: "非法文件名视频",
             videoUrl: "https://cdn.example.com/%E6%B5%8B%E8%AF%95%20fallback.mp4",
+            videoAssetId: "asset-video-bad-name",
             durationSeconds: 3,
             width: 1280,
             height: 720,
@@ -269,6 +310,7 @@ describe("buildJianyingCompatiblePackage", () => {
             id: "video-2",
             title: "URL fallback 视频",
             videoUrl: "https://cdn.example.com/%E6%B5%8B%E8%AF%95%20fallback.mp4",
+            videoAssetId: "asset-video-url-fallback",
             durationSeconds: 3,
             width: 1280,
             height: 720,
@@ -319,6 +361,7 @@ describe("buildJianyingCompatiblePackage", () => {
         id: "video-data-url",
         title: "Mock 视频",
         videoUrl: "data:image/svg+xml,%3Csvg%3E%3C/svg%3E",
+        videoAssetId: "asset-video-data-url",
         durationSeconds: 1,
         width: 1280,
         height: 720,
