@@ -1,5 +1,9 @@
 // ============================================================================
-// /api/ai/generate-video-vidu — 阿里云百炼 Vidu 图生视频 API
+// LEGACY /api/ai/generate-video-vidu — 阿里云百炼 Vidu 图生视频 API
+//
+// New production-run callers must use the NestJS API:
+// NEXT_PUBLIC_API_BASE_URL/api/v1/production-runs.
+// This route remains for compatibility until canvas callers are migrated.
 //
 // 支持：图生视频（I2V）、文生视频（T2V）、首尾帧生视频
 // 模型：viduq3-turbo_img2video / viduq3-pro_img2video
