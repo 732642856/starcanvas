@@ -4,10 +4,24 @@
 // ============================================================================
 "use client"
 
-import { astro } from "iztro"
+interface FunctionalStar {
+  name: string
+  brightness?: string
+  mutagen?: string
+}
 
-// 从 astro.bySolar 的返回值推导星盘类型
-type FunctionalAstrolabe = ReturnType<typeof astro.bySolar>
+interface FunctionalPalace {
+  name: string
+  majorStars: FunctionalStar[]
+  minorStars: FunctionalStar[]
+  decadal?: { range?: number[] }
+}
+
+interface FunctionalAstrolabe {
+  palaces: FunctionalPalace[]
+  chineseDate: string
+  palace: (name: string) => FunctionalPalace | undefined
+}
 
 // ── 输入数据 ────────────────────────────────────────────────────────────────
 
@@ -282,11 +296,11 @@ export function astrolabeToCharacterProfile(astrolabe: FunctionalAstrolabe): Cha
 /**
  * 根据出生信息排盘并生成角色性格
  */
-export function generateCharacterFromBirth(input: BirthInput): {
+export async function generateCharacterFromBirth(input: BirthInput): Promise<{
   astrolabe?: FunctionalAstrolabe
   profile?: CharacterPersonality
   error?: string
-} {
+}> {
   try {
     if (!input.dateStr || !/^\d{4}-\d{1,2}-\d{1,2}$/.test(input.dateStr)) {
       return { error: "日期格式错误，请使用 YYYY-M-D 格式" }
@@ -298,12 +312,14 @@ export function generateCharacterFromBirth(input: BirthInput): {
       return { error: '性别必须为 "男" 或 "女"' }
     }
 
+    const { astro } = await import("iztro")
     const astrolabe = input.dateType === "solar"
       ? astro.bySolar(input.dateStr, input.timeIndex, input.gender, true, (input.language ?? "zh-CN") as any)
       : astro.byLunar(input.dateStr, input.timeIndex, input.gender, input.isLeapMonth ?? false, true, (input.language ?? "zh-CN") as any)
 
-    const profile = astrolabeToCharacterProfile(astrolabe)
-    return { astrolabe, profile }
+    const functionalAstrolabe = astrolabe as FunctionalAstrolabe
+    const profile = astrolabeToCharacterProfile(functionalAstrolabe)
+    return { astrolabe: functionalAstrolabe, profile }
   } catch (e: any) {
     return { error: e.message || "排盘失败，请检查输入的出生信息" }
   }
