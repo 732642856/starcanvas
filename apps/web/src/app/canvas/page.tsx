@@ -7,12 +7,17 @@
 import { Suspense } from "react"
 import { useSearchParams } from "next/navigation"
 import StarCanvas from "./StarCanvas"
+import { CanvasRuntimeErrorBoundary } from "./components/canvas/CanvasRuntimeErrorBoundary"
 
 function CanvasPageInner() {
   const searchParams = useSearchParams()
   const projectId = searchParams.get("projectId") || undefined
 
-  return <StarCanvas projectId={projectId} />
+  return (
+    <CanvasRuntimeErrorBoundary>
+      <StarCanvas projectId={projectId} />
+    </CanvasRuntimeErrorBoundary>
+  )
 }
 
 export default function CanvasPage() {
