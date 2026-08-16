@@ -108,7 +108,7 @@ export const ImageNode = memo(function ImageNode({
   const [aiError, setAiError] = useState<string | null>(null);
   const aiInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { setNodes, getNodes, setEdges } = useReactFlow();
+  const { setNodes, getNodes, setEdges, getEdges } = useReactFlow();
   const addAsset = useCanvasStore((state) => state.addAsset);
 
   const imageUrl = data.imageUrl || data.assetUrl || "";
@@ -171,7 +171,7 @@ export const ImageNode = memo(function ImageNode({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      pushUndo({ nodes: getNodes(), edges: [] }, "image-upload");
+      pushUndo({ nodes: getNodes(), edges: getEdges() }, "image-upload");
       (async () => {
         try {
           const { assetId, objectUrl } = await persistImageFile(file);
@@ -218,7 +218,7 @@ export const ImageNode = memo(function ImageNode({
         }
       })();
     },
-    [id, setNodes],
+    [getEdges, getNodes, id, setNodes],
   );
 
   // AI Generate Image

@@ -234,6 +234,11 @@ import {
 } from "./utils/videoSourceImage";
 import { assetUrlToDataUrl } from "./utils/providerMediaDataUrl";
 import { shouldExposeStarCanvasE2EBridge } from "./utils/e2eBridge";
+import {
+  createUndoHistoryController,
+  type UndoHistoryController,
+  type UndoSnapshot,
+} from "./utils/undoHistoryController";
 import { composeStoryboardGrid } from "./utils/storyboardGridComposer";
 import { buildVideoWorkflowTemplate } from "./utils/videoWorkflowTemplate";
 import {
@@ -586,13 +591,9 @@ let _videoUpscaleFn: ((nodeId: string) => void) | undefined;
 let _doUndo: (() => void) | undefined;
 let _doRedo: (() => void) | undefined;
 
-// ── Undo/redo stacks ──
-interface UndoEntry { nodes: Node<CanvasNodeData>[]; edges: Edge[] }
-const _undoStack: UndoEntry[] = []
-const _redoStack: UndoEntry[] = []
-const MAX_UNDO = 50
-let _undoTimer: ReturnType<typeof setTimeout> | undefined
-let _lastUndoActionType: string | undefined
+// ── Undo/redo bridge ──
+type UndoEntry = UndoSnapshot<Node<CanvasNodeData>, Edge>
+let _activeUndoHistoryController: UndoHistoryController<Node<CanvasNodeData>, Edge> | undefined
 
 /**
  * Push a history entry for undo/redo.
@@ -600,18 +601,7 @@ let _lastUndoActionType: string | undefined
  * @param actionType - optional action type for smarter debounce. Different action types are never debounced against each other.
  */
 export function pushUndo(entry: UndoEntry, actionType?: string) {
-  // Never debounce 'move' actions — each drag stop should be independently undoable.
-  // For other actions, coalesce rapid mutations of the SAME type within 300ms.
-  if (actionType !== "move" && _undoTimer && _lastUndoActionType === actionType && actionType) {
-    return
-  }
-  if (_undoTimer) clearTimeout(_undoTimer)
-  _undoTimer = setTimeout(() => { _undoTimer = undefined }, 300)
-  _lastUndoActionType = actionType
-
-  _undoStack.push(entry)
-  if (_undoStack.length > MAX_UNDO) _undoStack.shift()
-  _redoStack.length = 0 // clear redo on new action
+  _activeUndoHistoryController?.push(entry, actionType)
 }
 
 export function tryUndo() {
@@ -909,6 +899,21 @@ function StarCanvasInner({
   nodesRef.current = nodes;
   edgesRef.current = edges;
   const batchProgressRef = useRef<BatchProgressHandle>(null);
+  const undoHistoryControllerRef = useRef<UndoHistoryController<Node<CanvasNodeData>, Edge> | null>(null);
+  if (!undoHistoryControllerRef.current) {
+    undoHistoryControllerRef.current = createUndoHistoryController<Node<CanvasNodeData>, Edge>();
+  }
+
+  useEffect(() => {
+    const controller = undoHistoryControllerRef.current;
+    _activeUndoHistoryController = controller ?? undefined;
+    return () => {
+      if (_activeUndoHistoryController === controller) {
+        _activeUndoHistoryController = undefined;
+      }
+      controller?.dispose();
+    };
+  }, []);
 
   // Centralized node/edge update helper — replaces the repeated pattern:
   //   setNodes((nds) => { const updated = ...; nodesRef.current = updated; return updated; })
@@ -1029,6 +1034,8 @@ function StarCanvasInner({
       _updateAgentContentFn = undefined;
       _runVideoRetryFn = undefined;
       _videoUpscaleFn = undefined;
+      _doUndo = undefined;
+      _doRedo = undefined;
     };
   }, []);
 
@@ -5069,9 +5076,11 @@ function StarCanvasInner({
 
   // Wire undo/redo for toolbar buttons
   _doUndo = () => {
-    const entry = _undoStack.pop();
+    const entry = undoHistoryControllerRef.current?.undo({
+      nodes: nodesRef.current,
+      edges: edgesRef.current,
+    });
     if (entry) {
-      _redoStack.push({ nodes: nodesRef.current, edges: edgesRef.current });
       nodesRef.current = entry.nodes;
       edgesRef.current = entry.edges;
       setNodes(entry.nodes);
@@ -5082,9 +5091,11 @@ function StarCanvasInner({
     }
   };
   _doRedo = () => {
-    const entry = _redoStack.pop();
+    const entry = undoHistoryControllerRef.current?.redo({
+      nodes: nodesRef.current,
+      edges: edgesRef.current,
+    });
     if (entry) {
-      _undoStack.push({ nodes: nodesRef.current, edges: edgesRef.current });
       nodesRef.current = entry.nodes;
       edgesRef.current = entry.edges;
       setNodes(entry.nodes);

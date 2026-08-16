@@ -99,7 +99,6 @@ import { requestTalkingPhoto } from "../utils/talkingPhotoService"
 import { reverseImagePrompt } from "../utils/reversePromptService"
 import { createReversePromptCanvasArtifacts } from "../utils/reversePromptCanvasArtifacts"
 import { analyzeRemix, generateCameraControl, generatePoster } from "../utils/newWorkflowServices"
-import { composeVideo } from "../utils/videoCompositionBrowser"
 import type { VideoClipInput, AudioTrackInput, SubtitleInput } from "../utils/videoCompositionBrowser"
 import { importStoryboardDraftToCanvas } from "@/features/storyboard/importDraftToCanvas"
 import { buildStoryboardDraftFromVideoAnalysis } from "@/features/storyboard/videoAnalysisToStoryboardDraft"
@@ -2186,6 +2185,7 @@ export function useWorkflowRunner(options?: { onRunEvent?: (event: WorkflowRunEv
           throw new Error(message)
         }
 
+        const { composeVideo } = await import("../utils/videoCompositionBrowser")
         const result = await composeVideo({
           clips,
           narration: narrationAudio,
